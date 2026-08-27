@@ -14,11 +14,14 @@ does not require a backend. The following interactions are live:
 - choose a video part;
 - adjust playback position with click or arrow keys;
 - show or hide danmaku;
+- open the advanced danmaku surface and adjust size, area, speed, opacity,
+  font, weight, outline, and hidden types;
 - copy the generated VRChat URL;
-- switch between the approved light and dark semantic palettes.
+- open the settings surface, edit VRCDN values, detect a system FFmpeg,
+  persist settings under local app data, and choose system/light/dark appearance.
 
-The source resolver, VRCDN relay, FFmpeg pipeline, account login, advanced
-danmaku settings, and persistence remain in the WinUI project for now.
+The source resolver, VRCDN relay, FFmpeg download/transcode pipeline, account
+login, and danmaku rendering pipeline remain outside this UI spike for now.
 
 ## Run
 
@@ -53,6 +56,8 @@ Capture the real application window instead:
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme light
 powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme dark -OutputPath artifacts/live-window-dark.png
+powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme light -Scene settings -OutputPath artifacts/settings-light.png
+powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme dark -Scene danmaku -OutputPath artifacts/danmaku-dark.png
 ```
 
 ## Design boundary

@@ -74,6 +74,68 @@
           "notes": "Includes part selection, seek adjustment, danmaku visibility, and copy output."
         }
       ]
+    },
+    {
+      "id": "settings-surface",
+      "primitive": "GPUIX input + motion segmented control + native file persistence",
+      "dimensions": {
+        "minWidth": 428,
+        "preferredWidth": 428,
+        "maxWidth": 428,
+        "preferredHeight": 478,
+        "padding": "header 13px 24px 9px; body 16px 24px 20px",
+        "gap": 16
+      },
+      "tokens": {
+        "taskTitle": "Noto Serif SC 19px bold",
+        "fieldHeight": 30,
+        "controlRadius": 8,
+        "desktopReferenceIntrinsicWidth": 480,
+        "desktopReferenceIntrinsicHeight": 425
+      },
+      "states": [
+        {
+          "name": "settings-light",
+          "evidence": "reference/settings-light.png",
+          "notes": "The native 428px product window preserves the approved two-column proportions at a slightly narrower intrinsic width."
+        },
+        {
+          "name": "settings-dark",
+          "evidence": "reference/settings-dark.png",
+          "notes": "Dark appearance remaps the same neutral surfaces and keeps required captions at solid dark-caption contrast."
+        }
+      ]
+    },
+    {
+      "id": "danmaku-settings-surface",
+      "primitive": "GPUIX motion segmented controls + headless Select + pointer slider + filter chips",
+      "dimensions": {
+        "minWidth": 428,
+        "preferredWidth": 428,
+        "maxWidth": 428,
+        "preferredHeight": 478,
+        "padding": "header 13px 24px 9px; body 10px 24px 16px",
+        "gap": 6
+      },
+      "tokens": {
+        "previewHeight": 66,
+        "rowHeight": 28,
+        "controlRadius": 8,
+        "sliderTrackHeight": 2,
+        "sliderThumbSize": 12
+      },
+      "states": [
+        {
+          "name": "danmaku-settings-light",
+          "evidence": "reference/danmaku-settings-light.png",
+          "notes": "All advanced controls fit the fixed native product window; overflow remains scrollable for future longer labels."
+        },
+        {
+          "name": "danmaku-settings-dark",
+          "evidence": "reference/danmaku-settings-dark.png",
+          "notes": "The native preview stays a neutral near-black media surface in both appearances."
+        }
+      ]
     }
   ],
   "motion": [
@@ -94,6 +156,15 @@
       "easing": "ease-out",
       "interruptible": true,
       "reducedMotion": "Retain semantic color changes and omit positional movement."
+    },
+    {
+      "id": "segmented-thumb",
+      "from": "previous selected segment",
+      "to": "current selected segment",
+      "durationMs": 240,
+      "easing": "cubic-bezier(.23, 1, .32, 1)",
+      "interruptible": true,
+      "reducedMotion": "Move the neutral capsule immediately while retaining selected-label contrast."
     }
   ],
   "materialFallbacks": [
@@ -106,6 +177,11 @@
       "webEffect": "CSS transforms for 1px hover lift and 0.97 press scale",
       "gpuiStrategy": "Use GPUIX native hover and active surface states without changing control geometry.",
       "acceptedDifference": "The first spike preserves semantic feedback but omits transform-based pointer motion."
+    },
+    {
+      "webEffect": "CSS text-shadow variants in the danmaku preview",
+      "gpuiStrategy": "Use one high-contrast foreground preview while preserving the selected outline state for the future FFmpeg renderer.",
+      "acceptedDifference": "GPUIX 0.5.1 has no text-shadow style, so heavy outline and 45-degree shadow are stateful settings but cannot be faithfully previewed in the native UI layer."
     }
   ]
 }
