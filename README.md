@@ -52,6 +52,8 @@ comparison. The first real Rust-backed vertical slice is now connected:
 - FFmpeg builds without both `drawtext` and `zmq` are rejected before a live-danmaku relay starts;
 - the settings page can start Bilibili's QR login, show waiting/scanned/expired states, and return to guest mode;
 - authenticated API and danmaku requests reuse the Rust-owned session while cookies never cross into React or local settings;
+- VRCDN values and appearance are loaded and saved by Rust with legacy `settings.json` migration and transactional replacement;
+- settings replies expose only whether a stream key exists; the key itself stays inside Rust and relay commands no longer carry it;
 - the ready view now follows the real starting/running/completed/stopped/failed lifecycle;
 - release builds put `vrc-bili-relay-gpuix.exe` and `relay-worker.exe` together in `dist/`.
 
@@ -73,9 +75,10 @@ ingest server, stream key, and complete playback URL from VRCDN; a playback URL
 cannot be derived safely from the key. FFmpeg processes are stopped when the
 user stops a relay, starts a replacement, or closes the app.
 
-Persisted Rust-owned settings remain the next core slice. Bilibili credentials
-are deliberately session-only until encrypted Windows credential storage is
-implemented. The untouched startup screen remains the approved visual reference.
+Encrypted Windows storage for the VRCDN stream key remains the next core slice;
+the current Rust store intentionally keeps the legacy plaintext file compatible
+during migration. Bilibili credentials remain session-only. The untouched
+startup screen remains the approved visual reference.
 
 Direct playback is deliberately limited to a stable public URL that every
 VRChat viewer can reach. The app does not publish a `localhost` proxy URL:

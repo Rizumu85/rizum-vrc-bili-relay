@@ -1,7 +1,7 @@
 import { render } from "@gpuix/react";
 
 import { AppSurface, type Scene } from "./app";
-import type { ThemePreference } from "./settings-store";
+import type { ThemePreference } from "./settings";
 import type { Appearance } from "./theme";
 
 const initialAppearance: Appearance =

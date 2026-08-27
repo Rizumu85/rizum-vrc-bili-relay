@@ -9,13 +9,15 @@ mod ffmpeg_manager;
 mod live_danmaku;
 mod media_session;
 mod media_source;
+mod settings;
 
 use bilibili::BilibiliClient;
 use danmaku::{DanmakuOverlay, DanmakuService};
 use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
+use settings::SettingsStore;
 
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -38,7 +40,8 @@ pub enum Command {
     },
     StartRelay {
         session_id: String,
-        target: RelayTarget,
+        #[serde(default)]
+        start_seconds: f64,
         #[serde(default)]
         options: PlaybackOptions,
     },
@@ -46,7 +49,8 @@ pub enum Command {
         current_session_id: Option<String>,
         source: String,
         requested_part: u32,
-        target: RelayTarget,
+        #[serde(default)]
+        start_seconds: f64,
         #[serde(default)]
         options: PlaybackOptions,
     },
@@ -63,6 +67,10 @@ pub enum Command {
         login_id: u64,
     },
     LogoutBilibili,
+    GetSettings,
+    SaveSettings {
+        settings: SettingsUpdate,
+    },
     Shutdown,
 }
 
@@ -118,6 +126,9 @@ pub enum Reply {
     },
     BilibiliAuthState {
         auth: BilibiliAuthStatus,
+    },
+    SettingsState {
+        settings: ProductSettings,
     },
     ShutdownAccepted,
 }
@@ -204,12 +215,11 @@ pub struct SourceResolution {
     pub session_expires_in_seconds: Option<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct RelayTarget {
+#[derive(Debug, Clone)]
+pub(crate) struct RelayTarget {
     pub ingest_server: String,
     pub stream_key: String,
     pub playback_url: String,
-    #[serde(default)]
     pub start_seconds: f64,
 }
 
@@ -248,6 +258,45 @@ pub enum BilibiliAuthStage {
 pub struct BilibiliLoginQr {
     pub size: usize,
     pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductSettings {
+    pub host: String,
+    pub playback_url: String,
+    pub theme: ThemePreference,
+    pub stream_key_configured: bool,
+}
+
+impl Default for ProductSettings {
+    fn default() -> Self {
+        Self {
+            host: "vrcdn.live".to_string(),
+            playback_url: String::new(),
+            theme: ThemePreference::System,
+            stream_key_configured: false,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsUpdate {
+    pub host: String,
+    pub playback_url: String,
+    pub theme: ThemePreference,
+    #[serde(default)]
+    pub stream_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemePreference {
+    #[default]
+    System,
+    Light,
+    Dark,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -466,6 +515,7 @@ pub struct RelayCore {
     bilibili: BilibiliClient,
     danmaku: DanmakuService,
     sessions: MediaSessionStore,
+    settings: SettingsStore,
 }
 
 impl Default for RelayCore {
@@ -481,6 +531,7 @@ impl RelayCore {
             bilibili: BilibiliClient::new(),
             danmaku: DanmakuService::new(),
             sessions: MediaSessionStore::new(),
+            settings: SettingsStore::new(),
         }
     }
 
@@ -516,9 +567,10 @@ impl RelayCore {
             }
             Command::StartRelay {
                 session_id,
-                mut target,
+                start_seconds,
                 options,
             } => {
+                let mut target = self.settings.relay_target(start_seconds)?;
                 media_session::validate_relay_target(&target)?;
                 let ffmpeg_path = self.ffmpeg.executable_path().ok_or_else(|| {
                     RelayError::new("ffmpeg_missing", "No usable FFmpeg executable was found")
@@ -539,9 +591,10 @@ impl RelayCore {
                 current_session_id,
                 source,
                 requested_part,
-                mut target,
+                start_seconds,
                 options,
             } => {
+                let mut target = self.settings.relay_target(start_seconds)?;
                 media_session::validate_relay_target(&target)?;
                 let ffmpeg_path = self.ffmpeg.executable_path().ok_or_else(|| {
                     RelayError::new("ffmpeg_missing", "No usable FFmpeg executable was found")
@@ -628,6 +681,12 @@ impl RelayCore {
             }),
             Command::LogoutBilibili => Ok(Reply::BilibiliAuthState {
                 auth: self.bilibili.logout(),
+            }),
+            Command::GetSettings => Ok(Reply::SettingsState {
+                settings: self.settings.load()?,
+            }),
+            Command::SaveSettings { settings } => Ok(Reply::SettingsState {
+                settings: self.settings.save(settings)?,
             }),
             Command::Shutdown => {
                 self.ffmpeg.shutdown();

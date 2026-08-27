@@ -1,4 +1,4 @@
-export const RELAY_PROTOCOL_VERSION = 10;
+export const RELAY_PROTOCOL_VERSION = 11;
 
 export type SourceKind = "video" | "live" | "media" | "short_link";
 export type RelayNextStep =
@@ -35,13 +35,6 @@ export interface SourceResolution {
   playback_url?: string;
   session_id?: string;
   session_expires_in_seconds?: number;
-}
-
-export interface RelayTarget {
-  ingest_server: string;
-  stream_key: string;
-  playback_url: string;
-  start_seconds?: number;
 }
 
 export type ProtocolDanmakuSize = "small" | "medium" | "large";
@@ -108,6 +101,22 @@ export interface FfmpegStatus {
   diagnostic?: string;
 }
 
+export type ThemePreference = "system" | "light" | "dark";
+
+export interface ProductSettings {
+  host: string;
+  playbackUrl: string;
+  theme: ThemePreference;
+  streamKeyConfigured: boolean;
+}
+
+export interface SettingsUpdate {
+  host: string;
+  playbackUrl: string;
+  theme: ThemePreference;
+  streamKey?: string;
+}
+
 export type BilibiliAuthStage =
   | "guest"
   | "waiting"
@@ -167,6 +176,11 @@ export interface BilibiliAuthStateReply {
   auth: BilibiliAuthStatus;
 }
 
+export interface SettingsStateReply {
+  type: "settings_state";
+  settings: ProductSettings;
+}
+
 export interface ShutdownAcceptedReply {
   type: "shutdown_accepted";
 }
@@ -179,6 +193,7 @@ export type RelayReply =
   | PlaybackStateReply
   | FfmpegStateReply
   | BilibiliAuthStateReply
+  | SettingsStateReply
   | ShutdownAcceptedReply;
 
 export interface RelayFailure {

@@ -15,11 +15,10 @@ import {
 } from "./theme";
 import {
   DEFAULT_SETTINGS,
-  readStoredSettings,
-  writeStoredSettings,
-  type StoredSettings,
+  type ProductSettings,
+  type SettingsUpdate,
   type ThemePreference,
-} from "./settings-store";
+} from "./settings";
 import {
   type BilibiliAuthStatus,
   type BilibiliLoginQr,
@@ -27,7 +26,6 @@ import {
   type HealthReply,
   type PlaybackOptions,
   type RelayStatus,
-  type RelayTarget,
   type SourceResolution,
 } from "./relay/protocol";
 import { RelayWorkerClient, RelayWorkerError } from "./relay/worker-client";
@@ -61,6 +59,13 @@ interface DanmakuSettings {
   weight: DanmakuWeight;
   outline: DanmakuOutline;
   hiddenTypes: DanmakuFilter[];
+}
+
+interface SettingsDraft {
+  host: string;
+  key: string;
+  playbackUrl: string;
+  theme: ThemePreference;
 }
 
 const SAMPLE_VIDEO = "https://www.bilibili.com/video/BV1UCVn66Eww?p=2";
@@ -175,15 +180,8 @@ async function writeClipboard(value: string): Promise<void> {
   }
 }
 
-function configuredRelayTarget(startSeconds: number): RelayTarget | null {
-  const settings = readStoredSettings();
-  if (!settings.key.trim() || !settings.playbackUrl.trim()) return null;
-  return {
-    ingest_server: settings.host,
-    stream_key: settings.key,
-    playback_url: settings.playbackUrl,
-    start_seconds: startSeconds,
-  };
+function relaySettingsReady(settings: ProductSettings): boolean {
+  return settings.streamKeyConfigured && Boolean(settings.playbackUrl.trim());
 }
 
 function configuredPlaybackOptions(
@@ -1920,6 +1918,9 @@ function SettingsView({
   bilibiliAuthBusy,
   onBeginBilibiliLogin,
   onLogoutBilibili,
+  storedSettings,
+  settingsError,
+  onSaveSettings,
   mediaState,
   mediaStatus,
   onInstallFfmpeg,
@@ -1932,14 +1933,23 @@ function SettingsView({
   bilibiliAuthBusy: boolean;
   onBeginBilibiliLogin: () => void;
   onLogoutBilibili: () => void;
+  storedSettings: ProductSettings;
+  settingsError: string | null;
+  onSaveSettings: (settings: SettingsUpdate) => Promise<ProductSettings>;
   mediaState: MediaComponentState;
   mediaStatus: FfmpegStatus | null;
   onInstallFfmpeg: () => void;
 }) {
-  const initial = useMemo(readStoredSettings, []);
-  const [settings, setSettings] = useState<StoredSettings>({ ...initial, theme: themePreference });
+  const [settings, setSettings] = useState<SettingsDraft>({
+    host: storedSettings.host,
+    key: "",
+    playbackUrl: storedSettings.playbackUrl,
+    theme: themePreference,
+  });
+  const [keyDirty, setKeyDirty] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [accountPopoverOpen, setAccountPopoverOpen] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const accountAuthenticated = bilibiliAuth?.stage === "authenticated";
@@ -1956,6 +1966,21 @@ function SettingsView({
   useEffect(() => {
     if (accountAuthenticated) setAccountPopoverOpen(false);
   }, [accountAuthenticated]);
+
+  useEffect(() => {
+    setSettings({
+      host: storedSettings.host,
+      key: "",
+      playbackUrl: storedSettings.playbackUrl,
+      theme: storedSettings.theme,
+    });
+    setKeyDirty(false);
+    setSaveError(null);
+  }, [
+    storedSettings.host,
+    storedSettings.playbackUrl,
+    storedSettings.theme,
+  ]);
 
   const update = (key: "host" | "key" | "playbackUrl", value: string) =>
     setSettings((current) => ({ ...current, [key]: value }));
@@ -1974,17 +1999,39 @@ function SettingsView({
     if (!accountPending) onBeginBilibiliLogin();
   };
   const reset = () => {
-    setSettings({ ...DEFAULT_SETTINGS });
+    setSettings({
+      host: DEFAULT_SETTINGS.host,
+      key: "",
+      playbackUrl: DEFAULT_SETTINGS.playbackUrl,
+      theme: DEFAULT_SETTINGS.theme,
+    });
+    setKeyDirty(true);
+    setSaveError(null);
     setThemePreference("system");
   };
   const save = async () => {
     if (saving) return;
     setSaving(true);
+    setSaveError(null);
     try {
-      await writeStoredSettings(settings);
+      const persisted = await onSaveSettings({
+        host: settings.host,
+        playbackUrl: settings.playbackUrl,
+        theme: settings.theme,
+        ...(keyDirty ? { streamKey: settings.key } : {}),
+      });
+      setSettings({
+        host: persisted.host,
+        key: "",
+        playbackUrl: persisted.playbackUrl,
+        theme: persisted.theme,
+      });
+      setKeyDirty(false);
       setSaved(true);
       if (savedTimer.current) clearTimeout(savedTimer.current);
       savedTimer.current = setTimeout(() => setSaved(false), 1200);
+    } catch (error) {
+      setSaveError(relayErrorMessage(error));
     } finally {
       setSaving(false);
     }
@@ -2018,7 +2065,15 @@ function SettingsView({
                 palette={palette}
                 help={<HelpButton kind="relay" align="end" palette={palette} />}
               >
-                <SettingsInput value={settings.key} onChange={(value) => update("key", value)} placeholder="未设置" palette={palette} />
+                <SettingsInput
+                  value={settings.key}
+                  onChange={(value) => {
+                    update("key", value);
+                    setKeyDirty(true);
+                  }}
+                  placeholder={storedSettings.streamKeyConfigured && !keyDirty ? "已保存" : "未设置"}
+                  palette={palette}
+                />
               </Field>
             </div>
           </div>
@@ -2141,7 +2196,17 @@ function SettingsView({
           onClick={() => void save()}
         />
         <div style={{ flexGrow: 1 }} />
-        <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 10.5 }}>配置只保存在本机</text>
+        <text
+          style={{
+            maxWidth: 190,
+            color: saveError || settingsError ? palette.accentRose : palette.caption,
+            fontFamily: FONT_UI,
+            fontSize: 10.5,
+            lineClamp: 1,
+          }}
+        >
+          {saveError ?? settingsError ?? "配置只保存在本机"}
+        </text>
       </div>
       {accountPopoverOpen ? (
         <BilibiliLoginPopover
@@ -2195,8 +2260,14 @@ export function AppSurface({
     initialScene === "settings" || initialScene === "danmaku" ? "ready-vod" : initialScene,
   );
   const [themePreference, setThemePreference] = useState<ThemePreference>(
-    () => initialThemePreference ?? readStoredSettings().theme,
+    () => initialThemePreference ?? DEFAULT_SETTINGS.theme,
   );
+  const [productSettings, setProductSettings] = useState<ProductSettings>(() => ({
+    ...DEFAULT_SETTINGS,
+    theme: initialThemePreference ?? DEFAULT_SETTINGS.theme,
+  }));
+  const [settingsReady, setSettingsReady] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
   const [source, setSource] = useState(SAMPLE_VIDEO);
   const [part, setPart] = useState("2");
   const [playbackPosition, setPlaybackPosition] = useState(POSITION_BY_PART["2"] ?? 0);
@@ -2228,6 +2299,41 @@ export function AppSurface({
   const getRelayWorker = () => {
     relayWorker.current ??= new RelayWorkerClient();
     return relayWorker.current;
+  };
+
+  const applyProductSettings = (next: ProductSettings): ProductSettings => {
+    const visible = initialThemePreference
+      ? { ...next, theme: initialThemePreference }
+      : next;
+    setProductSettings(visible);
+    setSettingsReady(true);
+    if (!initialThemePreference) setThemePreference(visible.theme);
+    return visible;
+  };
+
+  const refreshProductSettings = async (): Promise<ProductSettings> => {
+    setSettingsError(null);
+    try {
+      return applyProductSettings(await getRelayWorker().getSettings());
+    } catch (error) {
+      setSettingsReady(true);
+      setSettingsError(relayErrorMessage(error));
+      return productSettings;
+    }
+  };
+
+  const saveProductSettings = async (
+    next: SettingsUpdate,
+  ): Promise<ProductSettings> => {
+    setSettingsError(null);
+    try {
+      const saved = applyProductSettings(await getRelayWorker().saveSettings(next));
+      setThemePreference(saved.theme);
+      return saved;
+    } catch (error) {
+      setSettingsError(relayErrorMessage(error));
+      throw error;
+    }
   };
 
   const refreshMediaState = async () => {
@@ -2295,11 +2401,15 @@ export function AppSurface({
   };
 
   useEffect(() => {
-    if (initialScene === "settings") {
-      void refreshMediaState();
-      void refreshBilibiliAuth();
-    }
+    const startup = setTimeout(() => {
+      void refreshProductSettings();
+      if (initialScene === "settings") {
+        void refreshMediaState();
+        void refreshBilibiliAuth();
+      }
+    }, 0);
     return () => {
+      clearTimeout(startup);
       conversionEpoch.current += 1;
       playbackEpoch.current += 1;
       if (relayWorker.current) void relayWorker.current.close();
@@ -2426,14 +2536,17 @@ export function AppSurface({
       setPlaybackPosition(0);
       setScene("ready-vod");
       if (resolution.routing.kind !== "unavailable" && resolution.session_id) {
-        const target = configuredRelayTarget(0);
-        if (!target) {
+        const runtimeSettings = settingsReady
+          ? productSettings
+          : await refreshProductSettings();
+        if (conversionEpoch.current !== epoch) return;
+        if (!relaySettingsReady(runtimeSettings)) {
           setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
           return;
         }
         try {
           const options = configuredPlaybackOptions(danmaku, danmakuSettings);
-          const started = await getRelayWorker().startRelay(resolution.session_id, target, options);
+          const started = await getRelayWorker().startRelay(resolution.session_id, options);
           if (conversionEpoch.current === epoch) {
             appliedPlaybackOptions.current = playbackOptionsSignature(options);
             setRelayStatus(started);
@@ -2478,8 +2591,11 @@ export function AppSurface({
     setPlaybackPosition(effectiveStart);
 
     try {
-      const target = configuredRelayTarget(effectiveStart);
-      if (!target) {
+      const runtimeSettings = settingsReady
+        ? productSettings
+        : await refreshProductSettings();
+      if (playbackEpoch.current !== epoch) return;
+      if (!relaySettingsReady(runtimeSettings)) {
         if (previousWasActive) {
           setPart(previousPart);
           setPlaybackPosition(previousPosition);
@@ -2502,8 +2618,8 @@ export function AppSurface({
         previousWasActive ? previousRelay?.session_id : undefined,
         previousResolution.canonical_url,
         effectivePart,
-        target,
         options,
+        effectiveStart,
       );
       if (playbackEpoch.current !== epoch) {
         await getRelayWorker().stopRelay(playback.relay.session_id).catch(() => undefined);
@@ -2615,6 +2731,7 @@ export function AppSurface({
     if (scene !== "settings" && scene !== "danmaku") setLastMainScene(scene);
     setScene(next);
     if (next === "settings") {
+      if (!settingsReady || settingsError) void refreshProductSettings();
       void refreshMediaState();
       void refreshBilibiliAuth();
     }
@@ -2686,6 +2803,9 @@ export function AppSurface({
           bilibiliAuthBusy={bilibiliAuthBusy}
           onBeginBilibiliLogin={() => void beginBilibiliLogin()}
           onLogoutBilibili={() => void logoutBilibili()}
+          storedSettings={productSettings}
+          settingsError={settingsError}
+          onSaveSettings={saveProductSettings}
           mediaState={mediaState}
           mediaStatus={mediaStatus}
           onInstallFfmpeg={() => void installFfmpeg()}
@@ -2811,6 +2931,14 @@ function relayErrorMessage(error: unknown): string {
       return "登录没有完成，请重新生成二维码。";
     case "bilibili_login_session_not_found":
       return "二维码已经失效，请重新生成。";
+    case "settings_read_failed":
+      return "本机设置暂时无法读取。";
+    case "settings_write_failed":
+      return "设置没有保存，请检查磁盘空间后重试。";
+    case "settings_invalid_data":
+      return "本机设置内容有误，请恢复默认后保存。";
+    case "settings_too_large":
+      return "设置内容过长，检查后再保存。";
     case "ffmpeg_missing":
       return "电脑上没有可用的 FFmpeg，请先在设置中下载。";
     case "invalid_ingest_server":

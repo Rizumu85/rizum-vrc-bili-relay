@@ -10,15 +10,17 @@ import {
   type HealthReply,
   type PlaybackOptions,
   type PlaybackStateReply,
+  type ProductSettings,
   type RelayReply,
   type RelayResponse,
   type RelayStateReply,
   type RelayStatus,
-  type RelayTarget,
+  type SettingsUpdate,
   type SourceInspection,
   type SourceInspectionReply,
   type SourceResolution,
   type SourceResolutionReply,
+  type SettingsStateReply,
 } from "./protocol";
 
 interface PendingRequest {
@@ -86,11 +88,11 @@ export class RelayWorkerClient {
 
   async startRelay(
     sessionId: string,
-    target: RelayTarget,
     options: PlaybackOptions,
+    startSeconds = 0,
   ): Promise<RelayStatus> {
     return this.relayRequest(
-      { type: "start_relay", session_id: sessionId, target, options },
+      { type: "start_relay", session_id: sessionId, start_seconds: startSeconds, options },
       30_000,
     );
   }
@@ -99,8 +101,8 @@ export class RelayWorkerClient {
     currentSessionId: string | undefined,
     source: string,
     requestedPart: number,
-    target: RelayTarget,
     options: PlaybackOptions,
+    startSeconds: number,
   ): Promise<{ resolution: SourceResolution; relay: RelayStatus }> {
     await this.health();
     const reply = await this.request(
@@ -109,7 +111,7 @@ export class RelayWorkerClient {
         current_session_id: currentSessionId,
         source,
         requested_part: requestedPart,
-        target,
+        start_seconds: startSeconds,
         options,
       },
       50_000,
@@ -163,6 +165,14 @@ export class RelayWorkerClient {
     return this.bilibiliAuthRequest({ type: "logout_bilibili" });
   }
 
+  async getSettings(): Promise<ProductSettings> {
+    return this.settingsRequest({ type: "get_settings" });
+  }
+
+  async saveSettings(settings: SettingsUpdate): Promise<ProductSettings> {
+    return this.settingsRequest({ type: "save_settings", settings });
+  }
+
   async close(): Promise<void> {
     if (this.closing) return;
     this.closing = true;
@@ -208,6 +218,18 @@ export class RelayWorkerClient {
       );
     }
     return (reply as BilibiliAuthStateReply).auth;
+  }
+
+  private async settingsRequest(command: Record<string, unknown>): Promise<ProductSettings> {
+    await this.health();
+    const reply = await this.request(command);
+    if (reply.type !== "settings_state") {
+      throw new RelayWorkerError(
+        "protocol_mismatch",
+        `Expected settings state, received ${reply.type}`,
+      );
+    }
+    return (reply as SettingsStateReply).settings;
   }
 
   private async request(

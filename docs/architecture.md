@@ -38,6 +38,8 @@ Current commands:
 - `begin_bilibili_login`
 - `poll_bilibili_login`
 - `logout_bilibili`
+- `get_settings`
+- `save_settings`
 - `shutdown`
 
 The first source inspection classifies video, live-room, short, and generic
@@ -53,14 +55,15 @@ URL; expiring, header-bound, Bilibili-media, and FLV inputs stay inside Rust and
 become relay sessions. The UI receives the route decision, not private upstream
 credentials or temporary URLs.
 When a usable input is found, Rust retains it in a ten-minute media session and
-returns only the opaque session id. `start_relay` validates the user-provided
-VRCDN target and starts FFmpeg from that private session. `relay_status` reports
+returns only the opaque session id. `start_relay` loads and validates the
+Rust-owned VRCDN target, then starts FFmpeg from that private session.
+`relay_status` reports
 starting, running, completed, stopped, or failed; running requires observed
 FFmpeg media progress, not merely a live operating-system process. VOD status
 also includes the current source position parsed from FFmpeg's progress stream.
 
 `retarget_relay` owns the complete part/position replacement workflow. It
-validates the target and resolves fresh Bilibili media before suspending the
+loads the target and resolves fresh Bilibili media before suspending the
 current session, then starts a new short-lived session at the requested second.
 If the new FFmpeg process cannot launch, Rust attempts to resume the suspended
 session. React only supplies user intent and renders the resulting resolution
@@ -94,12 +97,21 @@ success, and the QR module path needed for the visible code. The QR session key
 and authenticated cookies remain inside Rust. Successful credentials are
 validated against Bilibili's navigation endpoint, then attached to metadata and
 danmaku requests. Logout clears both pending and authenticated state. This slice
-is intentionally memory-only; it does not write credentials to the TypeScript
-settings file.
+is intentionally memory-only; it does not enter the product settings file.
+
+`settings` is the only module that reads or writes product configuration. It
+loads the existing `%LOCALAPPDATA%\VRC Bili Relay\settings.json` shape, accepts
+legacy playback-prefix data, validates bounded fields, writes through a synced
+temporary file, and keeps a recoverable backup during replacement. React gets
+host, playback URL, theme, and `streamKeyConfigured`; it never reads the file or
+receives the stored key. The file remains plaintext for legacy compatibility in
+this slice, so user-scoped Windows encryption is the next security boundary.
 
 Temporary upstream URLs never cross into React. The stream key is supplied by
-the settings UI only in the `start_relay` command and is never returned or
-logged. FFmpeg is launched without a shell or console window. Its bounded
+the settings UI only when it changes, is persisted by Rust, and is represented
+in replies only by `streamKeyConfigured`. Relay commands load it inside Rust;
+they never carry or return it. FFmpeg is launched without a shell or console
+window. Its bounded
 diagnostic tail is scrubbed of the output URL and stream key before it can be
 returned. Replacing, stopping, or dropping a session kills and waits for its
 child process.
@@ -137,23 +149,31 @@ Network resolution uses a separate command so callers can inspect without I/O:
 Resolved media can then be published through its opaque session:
 
 ```json
-{"id":3,"type":"start_relay","session_id":"19c0-1","target":{"ingest_server":"rtmp://ingest.vrcdn.live/live","stream_key":"<secret>","playback_url":"rtspt://stream.vrcdn.live/live/<id>","start_seconds":0},"options":{"danmaku":{"enabled":true}}}
+{"id":3,"type":"start_relay","session_id":"19c0-1","start_seconds":0,"options":{"danmaku":{"enabled":true}}}
 ```
 
 A running Bilibili VOD can be replaced without exposing its temporary media
 URLs or duplicating the stop/start workflow in React:
 
 ```json
-{"id":4,"type":"retarget_relay","current_session_id":"19c0-1","source":"https://www.bilibili.com/video/BV1PGNQesEkG","requested_part":2,"target":{"ingest_server":"rtmp://ingest.vrcdn.live/live","stream_key":"<secret>","playback_url":"rtspt://stream.vrcdn.live/live/<id>","start_seconds":15},"options":{"danmaku":{"enabled":true}}}
+{"id":4,"type":"retarget_relay","current_session_id":"19c0-1","source":"https://www.bilibili.com/video/BV1PGNQesEkG","requested_part":2,"start_seconds":15,"options":{"danmaku":{"enabled":true}}}
 ```
 
 The playback URL is an independent value copied from VRCDN. It is never
 constructed from the secret stream key.
 
+Settings use a separate read/update interface. Omitting `streamKey` preserves
+the stored value; an empty value explicitly clears it. Replies never echo it:
+
+```json
+{"id":5,"type":"get_settings"}
+{"id":6,"type":"save_settings","settings":{"host":"vrcdn.live","playbackUrl":"rtspt://stream.vrcdn.live/live/<id>","theme":"system","streamKey":"<secret>"}}
+```
+
 When FFmpeg is missing, installation starts through the same protocol:
 
 ```json
-{"id":5,"type":"ensure_ffmpeg"}
+{"id":7,"type":"ensure_ffmpeg"}
 ```
 
 The immediate reply reports `installing`; subsequent `health` replies report
@@ -163,9 +183,9 @@ Bilibili QR login uses a short-lived opaque session. The UI starts a session,
 polls only that id, and can clear it without ever receiving the cookie:
 
 ```json
-{"id":6,"type":"begin_bilibili_login"}
-{"id":7,"type":"poll_bilibili_login","login_id":1}
-{"id":8,"type":"logout_bilibili"}
+{"id":8,"type":"begin_bilibili_login"}
+{"id":9,"type":"poll_bilibili_login","login_id":1}
+{"id":10,"type":"logout_bilibili"}
 ```
 
 Success and failure are explicit:
@@ -200,9 +220,10 @@ FFmpeg process.
 
 Implement future behaviour in this order so every slice crosses the same seam:
 
-1. Move persisted product settings behind the Rust interface.
-2. Add encrypted Windows credential persistence only after its lifecycle and
-   failure states are represented explicitly at the same boundary.
+1. Encrypt the persisted VRCDN stream key with a Windows user-scoped facility
+   while preserving migration and explicit recovery states.
+2. Decide separately whether Bilibili sessions should remain ephemeral or gain
+   an opt-in encrypted persistence lifecycle.
 
 The approved UI may keep reference data while a slice is under construction,
 but product actions must never manufacture a successful result in TypeScript.
