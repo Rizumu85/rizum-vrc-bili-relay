@@ -29,6 +29,9 @@ Current commands:
 - `health`
 - `inspect_source`
 - `resolve_source`
+- `start_relay`
+- `relay_status`
+- `stop_relay`
 - `shutdown`
 
 The first source inspection classifies video, live-room, and short links and
@@ -39,8 +42,18 @@ the best public H.264 DASH tracks. For live rooms it returns the canonical room
 id, title, live/replay/offline state, and the preferred public H.264 FLV or
 MPEG-TS candidate. Temporary upstream URLs stay inside the Rust module. The UI
 only receives a route decision describing whether FFmpeg or a relay is needed.
-It deliberately does not pretend that a playback URL or relay has already been
-created.
+When a usable input is found, Rust retains it in a ten-minute media session and
+returns only the opaque session id. `start_relay` validates the user-provided
+VRCDN target and starts FFmpeg from that private session. `relay_status` reports
+starting, running, completed, stopped, or failed; running requires observed
+FFmpeg media progress, not merely a live operating-system process.
+
+Temporary upstream URLs never cross into React. The stream key is supplied by
+the settings UI only in the `start_relay` command and is never returned or
+logged. FFmpeg is launched without a shell or console window. Its bounded
+diagnostic tail is scrubbed of the output URL and stream key before it can be
+returned. Replacing, stopping, or dropping a session kills and waits for its
+child process.
 
 ## Wire protocol
 
@@ -56,6 +69,15 @@ Network resolution uses a separate command so callers can inspect without I/O:
 ```json
 {"id":2,"type":"resolve_source","source":"https://www.bilibili.com/video/BV1UCVn66Eww?p=2"}
 ```
+
+Resolved media can then be published through its opaque session:
+
+```json
+{"id":3,"type":"start_relay","session_id":"19c0-1","target":{"ingest_server":"rtmp://ingest.vrcdn.live/live","stream_key":"<secret>","playback_url":"rtspt://stream.vrcdn.live/live/<id>","start_seconds":0}}
+```
+
+The playback URL is an independent value copied from VRCDN. It is never
+constructed from the secret stream key.
 
 Success and failure are explicit:
 
@@ -82,19 +104,18 @@ sibling path.
 
 The worker exits after a `shutdown` command or when its stdin closes. Killing or
 closing the GPUIX host therefore does not intentionally leave a background
-worker running.
+worker running. Dropping the Rust session store also terminates every owned
+FFmpeg process.
 
 ## Next Rust slices
 
 Implement future behaviour in this order so every slice crosses the same seam:
 
-1. Persist resolved upstream details in a short-lived Rust media session.
-2. Start and stop FFmpeg from that session with clean cancellation.
-3. Manage the local playback server and VRCDN publishing lifecycle.
-4. Return the generated VRChat playback URL and live job state.
-5. Download, verify, select, and launch a managed FFmpeg when the system copy is missing.
-6. Fetch danmaku and render ASS filters through FFmpeg.
-7. Move persisted product settings and credentials behind the Rust interface.
+1. Add local direct/proxy playback for sources that do not require VRCDN.
+2. Download, verify, select, and launch a managed FFmpeg when the system copy is missing.
+3. Fetch danmaku and render ASS filters through FFmpeg.
+4. Restart a VOD relay at a changed part or playback position.
+5. Move persisted product settings and credentials behind the Rust interface.
 
 The approved UI may keep reference data while a slice is under construction,
 but product actions must never manufacture a successful result in TypeScript.

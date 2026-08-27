@@ -5,7 +5,7 @@ use relay_core::{RelayCore, RequestEnvelope, ResponseEnvelope};
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 
 fn main() -> io::Result<()> {
-    let core = RelayCore::new();
+    let mut core = RelayCore::new();
     let stdin = io::stdin();
     let mut stdout = BufWriter::new(io::stdout().lock());
     let mut line = String::new();

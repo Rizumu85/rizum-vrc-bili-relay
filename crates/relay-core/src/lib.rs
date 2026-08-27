@@ -4,10 +4,13 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 mod bilibili;
+mod ffmpeg;
+mod media_session;
 
 use bilibili::BilibiliClient;
+use media_session::MediaSessionStore;
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -27,6 +30,16 @@ pub enum Command {
         source: String,
         #[serde(default)]
         requested_part: Option<u32>,
+    },
+    StartRelay {
+        session_id: String,
+        target: RelayTarget,
+    },
+    RelayStatus {
+        session_id: String,
+    },
+    StopRelay {
+        session_id: String,
     },
     Shutdown,
 }
@@ -67,6 +80,9 @@ pub enum Reply {
     },
     SourceResolution {
         resolution: SourceResolution,
+    },
+    RelayState {
+        relay: RelayStatus,
     },
     ShutdownAccepted,
 }
@@ -132,6 +148,39 @@ pub struct SourceResolution {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_status: Option<LiveStatus>,
     pub routing: RouteDecision,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_expires_in_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RelayTarget {
+    pub ingest_server: String,
+    pub stream_key: String,
+    pub playback_url: String,
+    #[serde(default)]
+    pub start_seconds: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RelayStatus {
+    pub session_id: String,
+    pub stage: RelayStage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playback_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RelayStage {
+    Starting,
+    Running,
+    Completed,
+    Stopped,
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -176,6 +225,19 @@ pub enum MediaFormat {
     MpegTs,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct MediaInput {
+    pub video_url: String,
+    pub audio_url: Option<String>,
+    pub referer: String,
+    pub is_live: bool,
+}
+
+pub(crate) struct ResolvedSource {
+    pub resolution: SourceResolution,
+    pub input: Option<MediaInput>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct VideoPart {
     pub page: u32,
@@ -211,6 +273,7 @@ pub enum NextStep {
 pub struct RelayCore {
     ffmpeg: FfmpegStatus,
     bilibili: BilibiliClient,
+    sessions: MediaSessionStore,
 }
 
 impl Default for RelayCore {
@@ -224,10 +287,11 @@ impl RelayCore {
         Self {
             ffmpeg: detect_ffmpeg(),
             bilibili: BilibiliClient::new(),
+            sessions: MediaSessionStore::new(),
         }
     }
 
-    pub fn handle(&self, command: Command) -> Result<Reply, RelayError> {
+    pub fn handle(&mut self, command: Command) -> Result<Reply, RelayError> {
         match command {
             Command::Health => Ok(Reply::Health {
                 protocol_version: PROTOCOL_VERSION,
@@ -240,10 +304,27 @@ impl RelayCore {
             Command::ResolveSource {
                 source,
                 requested_part,
-            } => Ok(Reply::SourceResolution {
-                resolution: self.bilibili.resolve(&source, requested_part)?,
+            } => {
+                let resolved = self.bilibili.resolve(&source, requested_part)?;
+                Ok(Reply::SourceResolution {
+                    resolution: self.sessions.prepare(resolved),
+                })
+            }
+            Command::StartRelay { session_id, target } => Ok(Reply::RelayState {
+                relay: self
+                    .sessions
+                    .start(&session_id, target, self.ffmpeg.path.as_deref())?,
             }),
-            Command::Shutdown => Ok(Reply::ShutdownAccepted),
+            Command::RelayStatus { session_id } => Ok(Reply::RelayState {
+                relay: self.sessions.status(&session_id)?,
+            }),
+            Command::StopRelay { session_id } => Ok(Reply::RelayState {
+                relay: self.sessions.stop(&session_id)?,
+            }),
+            Command::Shutdown => {
+                self.sessions.shutdown();
+                Ok(Reply::ShutdownAccepted)
+            }
         }
     }
 }

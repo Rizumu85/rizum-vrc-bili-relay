@@ -1,4 +1,4 @@
-export const RELAY_PROTOCOL_VERSION = 3;
+export const RELAY_PROTOCOL_VERSION = 4;
 
 export type SourceKind = "video" | "live" | "short_link";
 export type RelayNextStep =
@@ -31,6 +31,22 @@ export interface SourceResolution {
   duration_seconds?: number;
   live_status?: "offline" | "live" | "replay";
   routing: RouteDecision;
+  session_id?: string;
+  session_expires_in_seconds?: number;
+}
+
+export interface RelayTarget {
+  ingest_server: string;
+  stream_key: string;
+  playback_url: string;
+  start_seconds?: number;
+}
+
+export interface RelayStatus {
+  session_id: string;
+  stage: "starting" | "running" | "completed" | "stopped" | "failed";
+  playback_url?: string;
+  diagnostic?: string;
 }
 
 export interface RouteDecision {
@@ -71,6 +87,11 @@ export interface SourceResolutionReply {
   resolution: SourceResolution;
 }
 
+export interface RelayStateReply {
+  type: "relay_state";
+  relay: RelayStatus;
+}
+
 export interface ShutdownAcceptedReply {
   type: "shutdown_accepted";
 }
@@ -79,6 +100,7 @@ export type RelayReply =
   | HealthReply
   | SourceInspectionReply
   | SourceResolutionReply
+  | RelayStateReply
   | ShutdownAcceptedReply;
 
 export interface RelayFailure {

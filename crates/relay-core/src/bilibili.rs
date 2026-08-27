@@ -6,8 +6,8 @@ use serde_json::Value;
 use url::Url;
 
 use crate::{
-    LiveStatus, MediaFormat, RelayError, RouteDecision, RouteKind, RouteReason, SourceKind,
-    SourceResolution, VideoPart, inspect_source,
+    LiveStatus, MediaFormat, MediaInput, RelayError, ResolvedSource, RouteDecision, RouteKind,
+    RouteReason, SourceKind, SourceResolution, VideoPart, inspect_source,
 };
 
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
@@ -32,7 +32,7 @@ impl BilibiliClient {
         &self,
         source: &str,
         requested_part: Option<u32>,
-    ) -> Result<SourceResolution, RelayError> {
+    ) -> Result<ResolvedSource, RelayError> {
         let inspection = inspect_source(source)?;
         match inspection.kind {
             SourceKind::ShortLink => {
@@ -68,7 +68,7 @@ impl BilibiliClient {
         source: &str,
         source_id: Option<String>,
         requested_part: Option<u32>,
-    ) -> Result<SourceResolution, RelayError> {
+    ) -> Result<ResolvedSource, RelayError> {
         let source_id = source_id
             .ok_or_else(|| RelayError::new("invalid_video", "Bilibili video id is missing"))?;
         let query = if source_id.to_ascii_lowercase().starts_with("av") {
@@ -128,22 +128,28 @@ impl BilibiliClient {
                     "Selected Bilibili video part is missing",
                 )
             })?;
-        let routing = self.resolve_video_route(&bvid, selected_cid)?;
+        let referer = format!("https://www.bilibili.com/video/{bvid}");
+        let (routing, input) = self.resolve_video_route(&bvid, selected_cid, &referer)?;
 
-        Ok(SourceResolution {
-            kind: SourceKind::Video,
-            source_id: bvid.clone(),
-            canonical_url: format!("https://www.bilibili.com/video/{bvid}"),
-            title,
-            parts,
-            selected_part: Some(selected_part),
-            duration_seconds,
-            live_status: None,
-            routing,
+        Ok(ResolvedSource {
+            resolution: SourceResolution {
+                kind: SourceKind::Video,
+                source_id: bvid.clone(),
+                canonical_url: referer,
+                title,
+                parts,
+                selected_part: Some(selected_part),
+                duration_seconds,
+                live_status: None,
+                routing,
+                session_id: None,
+                session_expires_in_seconds: None,
+            },
+            input: Some(input),
         })
     }
 
-    fn resolve_live(&self, source_id: Option<String>) -> Result<SourceResolution, RelayError> {
+    fn resolve_live(&self, source_id: Option<String>) -> Result<ResolvedSource, RelayError> {
         let requested_room = source_id.ok_or_else(|| {
             RelayError::new("invalid_live_room", "Bilibili live room id is missing")
         })?;
@@ -181,26 +187,40 @@ impl BilibiliClient {
         let title = string_field(info, "title")
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| format!("Bilibili 直播间 {canonical_room}"));
-        let routing = match live_status {
-            LiveStatus::Live => self.resolve_live_route(&canonical_room)?,
-            LiveStatus::Replay => unavailable_route(RouteReason::SourceReplay),
-            LiveStatus::Offline => unavailable_route(RouteReason::SourceOffline),
+        let referer = format!("https://live.bilibili.com/{canonical_room}");
+        let (routing, input) = match live_status {
+            LiveStatus::Live => {
+                let (routing, input) = self.resolve_live_route(&canonical_room, &referer)?;
+                (routing, Some(input))
+            }
+            LiveStatus::Replay => (unavailable_route(RouteReason::SourceReplay), None),
+            LiveStatus::Offline => (unavailable_route(RouteReason::SourceOffline), None),
         };
 
-        Ok(SourceResolution {
-            kind: SourceKind::Live,
-            source_id: canonical_room.clone(),
-            canonical_url: format!("https://live.bilibili.com/{canonical_room}"),
-            title,
-            parts: Vec::new(),
-            selected_part: None,
-            duration_seconds: None,
-            live_status: Some(live_status),
-            routing,
+        Ok(ResolvedSource {
+            resolution: SourceResolution {
+                kind: SourceKind::Live,
+                source_id: canonical_room,
+                canonical_url: referer,
+                title,
+                parts: Vec::new(),
+                selected_part: None,
+                duration_seconds: None,
+                live_status: Some(live_status),
+                routing,
+                session_id: None,
+                session_expires_in_seconds: None,
+            },
+            input,
         })
     }
 
-    fn resolve_video_route(&self, bvid: &str, cid: u64) -> Result<RouteDecision, RelayError> {
+    fn resolve_video_route(
+        &self,
+        bvid: &str,
+        cid: u64,
+        referer: &str,
+    ) -> Result<(RouteDecision, MediaInput), RelayError> {
         let endpoint = "https://api.bilibili.com/x/player/playurl".to_string()
             + &format!("?bvid={bvid}&cid={cid}&qn=80&fnval=16&fnver=0&fourk=1");
         let root = self.get_json(&endpoint, &format!("https://www.bilibili.com/video/{bvid}"))?;
@@ -239,21 +259,33 @@ impl BilibiliClient {
                 .unwrap_or_default(),
         );
 
-        Ok(RouteDecision {
-            kind: RouteKind::RelayWithFfmpeg,
-            reason: if has_separate_audio {
-                RouteReason::DashTracks
-            } else {
-                RouteReason::RequiresHeaders
+        Ok((
+            RouteDecision {
+                kind: RouteKind::RelayWithFfmpeg,
+                reason: if has_separate_audio {
+                    RouteReason::DashTracks
+                } else {
+                    RouteReason::RequiresHeaders
+                },
+                media_format: Some(MediaFormat::Dash),
+                quality: Some(video.quality),
+                estimated_bitrate,
+                has_separate_audio,
             },
-            media_format: Some(MediaFormat::Dash),
-            quality: Some(video.quality),
-            estimated_bitrate,
-            has_separate_audio,
-        })
+            MediaInput {
+                video_url: video.url,
+                audio_url: audio.map(|track| track.url),
+                referer: referer.to_string(),
+                is_live: false,
+            },
+        ))
     }
 
-    fn resolve_live_route(&self, room_id: &str) -> Result<RouteDecision, RelayError> {
+    fn resolve_live_route(
+        &self,
+        room_id: &str,
+        referer: &str,
+    ) -> Result<(RouteDecision, MediaInput), RelayError> {
         let endpoint = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo"
             .to_string()
             + &format!(
@@ -286,14 +318,22 @@ impl BilibiliClient {
             MediaFormat::Dash => RouteReason::RequiresHeaders,
         };
 
-        Ok(RouteDecision {
-            kind: RouteKind::RelayWithFfmpeg,
-            reason,
-            media_format: Some(selected.format),
-            quality: Some(selected.quality),
-            estimated_bitrate: None,
-            has_separate_audio: false,
-        })
+        Ok((
+            RouteDecision {
+                kind: RouteKind::RelayWithFfmpeg,
+                reason,
+                media_format: Some(selected.format),
+                quality: Some(selected.quality),
+                estimated_bitrate: None,
+                has_separate_audio: false,
+            },
+            MediaInput {
+                video_url: selected.url,
+                audio_url: None,
+                referer: referer.to_string(),
+                is_live: true,
+            },
+        ))
     }
 
     fn get_json(&self, endpoint: &str, referer: &str) -> Result<Value, RelayError> {
@@ -319,11 +359,13 @@ impl BilibiliClient {
 }
 
 struct DashTrack {
+    url: String,
     quality: u32,
     bandwidth: u64,
 }
 
 struct LiveCandidate {
+    url: String,
     format: MediaFormat,
     quality: u32,
     score: (u8, u8, u8),
@@ -339,10 +381,12 @@ fn select_dash_video(streams: &[Value]) -> Option<DashTrack> {
                 return None;
             }
             let quality = u32_field(stream, "id").unwrap_or_default();
-            if quality > 80 || read_media_url(stream).is_none() {
+            let url = read_media_url(stream)?;
+            if quality > 80 {
                 return None;
             }
             Some(DashTrack {
+                url: url.to_string(),
                 quality,
                 bandwidth: u64_field(stream, "bandwidth").unwrap_or_default(),
             })
@@ -354,8 +398,9 @@ fn select_dash_audio(streams: &[Value]) -> Option<DashTrack> {
     streams
         .iter()
         .filter_map(|stream| {
-            read_media_url(stream)?;
+            let url = read_media_url(stream)?;
             Some(DashTrack {
+                url: url.to_string(),
                 quality: u32_field(stream, "id").unwrap_or_default(),
                 bandwidth: u64_field(stream, "bandwidth").unwrap_or_default(),
             })
@@ -395,21 +440,21 @@ fn select_live_candidate(play_url: &Value) -> Option<LiveCandidate> {
                             }
                             let (media_format, format_score) = media_format.clone()?;
                             let url_info = codec.get("url_info")?.as_array()?;
-                            let has_valid_url = url_info.iter().any(|info| {
+                            let selected_url = url_info.iter().find_map(|info| {
                                 let host = string_field(info, "host").unwrap_or_default();
                                 let base = string_field(codec, "base_url").unwrap_or_default();
                                 let extra = string_field(info, "extra").unwrap_or_default();
                                 Url::parse(&(host + &base + &extra))
-                                    .is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+                                    .ok()
+                                    .filter(|url| matches!(url.scheme(), "http" | "https"))
                             });
-                            if !has_valid_url {
-                                return None;
-                            }
+                            let selected_url = selected_url?;
                             let uses_mcdn = url_info.iter().any(|info| {
                                 string_field(info, "host")
                                     .is_some_and(|host| host.to_ascii_lowercase().contains("mcdn"))
                             });
                             Some(LiveCandidate {
+                                url: selected_url.to_string(),
                                 format: media_format,
                                 quality: u32_field(codec, "current_qn").unwrap_or_default(),
                                 score: (protocol_score, format_score, u8::from(uses_mcdn)),

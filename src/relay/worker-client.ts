@@ -6,6 +6,9 @@ import {
   type HealthReply,
   type RelayReply,
   type RelayResponse,
+  type RelayStateReply,
+  type RelayStatus,
+  type RelayTarget,
   type SourceInspection,
   type SourceInspectionReply,
   type SourceResolution,
@@ -75,6 +78,18 @@ export class RelayWorkerClient {
     return (reply as SourceResolutionReply).resolution;
   }
 
+  async startRelay(sessionId: string, target: RelayTarget): Promise<RelayStatus> {
+    return this.relayRequest({ type: "start_relay", session_id: sessionId, target }, 20_000);
+  }
+
+  async relayStatus(sessionId: string): Promise<RelayStatus> {
+    return this.relayRequest({ type: "relay_status", session_id: sessionId });
+  }
+
+  async stopRelay(sessionId: string): Promise<RelayStatus> {
+    return this.relayRequest({ type: "stop_relay", session_id: sessionId });
+  }
+
   async close(): Promise<void> {
     if (this.closing) return;
     this.closing = true;
@@ -90,6 +105,21 @@ export class RelayWorkerClient {
       this.child = null;
       this.rejectPending(new RelayWorkerError("worker_closed", "Rust relay worker closed"));
     }
+  }
+
+  private async relayRequest(
+    command: Record<string, unknown>,
+    timeoutMs = 15_000,
+  ): Promise<RelayStatus> {
+    await this.health();
+    const reply = await this.request(command, timeoutMs);
+    if (reply.type !== "relay_state") {
+      throw new RelayWorkerError(
+        "protocol_mismatch",
+        `Expected relay state, received ${reply.type}`,
+      );
+    }
+    return (reply as RelayStateReply).relay;
   }
 
   private async request(

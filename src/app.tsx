@@ -21,7 +21,7 @@ import {
   type StoredSettings,
   type ThemePreference,
 } from "./settings-store";
-import { type HealthReply, type SourceResolution } from "./relay/protocol";
+import { type HealthReply, type RelayStatus, type SourceResolution } from "./relay/protocol";
 import { RelayWorkerClient, RelayWorkerError } from "./relay/worker-client";
 
 export type Scene = "loading" | "error" | "ready-vod" | "settings" | "danmaku";
@@ -741,7 +741,12 @@ function Result({
   danmaku,
   setDanmaku,
   onOpenDanmaku,
+  onOpenSettings,
+  onStopRelay,
   sourceResolution,
+  relayStatus,
+  relayError,
+  relayStopping,
 }: {
   palette: Palette;
   part: string;
@@ -749,13 +754,20 @@ function Result({
   danmaku: DanmakuVisibility;
   setDanmaku: (value: DanmakuVisibility) => void;
   onOpenDanmaku: () => void;
+  onOpenSettings: () => void;
+  onStopRelay: () => void;
   sourceResolution: SourceResolution | null;
+  relayStatus: RelayStatus | null;
+  relayError: string | null;
+  relayStopping: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const isReference = sourceResolution === null;
   const output = isReference
     ? VIDEO_OUTPUT.replace("{part}", part)
-    : routeDescription(sourceResolution);
+    : relayOutputDescription(sourceResolution, relayStatus, relayError);
+  const relayRunning = relayStatus?.stage === "running" && Boolean(relayStatus.playback_url);
+  const canCopy = isReference || relayRunning;
   const parts: PlaybackPart[] = sourceResolution?.kind === "video" && sourceResolution.parts?.length
     ? sourceResolution.parts.map((entry) => ({
         value: String(entry.page),
@@ -773,7 +785,7 @@ function Result({
         : "未开播";
 
   const copy = async () => {
-    if (!isReference) return;
+    if (!canCopy) return;
     await writeClipboard(output);
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
@@ -792,18 +804,14 @@ function Result({
       <div style={{ height: 16, display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
         <StatusDot color={palette.accentViolet} />
         <text style={{ color: palette.inkMuted, fontFamily: FONT_SERIF, fontSize: 11.5, fontWeight: 600 }}>
-          {isReference ? "VRChat 播放地址" : "媒体路由"}
+          {isReference || relayRunning ? "VRChat 播放地址" : "媒体路由"}
         </text>
         <div style={{ flexGrow: 1 }} />
         <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 9.5 }}>
           {sourceKindLabel}
         </text>
         <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 9.5 }}>
-          {isReference
-            ? "· 中继运行中 · 请保持开启"
-            : sourceResolution.routing.kind === "unavailable"
-              ? "· 当前无法生成地址"
-              : "· 媒体已探测 · 等待中继"}
+          {resultStatusLabel(isReference, sourceResolution, relayStatus, relayError)}
         </text>
       </div>
 
@@ -897,7 +905,7 @@ function Result({
         >
           {output}
         </text>
-        {isReference ? (
+        {canCopy ? (
           <IconButton
             name={copied ? "check" : "copy"}
             palette={palette}
@@ -906,9 +914,59 @@ function Result({
             onClick={() => void copy()}
           />
         ) : null}
+        {!isReference && (relayStatus?.stage === "starting" || relayStatus?.stage === "running") ? (
+          <Button
+            label={relayStopping ? "停止中" : "停止"}
+            palette={palette}
+            quiet
+            disabled={relayStopping}
+            onClick={onStopRelay}
+          />
+        ) : null}
+        {!isReference && relayError && sourceResolution?.routing.kind !== "unavailable" ? (
+          <Button label="设置" palette={palette} quiet onClick={onOpenSettings} />
+        ) : null}
       </div>
     </div>
   );
+}
+
+function resultStatusLabel(
+  isReference: boolean,
+  source: SourceResolution | null,
+  relay: RelayStatus | null,
+  relayError: string | null,
+): string {
+  if (isReference) return "· 中继运行中 · 请保持开启";
+  if (source?.routing.kind === "unavailable") return "· 当前无法生成地址";
+  if (relayError && !relay) return "· 需要完成设置";
+  switch (relay?.stage) {
+    case "starting":
+      return "· 正在连接 VRCDN";
+    case "running":
+      return "· 中继运行中 · 请保持开启";
+    case "completed":
+      return "· 视频播放完成";
+    case "stopped":
+      return "· 中继已停止";
+    case "failed":
+      return "· 中继启动失败";
+    default:
+      return "· 媒体已探测 · 等待中继";
+  }
+}
+
+function relayOutputDescription(
+  source: SourceResolution,
+  relay: RelayStatus | null,
+  relayError: string | null,
+): string {
+  if (relay?.stage === "running" && relay.playback_url) return relay.playback_url;
+  if (relay?.stage === "starting") return "正在启动 FFmpeg 并连接 VRCDN";
+  if (relay?.stage === "completed") return "视频已播放完成";
+  if (relay?.stage === "stopped") return "中继已停止，重新生成地址即可再次启动";
+  if (relay?.stage === "failed") return relayError ?? "中继启动失败，检查设置后再试";
+  return relayError ?? routeDescription(source);
 }
 
 function routeDescription(source: SourceResolution): string {
@@ -1539,7 +1597,7 @@ function SettingsView({
     [],
   );
 
-  const update = (key: "host" | "key" | "playbackPrefix", value: string) =>
+  const update = (key: "host" | "key" | "playbackUrl", value: string) =>
     setSettings((current) => ({ ...current, [key]: value }));
   const updateLogin = (login: LoginMode) => setSettings((current) => ({ ...current, login }));
   const updateTheme = (theme: ThemePreference) => {
@@ -1596,8 +1654,14 @@ function SettingsView({
             </div>
           </div>
           <div style={{ marginTop: 10 }}>
-            <Field label="播放地址前缀" palette={palette}>
-              <SettingsInput value={settings.playbackPrefix} onChange={(value) => update("playbackPrefix", value)} mono palette={palette} />
+            <Field label="播放地址" palette={palette}>
+              <SettingsInput
+                value={settings.playbackUrl}
+                onChange={(value) => update("playbackUrl", value)}
+                placeholder="从 VRCDN Live 页面复制"
+                mono
+                palette={palette}
+              />
             </Field>
           </div>
           <div style={{ height: 18, marginTop: 7, display: "flex", flexDirection: "row", alignItems: "center", gap: 7 }}>
@@ -1736,6 +1800,9 @@ export function AppSurface({
   const [danmaku, setDanmaku] = useState<DanmakuVisibility>("shown");
   const [danmakuSettings, setDanmakuSettings] = useState<DanmakuSettings>(DEFAULT_DANMAKU_SETTINGS);
   const [sourceResolution, setSourceResolution] = useState<SourceResolution | null>(null);
+  const [relayStatus, setRelayStatus] = useState<RelayStatus | null>(null);
+  const [relayError, setRelayError] = useState<string | null>(null);
+  const [relayStopping, setRelayStopping] = useState(false);
   const [conversionError, setConversionError] = useState("链接无法识别，检查后再试。");
   const [mediaState, setMediaState] = useState<MediaComponentState>("checking");
   const relayWorker = useRef<RelayWorkerClient | null>(null);
@@ -1768,21 +1835,86 @@ export function AppSurface({
     };
   }, []);
 
+  useEffect(() => {
+    if (!relayStatus || (relayStatus.stage !== "starting" && relayStatus.stage !== "running")) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      try {
+        const latest = await getRelayWorker().relayStatus(relayStatus.session_id);
+        if (!cancelled) {
+          setRelayStatus(latest);
+          if (latest.stage === "failed") setRelayError("中继启动失败，检查设置后再试。");
+          if (latest.stage === "starting" || latest.stage === "running") {
+            timer = setTimeout(poll, latest.stage === "starting" ? 700 : 2000);
+          }
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setRelayError(relayErrorMessage(error));
+          timer = setTimeout(poll, 2000);
+        }
+      }
+    };
+    timer = setTimeout(poll, relayStatus.stage === "starting" ? 700 : 2000);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [relayStatus?.session_id, relayStatus?.stage]);
+
   const convert = async () => {
     const epoch = ++conversionEpoch.current;
     sceneBeforeConversion.current = scene;
     setConversionError("链接无法识别，检查后再试。");
+    setRelayError(null);
     setScene("loading");
     try {
+      if (relayStatus && (relayStatus.stage === "starting" || relayStatus.stage === "running")) {
+        await getRelayWorker().stopRelay(relayStatus.session_id);
+      }
+      setRelayStatus(null);
       const resolution = await getRelayWorker().resolveSource(source);
       if (conversionEpoch.current !== epoch) return;
       setSourceResolution(resolution);
       if (resolution.selected_part) setPart(String(resolution.selected_part));
       setScene("ready-vod");
+      if (resolution.routing.kind !== "unavailable" && resolution.session_id) {
+        const settings = readStoredSettings();
+        if (!settings.key.trim() || !settings.playbackUrl.trim()) {
+          setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
+          return;
+        }
+        try {
+          const started = await getRelayWorker().startRelay(resolution.session_id, {
+            ingest_server: settings.host,
+            stream_key: settings.key,
+            playback_url: settings.playbackUrl,
+            start_seconds: 0,
+          });
+          if (conversionEpoch.current === epoch) setRelayStatus(started);
+        } catch (error) {
+          if (conversionEpoch.current === epoch) setRelayError(relayErrorMessage(error));
+        }
+      }
     } catch (error) {
       if (conversionEpoch.current !== epoch) return;
       setConversionError(relayErrorMessage(error));
       setScene("error");
+    }
+  };
+
+  const stopRelay = async () => {
+    if (!relayStatus || relayStopping) return;
+    setRelayStopping(true);
+    try {
+      const stopped = await getRelayWorker().stopRelay(relayStatus.session_id);
+      setRelayStatus(stopped);
+      setRelayError(null);
+    } catch (error) {
+      setRelayError(relayErrorMessage(error));
+    } finally {
+      setRelayStopping(false);
     }
   };
 
@@ -1912,7 +2044,12 @@ export function AppSurface({
               danmaku={danmaku}
               setDanmaku={setDanmaku}
               onOpenDanmaku={() => showSubview("danmaku")}
+              onOpenSettings={() => showSubview("settings")}
+              onStopRelay={() => void stopRelay()}
               sourceResolution={sourceResolution}
+              relayStatus={relayStatus}
+              relayError={relayError}
+              relayStopping={relayStopping}
             />
           ) : null}
         </div>
@@ -1940,6 +2077,19 @@ function relayErrorMessage(error: unknown): string {
       return "没有找到可以转换的 H.264 媒体流。";
     case "login_required":
       return "这个内容需要登录后才能读取。";
+    case "ffmpeg_missing":
+      return "电脑上没有可用的 FFmpeg，请先在设置中下载。";
+    case "invalid_ingest_server":
+      return "VRCDN 服务器地址不正确。";
+    case "invalid_stream_key":
+      return "VRCDN 推流密钥为空或包含空格。";
+    case "invalid_playback_url":
+      return "请从 VRCDN Live 页面复制完整播放地址。";
+    case "media_session_not_found":
+      return "媒体信息已经过期，请重新生成地址。";
+    case "ffmpeg_start_failed":
+    case "ffmpeg_status_failed":
+      return "FFmpeg 无法启动，请检查视频处理设置。";
     case "worker_unavailable":
     case "worker_exited":
       return "视频处理服务没有启动，请重新打开软件。";

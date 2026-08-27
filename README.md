@@ -30,6 +30,10 @@ comparison. The first real Rust-backed vertical slice is now connected:
   and packaged-executable discovery;
 - source conversion uses the Rust network resolution instead of a frontend regex and timer;
 - FFmpeg discovery runs in Rust and feeds the existing settings surface;
+- resolved media is held in short-lived Rust sessions instead of exposing temporary Bilibili URLs to React;
+- Rust starts, observes, stops, and cleans up FFmpeg relay processes;
+- a relay is reported as running only after FFmpeg has produced media output;
+- the ready view now follows the real starting/running/completed/stopped/failed lifecycle;
 - release builds put `vrc-bili-relay-gpuix.exe` and `relay-worker.exe` together in `dist/`.
 
 The following UI interactions also remain live:
@@ -41,11 +45,15 @@ The following UI interactions also remain live:
 - copy the generated VRChat URL;
 - edit local VRCDN values and choose system/light/dark appearance.
 
-FFmpeg process orchestration, VRCDN streaming, managed FFmpeg download, account
-login, and danmaku rendering are the next Rust core slices. The untouched startup
-screen remains the approved visual reference.
-After the user submits a link, its title and part data are real, while the UI
-shows the real media route and explicitly marks it as waiting for FFmpeg relay startup.
+The current relay path remuxes the selected Bilibili H.264 video and audio into
+FLV and publishes it to the configured RTMP/RTMPS ingest. The user must copy the
+ingest server, stream key, and complete playback URL from VRCDN; a playback URL
+cannot be derived safely from the key. FFmpeg processes are stopped when the
+user stops a relay, starts a replacement, or closes the app.
+
+Managed FFmpeg download, account login, local direct/proxy playback, danmaku
+rendering, and richer playback controls remain future Rust core slices. The
+untouched startup screen remains the approved visual reference.
 
 ## Run
 

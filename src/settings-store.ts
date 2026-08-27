@@ -7,7 +7,7 @@ export type LoginMode = "guest" | "account";
 export interface StoredSettings {
   host: string;
   key: string;
-  playbackPrefix: string;
+  playbackUrl: string;
   login: LoginMode;
   theme: ThemePreference;
 }
@@ -15,7 +15,7 @@ export interface StoredSettings {
 export const DEFAULT_SETTINGS: StoredSettings = {
   host: "vrcdn.live",
   key: "",
-  playbackPrefix: "https://stream.vrcdn.live/play/",
+  playbackUrl: "",
   login: "guest",
   theme: "system",
 };
@@ -27,14 +27,19 @@ function settingsPath(): string {
 
 export function readStoredSettings(): StoredSettings {
   try {
-    const parsed = JSON.parse(readFileSync(settingsPath(), "utf8")) as Partial<StoredSettings>;
+    const parsed = JSON.parse(readFileSync(settingsPath(), "utf8")) as Partial<StoredSettings> & {
+      playbackPrefix?: unknown;
+    };
+    const legacyPlayback =
+      typeof parsed.playbackPrefix === "string" &&
+      parsed.playbackPrefix !== "https://stream.vrcdn.live/play/"
+        ? parsed.playbackPrefix
+        : "";
     return {
       host: typeof parsed.host === "string" ? parsed.host : DEFAULT_SETTINGS.host,
       key: typeof parsed.key === "string" ? parsed.key : DEFAULT_SETTINGS.key,
-      playbackPrefix:
-        typeof parsed.playbackPrefix === "string"
-          ? parsed.playbackPrefix
-          : DEFAULT_SETTINGS.playbackPrefix,
+      playbackUrl:
+        typeof parsed.playbackUrl === "string" ? parsed.playbackUrl : legacyPlayback,
       login: parsed.login === "account" ? "account" : "guest",
       theme:
         parsed.theme === "light" || parsed.theme === "dark" || parsed.theme === "system"
