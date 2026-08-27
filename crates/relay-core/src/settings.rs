@@ -39,7 +39,7 @@ impl StreamKeySecret {
         if plaintext.is_empty() {
             return Ok(Self::Missing);
         }
-        let protected = windows_secret::protect(&plaintext)?;
+        let protected = windows_secret::protect_stream_key(&plaintext)?;
         Ok(Self::Available {
             plaintext,
             protected,
@@ -47,7 +47,7 @@ impl StreamKeySecret {
     }
 
     fn from_protected(protected: String) -> Self {
-        match windows_secret::unprotect(&protected) {
+        match windows_secret::unprotect_stream_key(&protected) {
             Ok(plaintext) if validate_stream_key(&plaintext).is_ok() && !plaintext.is_empty() => {
                 Self::Available {
                     plaintext,

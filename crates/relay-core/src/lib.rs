@@ -3,6 +3,7 @@ use url::Url;
 
 mod bilibili;
 mod bilibili_auth;
+mod bilibili_session;
 mod danmaku;
 mod ffmpeg;
 mod ffmpeg_manager;
@@ -18,7 +19,7 @@ use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 use settings::SettingsStore;
 
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -243,6 +244,17 @@ pub struct BilibiliAuthStatus {
     pub expires_in_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub qr: Option<BilibiliLoginQr>,
+    pub persistence: BilibiliPersistenceStatus,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BilibiliPersistenceStatus {
+    #[default]
+    None,
+    Session,
+    Saved,
+    Unavailable,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -690,7 +702,7 @@ impl RelayCore {
                 auth: self.bilibili.poll_login(login_id)?,
             }),
             Command::LogoutBilibili => Ok(Reply::BilibiliAuthState {
-                auth: self.bilibili.logout(),
+                auth: self.bilibili.logout()?,
             }),
             Command::GetSettings => Ok(Reply::SettingsState {
                 settings: self.settings.load()?,

@@ -1,24 +1,21 @@
 use crate::RelayError;
 
-const ENTROPY: &[u8] = b"VRC Bili Relay stream key v1";
+const STREAM_KEY_ENTROPY: &[u8] = b"VRC Bili Relay stream key v1";
+const BILIBILI_SESSION_ENTROPY: &[u8] = b"VRC Bili Relay Bilibili session v1";
 
-#[cfg(windows)]
-pub(crate) fn protect(plaintext: &str) -> Result<String, RelayError> {
-    protect_bytes(plaintext.as_bytes()).map(|bytes| encode_hex(&bytes))
+pub(crate) fn protect_stream_key(plaintext: &str) -> Result<String, RelayError> {
+    protect_bytes(
+        plaintext.as_bytes(),
+        STREAM_KEY_ENTROPY,
+        "settings_encryption_failed",
+        "stream key",
+    )
+    .map(|bytes| encode_hex(&bytes))
 }
 
-#[cfg(not(windows))]
-pub(crate) fn protect(_plaintext: &str) -> Result<String, RelayError> {
-    Err(RelayError::new(
-        "settings_encryption_unavailable",
-        "Windows user-scoped encryption is unavailable on this platform",
-    ))
-}
-
-#[cfg(windows)]
-pub(crate) fn unprotect(protected: &str) -> Result<String, ()> {
+pub(crate) fn unprotect_stream_key(protected: &str) -> Result<String, ()> {
     let encoded = decode_hex(protected)?;
-    let mut plaintext = unprotect_bytes(&encoded).map_err(|_| ())?;
+    let mut plaintext = unprotect_bytes(&encoded, STREAM_KEY_ENTROPY).map_err(|_| ())?;
     match String::from_utf8(plaintext) {
         Ok(decoded) => Ok(decoded),
         Err(error) => {
@@ -29,13 +26,28 @@ pub(crate) fn unprotect(protected: &str) -> Result<String, ()> {
     }
 }
 
-#[cfg(not(windows))]
-pub(crate) fn unprotect(_protected: &str) -> Result<String, ()> {
-    Err(())
+pub(crate) fn protect_bilibili_session(plaintext: &[u8]) -> Result<String, RelayError> {
+    protect_bytes(
+        plaintext,
+        BILIBILI_SESSION_ENTROPY,
+        "bilibili_session_storage_failed",
+        "Bilibili session",
+    )
+    .map(|bytes| encode_hex(&bytes))
+}
+
+pub(crate) fn unprotect_bilibili_session(protected: &str) -> Result<Vec<u8>, ()> {
+    let encoded = decode_hex(protected)?;
+    unprotect_bytes(&encoded, BILIBILI_SESSION_ENTROPY).map_err(|_| ())
 }
 
 #[cfg(windows)]
-fn protect_bytes(input: &[u8]) -> Result<Vec<u8>, RelayError> {
+fn protect_bytes(
+    input: &[u8],
+    entropy: &[u8],
+    error_code: &'static str,
+    subject: &str,
+) -> Result<Vec<u8>, RelayError> {
     use std::ptr;
 
     use windows_sys::Win32::Foundation::GetLastError;
@@ -45,18 +57,18 @@ fn protect_bytes(input: &[u8]) -> Result<Vec<u8>, RelayError> {
 
     let input_length = u32::try_from(input.len()).map_err(|_| {
         RelayError::new(
-            "settings_encryption_failed",
-            "The stream key is too large for Windows encryption",
+            error_code,
+            format!("The {subject} is too large for Windows encryption"),
         )
     })?;
-    let entropy_length = u32::try_from(ENTROPY.len()).expect("DPAPI entropy fits in u32");
+    let entropy_length = u32::try_from(entropy.len()).expect("DPAPI entropy fits in u32");
     let input_blob = CRYPT_INTEGER_BLOB {
         cbData: input_length,
         pbData: input.as_ptr().cast_mut(),
     };
     let entropy_blob = CRYPT_INTEGER_BLOB {
         cbData: entropy_length,
-        pbData: ENTROPY.as_ptr().cast_mut(),
+        pbData: entropy.as_ptr().cast_mut(),
     };
     let mut output_blob = CRYPT_INTEGER_BLOB {
         cbData: 0,
@@ -81,22 +93,35 @@ fn protect_bytes(input: &[u8]) -> Result<Vec<u8>, RelayError> {
         // the failed Win32 call.
         let code = unsafe { GetLastError() };
         return Err(RelayError::new(
-            "settings_encryption_failed",
-            format!("Windows could not encrypt the stream key (error {code})"),
+            error_code,
+            format!("Windows could not encrypt the {subject} (error {code})"),
         ));
     }
 
     let output = copy_and_free(output_blob.pbData, output_blob.cbData);
     output.ok_or_else(|| {
         RelayError::new(
-            "settings_encryption_failed",
-            "Windows returned an invalid encrypted stream key",
+            error_code,
+            format!("Windows returned an invalid encrypted {subject}"),
         )
     })
 }
 
+#[cfg(not(windows))]
+fn protect_bytes(
+    _input: &[u8],
+    _entropy: &[u8],
+    error_code: &'static str,
+    subject: &str,
+) -> Result<Vec<u8>, RelayError> {
+    Err(RelayError::new(
+        error_code,
+        format!("Windows user-scoped encryption is unavailable for the {subject}"),
+    ))
+}
+
 #[cfg(windows)]
-fn unprotect_bytes(input: &[u8]) -> Result<Vec<u8>, u32> {
+fn unprotect_bytes(input: &[u8], entropy: &[u8]) -> Result<Vec<u8>, u32> {
     use std::ptr;
 
     use windows_sys::Win32::Foundation::GetLastError;
@@ -105,14 +130,14 @@ fn unprotect_bytes(input: &[u8]) -> Result<Vec<u8>, u32> {
     };
 
     let input_length = u32::try_from(input.len()).map_err(|_| u32::MAX)?;
-    let entropy_length = u32::try_from(ENTROPY.len()).expect("DPAPI entropy fits in u32");
+    let entropy_length = u32::try_from(entropy.len()).expect("DPAPI entropy fits in u32");
     let input_blob = CRYPT_INTEGER_BLOB {
         cbData: input_length,
         pbData: input.as_ptr().cast_mut(),
     };
     let entropy_blob = CRYPT_INTEGER_BLOB {
         cbData: entropy_length,
-        pbData: ENTROPY.as_ptr().cast_mut(),
+        pbData: entropy.as_ptr().cast_mut(),
     };
     let mut output_blob = CRYPT_INTEGER_BLOB {
         cbData: 0,
@@ -139,6 +164,11 @@ fn unprotect_bytes(input: &[u8]) -> Result<Vec<u8>, u32> {
     }
 
     copy_and_free(output_blob.pbData, output_blob.cbData).ok_or(u32::MAX)
+}
+
+#[cfg(not(windows))]
+fn unprotect_bytes(_input: &[u8], _entropy: &[u8]) -> Result<Vec<u8>, u32> {
+    Err(u32::MAX)
 }
 
 #[cfg(windows)]

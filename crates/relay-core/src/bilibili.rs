@@ -45,7 +45,7 @@ impl BilibiliClient {
         self.auth.poll(login_id)
     }
 
-    pub fn logout(&mut self) -> BilibiliAuthStatus {
+    pub fn logout(&mut self) -> Result<BilibiliAuthStatus, RelayError> {
         self.auth.logout()
     }
 

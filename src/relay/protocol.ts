@@ -1,4 +1,4 @@
-export const RELAY_PROTOCOL_VERSION = 12;
+export const RELAY_PROTOCOL_VERSION = 13;
 
 export type SourceKind = "video" | "live" | "media" | "short_link";
 export type RelayNextStep =
@@ -125,6 +125,8 @@ export type BilibiliAuthStage =
   | "authenticated"
   | "expired";
 
+export type BilibiliPersistenceStatus = "none" | "session" | "saved" | "unavailable";
+
 export interface BilibiliLoginQr {
   size: number;
   path: string;
@@ -132,6 +134,7 @@ export interface BilibiliLoginQr {
 
 export interface BilibiliAuthStatus {
   stage: BilibiliAuthStage;
+  persistence: BilibiliPersistenceStatus;
   login_id?: number;
   display_name?: string;
   user_id?: number;

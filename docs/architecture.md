@@ -96,8 +96,17 @@ React receives only an opaque login id, display state, account name after
 success, and the QR module path needed for the visible code. The QR session key
 and authenticated cookies remain inside Rust. Successful credentials are
 validated against Bilibili's navigation endpoint, then attached to metadata and
-danmaku requests. Logout clears both pending and authenticated state. This slice
-is intentionally memory-only; it does not enter the product settings file.
+danmaku requests. `bilibili_session` encrypts the validated cookie, account name,
+and UID as one DPAPI payload using entropy distinct from the VRCDN stream key.
+The payload lives in `bilibili-session.json`, never in product settings. QR login
+is the explicit opt-in; returning to guest mode deletes primary, backup, and
+temporary session files before the in-memory account is cleared.
+
+The auth reply reports only `none`, `session`, `saved`, or `unavailable`
+persistence state. A storage failure does not discard a newly validated login:
+it remains usable for the current run and the UI labels it `session`. An
+unreadable or user-mismatched DPAPI payload starts in guest mode and can be
+replaced by scanning again or removed by returning to guest mode.
 
 `settings` is the only module that reads or writes product configuration. It
 loads the existing `%LOCALAPPDATA%\VRC Bili Relay\settings.json` shape, accepts
@@ -218,11 +227,11 @@ closing the GPUIX host therefore does not intentionally leave a background
 worker running. Dropping the Rust session store also terminates every owned
 FFmpeg process.
 
-## Next Rust slice
+## Next product boundary
 
-Decide whether Bilibili sessions should remain ephemeral or gain an opt-in
-encrypted persistence lifecycle. This decision stays separate from VRCDN key
-storage because a Bilibili session has different revocation and expiry rules.
+The core media, FFmpeg, danmaku, settings, and authentication seams are now
+implemented. Further slices should start from a user-visible gap rather than
+adding another transport or persistence layer speculatively.
 
 The approved UI may keep reference data while a slice is under construction,
 but product actions must never manufacture a successful result in TypeScript.

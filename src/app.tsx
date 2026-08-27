@@ -1013,7 +1013,7 @@ function BilibiliLoginPopover({
         <Button label="重新生成" palette={palette} disabled={busy} onClick={onBegin} />
       ) : null}
       <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 9.5 }}>
-        登录信息只在本次运行中使用
+        登录成功后会加密保存在本机
       </text>
     </motion.div>
   );
@@ -2126,8 +2126,12 @@ function SettingsView({
             title="B 站账号"
             subtitle={
               bilibiliAuth?.stage === "authenticated"
-                ? `已登录 · ${bilibiliAuth.display_name ?? "Bilibili 用户"}`
-                : "公开内容可直接使用访客模式"
+                ? bilibiliAuth.persistence === "session"
+                  ? `已登录 · ${bilibiliAuth.display_name ?? "Bilibili 用户"} · 仅本次`
+                  : `已登录 · ${bilibiliAuth.display_name ?? "Bilibili 用户"}`
+                : bilibiliAuth?.persistence === "unavailable"
+                  ? "本机登录信息无法读取，请重新扫码"
+                  : "公开内容可直接使用访客模式"
             }
             compact
             palette={palette}
@@ -2458,7 +2462,7 @@ export function AppSurface({
           error instanceof RelayWorkerError &&
           error.code === "bilibili_login_session_not_found"
         ) {
-          applyBilibiliAuth({ stage: "expired" });
+          applyBilibiliAuth({ stage: "expired", persistence: "none" });
           return;
         }
         timer = setTimeout(poll, 2500);
@@ -2947,6 +2951,8 @@ function relayErrorMessage(error: unknown): string {
       return "登录没有完成，请重新生成二维码。";
     case "bilibili_login_session_not_found":
       return "二维码已经失效，请重新生成。";
+    case "bilibili_session_storage_failed":
+      return "本机登录信息暂时无法更新，请重试。";
     case "settings_read_failed":
       return "本机设置暂时无法读取。";
     case "settings_write_failed":

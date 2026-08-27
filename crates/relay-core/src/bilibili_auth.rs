@@ -9,7 +9,10 @@ use reqwest::header::{ACCEPT, COOKIE, REFERER, SET_COOKIE, USER_AGENT};
 use serde_json::Value;
 use url::Url;
 
-use crate::{BilibiliAuthStage, BilibiliAuthStatus, BilibiliLoginQr, RelayError};
+use crate::bilibili_session::{BilibiliSessionStore, StoredBilibiliSession, StoredSessionLoad};
+use crate::{
+    BilibiliAuthStage, BilibiliAuthStatus, BilibiliLoginQr, BilibiliPersistenceStatus, RelayError,
+};
 
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
@@ -38,6 +41,8 @@ pub(crate) struct BilibiliAuthService {
     http: Client,
     credentials: Option<Credentials>,
     pending: Option<PendingLogin>,
+    persistence: BilibiliPersistenceStatus,
+    session_store: BilibiliSessionStore,
     next_login_id: u64,
 }
 
@@ -56,10 +61,25 @@ struct PendingLogin {
 
 impl BilibiliAuthService {
     pub fn new(http: Client) -> Self {
+        let session_store = BilibiliSessionStore::new();
+        let (credentials, persistence) = match session_store.load() {
+            StoredSessionLoad::Missing => (None, BilibiliPersistenceStatus::None),
+            StoredSessionLoad::Available(session) => (
+                Some(Credentials {
+                    cookie: session.cookie,
+                    display_name: session.display_name,
+                    user_id: session.user_id,
+                }),
+                BilibiliPersistenceStatus::Saved,
+            ),
+            StoredSessionLoad::Unavailable => (None, BilibiliPersistenceStatus::Unavailable),
+        };
         Self {
             http,
-            credentials: None,
+            credentials,
             pending: None,
+            persistence,
+            session_store,
             next_login_id: 1,
         }
     }
@@ -77,12 +97,13 @@ impl BilibiliAuthService {
                 user_id: Some(credentials.user_id),
                 expires_in_seconds: None,
                 qr: None,
+                persistence: self.persistence,
             };
         }
         if let Some(pending) = &self.pending {
-            return pending_status(pending, None);
+            return pending_status(pending, None, self.persistence);
         }
-        guest_status(BilibiliAuthStage::Guest)
+        guest_status(BilibiliAuthStage::Guest, self.persistence)
     }
 
     pub fn begin(&mut self) -> Result<BilibiliAuthStatus, RelayError> {
@@ -103,7 +124,9 @@ impl BilibiliAuthService {
         let qr = render_qr(&url)?;
         let id = self.next_login_id;
         self.next_login_id = self.next_login_id.wrapping_add(1).max(1);
+        self.session_store.clear()?;
         self.credentials = None;
+        self.persistence = BilibiliPersistenceStatus::None;
         self.pending = Some(PendingLogin {
             id,
             key,
@@ -113,6 +136,7 @@ impl BilibiliAuthService {
         Ok(pending_status(
             self.pending.as_ref().expect("login session was stored"),
             Some(qr),
+            self.persistence,
         ))
     }
 
@@ -123,7 +147,7 @@ impl BilibiliAuthService {
         }
         if pending.expires_at <= Instant::now() {
             self.pending = None;
-            return Ok(guest_status(BilibiliAuthStage::Expired));
+            return Ok(guest_status(BilibiliAuthStage::Expired, self.persistence));
         }
         let key = pending.key.clone();
         let response = self
@@ -143,12 +167,25 @@ impl BilibiliAuthService {
             86090 => self.update_pending_stage(BilibiliAuthStage::Scanned),
             86038 => {
                 self.pending = None;
-                Ok(guest_status(BilibiliAuthStage::Expired))
+                Ok(guest_status(BilibiliAuthStage::Expired, self.persistence))
             }
             0 => {
                 let redirect_url = data.get("url").and_then(Value::as_str);
                 let cookie = collect_cookies(&headers, redirect_url)?;
                 let credentials = self.validate_credentials(cookie)?;
+                self.persistence = if self
+                    .session_store
+                    .save(&StoredBilibiliSession {
+                        cookie: credentials.cookie.clone(),
+                        display_name: credentials.display_name.clone(),
+                        user_id: credentials.user_id,
+                    })
+                    .is_ok()
+                {
+                    BilibiliPersistenceStatus::Saved
+                } else {
+                    BilibiliPersistenceStatus::Session
+                };
                 let status = BilibiliAuthStatus {
                     stage: BilibiliAuthStage::Authenticated,
                     login_id: None,
@@ -156,6 +193,7 @@ impl BilibiliAuthService {
                     user_id: Some(credentials.user_id),
                     expires_in_seconds: None,
                     qr: None,
+                    persistence: self.persistence,
                 };
                 self.credentials = Some(credentials);
                 self.pending = None;
@@ -168,10 +206,12 @@ impl BilibiliAuthService {
         }
     }
 
-    pub fn logout(&mut self) -> BilibiliAuthStatus {
+    pub fn logout(&mut self) -> Result<BilibiliAuthStatus, RelayError> {
+        self.session_store.clear()?;
         self.credentials = None;
         self.pending = None;
-        guest_status(BilibiliAuthStage::Guest)
+        self.persistence = BilibiliPersistenceStatus::None;
+        Ok(guest_status(BilibiliAuthStage::Guest, self.persistence))
     }
 
     fn update_pending_stage(
@@ -180,7 +220,7 @@ impl BilibiliAuthService {
     ) -> Result<BilibiliAuthStatus, RelayError> {
         let pending = self.pending.as_mut().ok_or_else(login_session_missing)?;
         pending.stage = stage;
-        Ok(pending_status(pending, None))
+        Ok(pending_status(pending, None, self.persistence))
     }
 
     fn validate_credentials(&self, cookie: String) -> Result<Credentials, RelayError> {
@@ -222,7 +262,11 @@ impl BilibiliAuthService {
     }
 }
 
-fn pending_status(pending: &PendingLogin, qr: Option<BilibiliLoginQr>) -> BilibiliAuthStatus {
+fn pending_status(
+    pending: &PendingLogin,
+    qr: Option<BilibiliLoginQr>,
+    persistence: BilibiliPersistenceStatus,
+) -> BilibiliAuthStatus {
     BilibiliAuthStatus {
         stage: pending.stage,
         login_id: Some(pending.id),
@@ -236,10 +280,14 @@ fn pending_status(pending: &PendingLogin, qr: Option<BilibiliLoginQr>) -> Bilibi
                 .max(1),
         ),
         qr,
+        persistence,
     }
 }
 
-fn guest_status(stage: BilibiliAuthStage) -> BilibiliAuthStatus {
+fn guest_status(
+    stage: BilibiliAuthStage,
+    persistence: BilibiliPersistenceStatus,
+) -> BilibiliAuthStatus {
     BilibiliAuthStatus {
         stage,
         login_id: None,
@@ -247,6 +295,7 @@ fn guest_status(stage: BilibiliAuthStage) -> BilibiliAuthStatus {
         user_id: None,
         expires_in_seconds: None,
         qr: None,
+        persistence,
     }
 }
 
