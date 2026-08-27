@@ -1,4 +1,4 @@
-export const RELAY_PROTOCOL_VERSION = 6;
+export const RELAY_PROTOCOL_VERSION = 7;
 
 export type SourceKind = "video" | "live" | "media" | "short_link";
 export type RelayNextStep =
@@ -48,6 +48,7 @@ export interface RelayStatus {
   session_id: string;
   stage: "starting" | "running" | "completed" | "stopped" | "failed";
   playback_url?: string;
+  position_seconds?: number;
   diagnostic?: string;
 }
 
@@ -100,6 +101,12 @@ export interface RelayStateReply {
   relay: RelayStatus;
 }
 
+export interface PlaybackStateReply {
+  type: "playback_state";
+  resolution: SourceResolution;
+  relay: RelayStatus;
+}
+
 export interface FfmpegStateReply {
   type: "ffmpeg_state";
   ffmpeg: FfmpegStatus;
@@ -114,6 +121,7 @@ export type RelayReply =
   | SourceInspectionReply
   | SourceResolutionReply
   | RelayStateReply
+  | PlaybackStateReply
   | FfmpegStateReply
   | ShutdownAcceptedReply;
 

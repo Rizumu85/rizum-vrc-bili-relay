@@ -25,6 +25,7 @@ import {
   type FfmpegStatus,
   type HealthReply,
   type RelayStatus,
+  type RelayTarget,
   type SourceResolution,
 } from "./relay/protocol";
 import { RelayWorkerClient, RelayWorkerError } from "./relay/worker-client";
@@ -38,6 +39,7 @@ type DanmakuFont = "microsoft-yahei" | "noto-sans-sc" | "source-han-sans" | "sim
 type DanmakuWeight = "regular" | "bold";
 type DanmakuOutline = "heavy" | "outline" | "shadow";
 type DanmakuFilter = "rolling" | "fixed" | "colored" | "advanced";
+type PlaybackUpdate = "part" | "seek" | null;
 type MediaComponentState =
   | "checking"
   | "external"
@@ -168,6 +170,17 @@ async function writeClipboard(value: string): Promise<void> {
   } catch {
     // The output remains selectable even if the Windows clipboard command fails.
   }
+}
+
+function configuredRelayTarget(startSeconds: number): RelayTarget | null {
+  const settings = readStoredSettings();
+  if (!settings.key.trim() || !settings.playbackUrl.trim()) return null;
+  return {
+    ingest_server: settings.host,
+    stream_key: settings.key,
+    playback_url: settings.playbackUrl,
+    start_seconds: startSeconds,
+  };
 }
 
 function Icon({ name, size, color }: { name: IconName; size: number; color: string }) {
@@ -460,17 +473,24 @@ function PartSelect({
   setPart,
   parts,
   palette,
+  disabled,
 }: {
   part: string;
   setPart: (value: string) => void;
   parts: PlaybackPart[];
   palette: Palette;
+  disabled: boolean;
 }) {
   return (
-    <Select.Root value={part} onValueChange={setPart} style={{ flexGrow: 1, minWidth: 0 }}>
+    <Select.Root
+      value={part}
+      onValueChange={setPart}
+      disabled={disabled}
+      style={{ flexGrow: 1, minWidth: 0, opacity: disabled ? 0.62 : 1 }}
+    >
       <Select.Trigger
         testId="part-select"
-        style={({ open }) => ({
+        style={({ open, disabled: selectDisabled }) => ({
           width: "100%",
           height: 30,
           display: "flex",
@@ -484,7 +504,7 @@ function PartSelect({
           borderWidth: 1,
           borderColor: open ? palette.surfaceLine : palette.panelEdge,
           backgroundColor: open ? palette.surfaceHover : palette.surface,
-          cursor: "pointer",
+          cursor: selectDisabled ? "default" : "pointer",
           userSelect: "none",
           hover: { backgroundColor: palette.surfaceHover },
         })}
@@ -547,57 +567,95 @@ function PartSelect({
 }
 
 function SeekControl({
-  part,
-  parts,
-  useReferencePosition,
+  duration,
+  position,
+  onPositionChange,
+  onPositionCommit,
+  onInteractionChange,
+  disabled,
   palette,
 }: {
-  part: string;
-  parts: PlaybackPart[];
-  useReferencePosition: boolean;
+  duration: number;
+  position: number;
+  onPositionChange: (value: number) => void;
+  onPositionCommit: (value: number) => void;
+  onInteractionChange: (active: boolean) => void;
+  disabled: boolean;
   palette: Palette;
 }) {
-  const duration = parts.find((entry) => entry.value === part)?.duration ?? 0;
-  const initialPosition = useReferencePosition ? POSITION_BY_PART[part] ?? 0 : 0;
-  const [position, setPosition] = useState(initialPosition);
   const [dragging, setDragging] = useState(false);
+  const draggingRef = useRef(false);
+  const positionRef = useRef(position);
+  const maximum = Math.max(0, duration - 1);
+  const visiblePosition = Math.max(0, Math.min(maximum, position));
+  positionRef.current = visiblePosition;
 
-  useEffect(
-    () => setPosition(useReferencePosition ? POSITION_BY_PART[part] ?? 0 : 0),
-    [part, useReferencePosition],
-  );
+  const updatePosition = (value: number) => {
+    const next = Math.max(0, Math.min(maximum, Math.round(value)));
+    positionRef.current = next;
+    onPositionChange(next);
+    return next;
+  };
 
   const setFromPointer = (event: EventPayload) => {
     const localX = Math.max(0, Math.min(TRACK_WIDTH, (event.x ?? 26) - 26));
-    setPosition(Math.round((localX / TRACK_WIDTH) * duration));
+    return updatePosition((localX / TRACK_WIDTH) * maximum);
   };
 
-  const ratio = duration > 0 ? position / duration : 0;
+  const finishInteraction = (position = positionRef.current) => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    setDragging(false);
+    onInteractionChange(false);
+    onPositionCommit(position);
+  };
+
+  const seekKeys = ["left", "right", "pageup", "pagedown", "home", "end"];
+  const ratio = duration > 0 ? visiblePosition / duration : 0;
   const thumbLeft = Math.round((TRACK_WIDTH - 12) * ratio);
 
   return (
-    <div style={{ width: TRACK_WIDTH, paddingTop: 4 }}>
+    <div style={{ width: TRACK_WIDTH, paddingTop: 4, opacity: disabled ? 0.58 : 1 }}>
       <div
         testId="seek-control"
         tabIndex={0}
         onMouseDown={(event) => {
+          if (disabled || event.button !== 0) return;
+          draggingRef.current = true;
           setDragging(true);
+          onInteractionChange(true);
           setFromPointer(event);
         }}
         onMouseMove={(event) => {
-          if (dragging || event.pressedButton === 0) setFromPointer(event);
+          if (!disabled && draggingRef.current) setFromPointer(event);
         }}
-        onMouseUp={() => setDragging(false)}
+        onMouseUp={(event) => {
+          if (disabled || event.button !== 0 || !draggingRef.current) return;
+          finishInteraction(setFromPointer(event));
+        }}
+        onMouseLeave={() => {
+          if (draggingRef.current) finishInteraction();
+        }}
         onKeyDown={(event) => {
+          if (disabled || !event.key || !seekKeys.includes(event.key)) return;
           const step = event.modifiers?.shift ? 10 : 1;
-          if (event.key === "left") setPosition((value) => Math.max(0, value - step));
-          if (event.key === "right") setPosition((value) => Math.min(duration, value + step));
+          if (event.key === "left") updatePosition(positionRef.current - step);
+          if (event.key === "right") updatePosition(positionRef.current + step);
+          if (event.key === "pageup") updatePosition(positionRef.current + 10);
+          if (event.key === "pagedown") updatePosition(positionRef.current - 10);
+          if (event.key === "home") updatePosition(0);
+          if (event.key === "end") updatePosition(maximum);
+        }}
+        onKeyUp={(event) => {
+          if (!disabled && event.key && seekKeys.includes(event.key)) {
+            onPositionCommit(positionRef.current);
+          }
         }}
         style={{
           width: TRACK_WIDTH,
           height: 28,
           position: "relative",
-          cursor: dragging ? "grabbing" : "pointer",
+          cursor: disabled ? "default" : dragging ? "grabbing" : "pointer",
           userSelect: "none",
         }}
       >
@@ -633,7 +691,7 @@ function SeekControl({
       </div>
       <div style={{ width: TRACK_WIDTH, display: "flex", flexDirection: "row", justifyContent: "space-between" }}>
         <text style={{ color: palette.caption, fontFamily: FONT_MONO, fontSize: 10 }}>
-          {formatPlaybackTime(position)}
+          {formatPlaybackTime(visiblePosition)}
         </text>
         <text style={{ color: palette.caption, fontFamily: FONT_MONO, fontSize: 10 }}>
           {formatPlaybackTime(duration)}
@@ -743,7 +801,13 @@ function Segmented<T extends string>({
 function Result({
   palette,
   part,
-  setPart,
+  onPartChange,
+  playbackPosition,
+  onPlaybackPositionChange,
+  onPlaybackPositionCommit,
+  onSeekInteractionChange,
+  playbackUpdating,
+  playbackMessage,
   danmaku,
   setDanmaku,
   onOpenDanmaku,
@@ -756,7 +820,13 @@ function Result({
 }: {
   palette: Palette;
   part: string;
-  setPart: (part: string) => void;
+  onPartChange: (part: string) => void;
+  playbackPosition: number;
+  onPlaybackPositionChange: (position: number) => void;
+  onPlaybackPositionCommit: (position: number) => void;
+  onSeekInteractionChange: (active: boolean) => void;
+  playbackUpdating: PlaybackUpdate;
+  playbackMessage: string | null;
   danmaku: DanmakuVisibility;
   setDanmaku: (value: DanmakuVisibility) => void;
   onOpenDanmaku: () => void;
@@ -784,15 +854,16 @@ function Result({
     : REFERENCE_PARTS;
   const isLive = sourceResolution?.kind === "live";
   const showPlaybackControls = isReference || sourceResolution?.kind === "video";
+  const playbackDuration = parts.find((entry) => entry.value === part)?.duration ?? 0;
   const sourceKindLabel = sourceResolution?.kind === "media"
     ? "媒体"
     : !isLive
       ? "视频"
-    : sourceResolution?.live_status === "live"
-      ? "直播"
-      : sourceResolution?.live_status === "replay"
-        ? "轮播"
-        : "未开播";
+      : sourceResolution?.live_status === "live"
+        ? "直播"
+        : sourceResolution?.live_status === "replay"
+          ? "轮播"
+          : "未开播";
 
   const copy = async () => {
     if (!canCopy) return;
@@ -821,7 +892,14 @@ function Result({
           {sourceKindLabel}
         </text>
         <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 9.5 }}>
-          {resultStatusLabel(isReference, sourceResolution, relayStatus, relayError)}
+          {resultStatusLabel(
+            isReference,
+            sourceResolution,
+            relayStatus,
+            relayError,
+            playbackUpdating,
+            playbackMessage,
+          )}
         </text>
       </div>
 
@@ -844,11 +922,25 @@ function Result({
             <text style={{ width: 42, color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 11 }}>
               分 P
             </text>
-            <PartSelect part={part} setPart={setPart} parts={parts} palette={palette} />
+            <PartSelect
+              part={part}
+              setPart={onPartChange}
+              parts={parts}
+              palette={palette}
+              disabled={playbackUpdating !== null}
+            />
           </div>
 
           <div style={{ marginTop: 5, paddingLeft: 2, paddingRight: 2 }}>
-            <SeekControl part={part} parts={parts} useReferencePosition={isReference} palette={palette} />
+            <SeekControl
+              duration={playbackDuration}
+              position={playbackPosition}
+              onPositionChange={onPlaybackPositionChange}
+              onPositionCommit={onPlaybackPositionCommit}
+              onInteractionChange={onSeekInteractionChange}
+              disabled={playbackUpdating !== null}
+              palette={palette}
+            />
           </div>
         </>
       ) : null}
@@ -929,7 +1021,7 @@ function Result({
             label={relayStopping ? "停止中" : "停止"}
             palette={palette}
             quiet
-            disabled={relayStopping}
+            disabled={relayStopping || playbackUpdating !== null}
             onClick={onStopRelay}
           />
         ) : null}
@@ -946,10 +1038,15 @@ function resultStatusLabel(
   source: SourceResolution | null,
   relay: RelayStatus | null,
   relayError: string | null,
+  playbackUpdating: PlaybackUpdate,
+  playbackMessage: string | null,
 ): string {
   if (isReference) return "· 中继运行中 · 请保持开启";
   if (source?.routing.kind === "unavailable") return "· 当前无法生成地址";
   if (source?.routing.kind === "direct" && source.playback_url) return "· 可直接播放 · 软件可关闭";
+  if (playbackUpdating === "part") return "· 正在切换分 P";
+  if (playbackUpdating === "seek") return "· 正在跳转";
+  if (playbackMessage) return `· ${playbackMessage}`;
   if (relayError && !relay) return "· 需要完成设置";
   switch (relay?.stage) {
     case "starting":
@@ -1822,6 +1919,10 @@ export function AppSurface({
   );
   const [source, setSource] = useState(SAMPLE_VIDEO);
   const [part, setPart] = useState("2");
+  const [playbackPosition, setPlaybackPosition] = useState(POSITION_BY_PART["2"] ?? 0);
+  const [playbackUpdating, setPlaybackUpdating] = useState<PlaybackUpdate>(null);
+  const [playbackMessage, setPlaybackMessage] = useState<string | null>(null);
+  const [seekInteractionActive, setSeekInteractionActive] = useState(false);
   const [danmaku, setDanmaku] = useState<DanmakuVisibility>("shown");
   const [danmakuSettings, setDanmakuSettings] = useState<DanmakuSettings>(DEFAULT_DANMAKU_SETTINGS);
   const [sourceResolution, setSourceResolution] = useState<SourceResolution | null>(null);
@@ -1833,6 +1934,7 @@ export function AppSurface({
   const [mediaError, setMediaError] = useState<string | null>(null);
   const relayWorker = useRef<RelayWorkerClient | null>(null);
   const conversionEpoch = useRef(0);
+  const playbackEpoch = useRef(0);
   const sceneBeforeConversion = useRef<Scene>(initialScene);
   const resolvedAppearance: Appearance =
     themePreference === "system" ? initialAppearance : themePreference;
@@ -1869,6 +1971,7 @@ export function AppSurface({
     if (initialScene === "settings") void refreshMediaState();
     return () => {
       conversionEpoch.current += 1;
+      playbackEpoch.current += 1;
       if (relayWorker.current) void relayWorker.current.close();
     };
   }, []);
@@ -1909,6 +2012,9 @@ export function AppSurface({
         const latest = await getRelayWorker().relayStatus(relayStatus.session_id);
         if (!cancelled) {
           setRelayStatus(latest);
+          if (latest.position_seconds !== undefined && !seekInteractionActive && playbackUpdating === null) {
+            setPlaybackPosition(latest.position_seconds);
+          }
           if (latest.stage === "failed") setRelayError("中继启动失败，检查设置后再试。");
           if (latest.stage === "starting" || latest.stage === "running") {
             timer = setTimeout(poll, latest.stage === "starting" ? 700 : 2000);
@@ -1926,13 +2032,17 @@ export function AppSurface({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [relayStatus?.session_id, relayStatus?.stage]);
+  }, [relayStatus?.session_id, relayStatus?.stage, seekInteractionActive, playbackUpdating]);
 
   const convert = async () => {
     const epoch = ++conversionEpoch.current;
+    playbackEpoch.current += 1;
     sceneBeforeConversion.current = scene;
     setConversionError("链接无法识别，检查后再试。");
     setRelayError(null);
+    setPlaybackUpdating(null);
+    setPlaybackMessage(null);
+    setSeekInteractionActive(false);
     setScene("loading");
     try {
       if (relayStatus && (relayStatus.stage === "starting" || relayStatus.stage === "running")) {
@@ -1943,21 +2053,20 @@ export function AppSurface({
       if (conversionEpoch.current !== epoch) return;
       setSourceResolution(resolution);
       if (resolution.selected_part) setPart(String(resolution.selected_part));
+      setPlaybackPosition(0);
       setScene("ready-vod");
       if (resolution.routing.kind !== "unavailable" && resolution.session_id) {
-        const settings = readStoredSettings();
-        if (!settings.key.trim() || !settings.playbackUrl.trim()) {
+        const target = configuredRelayTarget(0);
+        if (!target) {
           setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
           return;
         }
         try {
-          const started = await getRelayWorker().startRelay(resolution.session_id, {
-            ingest_server: settings.host,
-            stream_key: settings.key,
-            playback_url: settings.playbackUrl,
-            start_seconds: 0,
-          });
-          if (conversionEpoch.current === epoch) setRelayStatus(started);
+          const started = await getRelayWorker().startRelay(resolution.session_id, target);
+          if (conversionEpoch.current === epoch) {
+            setRelayStatus(started);
+            if (started.position_seconds !== undefined) setPlaybackPosition(started.position_seconds);
+          }
         } catch (error) {
           if (conversionEpoch.current === epoch) setRelayError(relayErrorMessage(error));
         }
@@ -1969,9 +2078,112 @@ export function AppSurface({
     }
   };
 
+  const retargetPlayback = async (
+    requestedPart: number,
+    startSeconds: number,
+    update: Exclude<PlaybackUpdate, null>,
+  ) => {
+    const previousResolution = sourceResolution;
+    if (!previousResolution || previousResolution.kind !== "video" || playbackUpdating !== null) return;
+
+    const epoch = ++playbackEpoch.current;
+    const previousPart = part;
+    const previousPosition = playbackPosition;
+    const previousRelay = relayStatus;
+    const previousWasActive = previousRelay?.stage === "starting" || previousRelay?.stage === "running";
+
+    setPlaybackUpdating(update);
+    setPlaybackMessage(null);
+    setRelayError(null);
+    setPart(String(requestedPart));
+    setPlaybackPosition(startSeconds);
+
+    try {
+      const target = configuredRelayTarget(startSeconds);
+      if (!target) {
+        if (previousWasActive) {
+          setPart(previousPart);
+          setPlaybackPosition(previousPosition);
+          setPlaybackMessage("需要先完成 VRCDN 设置");
+          return;
+        }
+        const resolution = await getRelayWorker().resolveSource(
+          previousResolution.canonical_url,
+          requestedPart,
+        );
+        if (playbackEpoch.current !== epoch) return;
+        setSourceResolution(resolution);
+        setPart(String(resolution.selected_part ?? requestedPart));
+        setRelayStatus(null);
+        setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
+        return;
+      }
+
+      const playback = await getRelayWorker().retargetRelay(
+        previousWasActive ? previousRelay?.session_id : undefined,
+        previousResolution.canonical_url,
+        requestedPart,
+        target,
+      );
+      if (playbackEpoch.current !== epoch) {
+        await getRelayWorker().stopRelay(playback.relay.session_id).catch(() => undefined);
+        return;
+      }
+
+      setSourceResolution(playback.resolution);
+      setPart(String(playback.resolution.selected_part ?? requestedPart));
+      setPlaybackPosition(playback.relay.position_seconds ?? startSeconds);
+      setRelayStatus(playback.relay);
+      setRelayError(null);
+      setPlaybackMessage(null);
+    } catch (error) {
+      if (playbackEpoch.current !== epoch) return;
+      setPart(previousPart);
+      setPlaybackPosition(previousPosition);
+      const originalRestored = previousWasActive
+        && !(error instanceof RelayWorkerError && error.code === "retarget_restore_failed");
+      if (originalRestored) {
+        setRelayStatus(previousRelay);
+        setRelayError(null);
+        setPlaybackMessage(
+          update === "part" ? "切换失败 · 原内容仍在播放" : "跳转失败 · 原内容仍在播放",
+        );
+      } else {
+        setRelayStatus(null);
+        setRelayError(relayErrorMessage(error));
+        setPlaybackMessage(update === "part" ? "切换失败 · 请重试" : "跳转失败 · 请重试");
+      }
+    } finally {
+      if (playbackEpoch.current === epoch) setPlaybackUpdating(null);
+    }
+  };
+
+  const changePart = (nextPart: string) => {
+    if (sourceResolution === null) {
+      setPart(nextPart);
+      setPlaybackPosition(POSITION_BY_PART[nextPart] ?? 0);
+      return;
+    }
+    const requestedPart = Number.parseInt(nextPart, 10);
+    if (
+      sourceResolution.kind !== "video"
+      || !Number.isFinite(requestedPart)
+      || nextPart === part
+    ) return;
+    void retargetPlayback(requestedPart, 0, "part");
+  };
+
+  const commitPlaybackPosition = (position: number) => {
+    setPlaybackPosition(position);
+    if (sourceResolution?.kind !== "video") return;
+    const requestedPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
+    void retargetPlayback(requestedPart, position, "seek");
+  };
+
   const stopRelay = async () => {
     if (!relayStatus || relayStopping) return;
     setRelayStopping(true);
+    setPlaybackMessage(null);
     try {
       const stopped = await getRelayWorker().stopRelay(relayStatus.session_id);
       setRelayStatus(stopped);
@@ -2068,7 +2280,7 @@ export function AppSurface({
               icon="play"
               iconColor={palette.accentTeal}
               onClick={() => void convert()}
-              disabled={scene === "loading"}
+              disabled={scene === "loading" || playbackUpdating !== null}
               testId="convert-source"
             />
             {scene === "loading" ? <Loading palette={palette} /> : null}
@@ -2107,7 +2319,13 @@ export function AppSurface({
             <Result
               palette={palette}
               part={part}
-              setPart={setPart}
+              onPartChange={changePart}
+              playbackPosition={playbackPosition}
+              onPlaybackPositionChange={setPlaybackPosition}
+              onPlaybackPositionCommit={commitPlaybackPosition}
+              onSeekInteractionChange={setSeekInteractionActive}
+              playbackUpdating={playbackUpdating}
+              playbackMessage={playbackMessage}
               danmaku={danmaku}
               setDanmaku={setDanmaku}
               onOpenDanmaku={() => showSubview("danmaku")}
@@ -2162,8 +2380,15 @@ function relayErrorMessage(error: unknown): string {
       return "VRCDN 推流密钥为空或包含空格。";
     case "invalid_playback_url":
       return "请从 VRCDN Live 页面复制完整播放地址。";
+    case "invalid_start_position":
+    case "seek_not_supported":
+      return "这个内容不能跳转到所选位置。";
     case "media_session_not_found":
       return "媒体信息已经过期，请重新生成地址。";
+    case "media_session_not_available":
+      return "这个分 P 暂时无法中继。";
+    case "retarget_restore_failed":
+      return "切换失败，原来的中继也没有恢复，请重新生成地址。";
     case "ffmpeg_start_failed":
     case "ffmpeg_status_failed":
       return "FFmpeg 无法启动，请检查视频处理设置。";

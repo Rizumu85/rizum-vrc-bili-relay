@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -18,6 +18,9 @@ pub(crate) struct FfmpegProcess {
     started_at: Instant,
     stderr: Arc<Mutex<VecDeque<String>>>,
     has_output: Arc<AtomicBool>,
+    output_micros: Arc<AtomicU64>,
+    start_seconds: f64,
+    is_live: bool,
 }
 
 pub(crate) enum ProcessPoll {
@@ -92,8 +95,9 @@ impl FfmpegProcess {
             );
         }
         let has_output = Arc::new(AtomicBool::new(false));
+        let output_micros = Arc::new(AtomicU64::new(0));
         if let Some(pipe) = child.stdout.take() {
-            drain_progress(pipe, Arc::clone(&has_output));
+            drain_progress(pipe, Arc::clone(&has_output), Arc::clone(&output_micros));
         }
 
         Ok(Self {
@@ -101,6 +105,9 @@ impl FfmpegProcess {
             started_at: Instant::now(),
             stderr,
             has_output,
+            output_micros,
+            start_seconds,
+            is_live: input.is_live,
         })
     }
 
@@ -139,6 +146,12 @@ impl FfmpegProcess {
             let _ = self.child.kill();
         }
         let _ = self.child.wait();
+    }
+
+    pub fn position_seconds(&self) -> Option<f64> {
+        (!self.is_live).then(|| {
+            self.start_seconds + self.output_micros.load(Ordering::Acquire) as f64 / 1_000_000.0
+        })
     }
 
     fn diagnostic(&self) -> String {
@@ -210,16 +223,22 @@ fn drain_stderr(
     });
 }
 
-fn drain_progress(pipe: impl std::io::Read + Send + 'static, has_output: Arc<AtomicBool>) {
+fn drain_progress(
+    pipe: impl std::io::Read + Send + 'static,
+    has_output: Arc<AtomicBool>,
+    output_micros: Arc<AtomicU64>,
+) {
     thread::spawn(move || {
         for line in BufReader::new(pipe).lines().map_while(Result::ok) {
-            let produced_output = line
+            let position = line
                 .strip_prefix("out_time_us=")
                 .or_else(|| line.strip_prefix("out_time_ms="))
-                .and_then(|value| value.parse::<u64>().ok())
-                .is_some_and(|value| value > 0);
-            if produced_output {
-                has_output.store(true, Ordering::Release);
+                .and_then(|value| value.parse::<u64>().ok());
+            if let Some(position) = position {
+                output_micros.store(position, Ordering::Release);
+                if position > 0 {
+                    has_output.store(true, Ordering::Release);
+                }
             }
         }
     });

@@ -38,6 +38,9 @@ comparison. The first real Rust-backed vertical slice is now connected:
 - resolved media is held in short-lived Rust sessions instead of exposing temporary Bilibili URLs to React;
 - Rust starts, observes, stops, and cleans up FFmpeg relay processes;
 - a relay is reported as running only after FFmpeg has produced media output;
+- FFmpeg playback progress is reported back to the seek control;
+- changing a Bilibili part resolves fresh media and replaces the relay through one Rust workflow;
+- seeking commits when the pointer is released, then restarts from the selected second;
 - the ready view now follows the real starting/running/completed/stopped/failed lifecycle;
 - release builds put `vrc-bili-relay-gpuix.exe` and `relay-worker.exe` together in `dist/`.
 
@@ -45,7 +48,7 @@ The following UI interactions also remain live:
 
 - edit or paste a Bilibili page or supported media URL;
 - generate a ready, loading, or error state;
-- choose a video part and adjust playback position;
+- switch a real video part and seek across the full-width playback control;
 - show or hide danmaku and edit its advanced settings;
 - copy the generated VRChat URL;
 - edit local VRCDN values and choose system/light/dark appearance.
@@ -56,9 +59,9 @@ ingest server, stream key, and complete playback URL from VRCDN; a playback URL
 cannot be derived safely from the key. FFmpeg processes are stopped when the
 user stops a relay, starts a replacement, or closes the app.
 
-Precise part/position switching, danmaku rendering, account login, and persisted
-Rust-owned settings remain future core slices. The untouched startup screen
-remains the approved visual reference.
+Danmaku rendering, account login, and persisted Rust-owned settings remain
+future core slices. The untouched startup screen remains the approved visual
+reference.
 
 Direct playback is deliberately limited to a stable public URL that every
 VRChat viewer can reach. The app does not publish a `localhost` proxy URL:
@@ -68,8 +71,9 @@ computer instead of the relay owner's machine.
 ## Managed FFmpeg
 
 If both `ffmpeg.exe` and `ffprobe.exe` are already available on `PATH`, the app
-uses them and does not offer a redundant download. Otherwise, the settings page can download the
-Windows release-essentials ZIP published by [gyan.dev](https://www.gyan.dev/ffmpeg/builds/),
+uses them and does not offer a redundant download. Otherwise, the settings page
+can download the Windows release-essentials ZIP published by
+[gyan.dev](https://www.gyan.dev/ffmpeg/builds/),
 one of the Windows build providers linked by the official
 [FFmpeg download page](https://ffmpeg.org/download.html).
 

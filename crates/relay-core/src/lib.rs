@@ -11,7 +11,7 @@ use bilibili::BilibiliClient;
 use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -36,6 +36,12 @@ pub enum Command {
         session_id: String,
         target: RelayTarget,
     },
+    RetargetRelay {
+        current_session_id: Option<String>,
+        source: String,
+        requested_part: u32,
+        target: RelayTarget,
+    },
     RelayStatus {
         session_id: String,
     },
@@ -49,14 +55,17 @@ pub enum Command {
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ResponseEnvelope {
-    Ok { id: u64, result: Reply },
+    Ok { id: u64, result: Box<Reply> },
     Error { id: u64, error: RelayError },
 }
 
 impl ResponseEnvelope {
     pub fn from_result(id: u64, result: Result<Reply, RelayError>) -> Self {
         match result {
-            Ok(result) => Self::Ok { id, result },
+            Ok(result) => Self::Ok {
+                id,
+                result: Box::new(result),
+            },
             Err(error) => Self::Error { id, error },
         }
     }
@@ -84,6 +93,10 @@ pub enum Reply {
         resolution: SourceResolution,
     },
     RelayState {
+        relay: RelayStatus,
+    },
+    PlaybackState {
+        resolution: SourceResolution,
         relay: RelayStatus,
     },
     FfmpegState {
@@ -189,6 +202,8 @@ pub struct RelayStatus {
     pub stage: RelayStage,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub playback_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position_seconds: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<String>,
 }
@@ -354,6 +369,56 @@ impl RelayCore {
                         .sessions
                         .start(&session_id, target, ffmpeg_path.as_deref())?,
                 })
+            }
+            Command::RetargetRelay {
+                current_session_id,
+                source,
+                requested_part,
+                target,
+            } => {
+                media_session::validate_relay_target(&target)?;
+                let ffmpeg_path = self.ffmpeg.executable_path().ok_or_else(|| {
+                    RelayError::new("ffmpeg_missing", "No usable FFmpeg executable was found")
+                })?;
+                let resolved = self.bilibili.resolve(&source, Some(requested_part))?;
+                let resolution = self.sessions.prepare(resolved);
+                let next_session_id = resolution.session_id.clone().ok_or_else(|| {
+                    RelayError::new(
+                        "media_session_not_available",
+                        "Selected video part cannot be relayed",
+                    )
+                })?;
+                let restoration_required = current_session_id.is_some();
+                let suspended = current_session_id
+                    .as_deref()
+                    .and_then(|session_id| self.sessions.suspend(session_id));
+                match self
+                    .sessions
+                    .start(&next_session_id, target.clone(), Some(&ffmpeg_path))
+                {
+                    Ok(relay) => Ok(Reply::PlaybackState { resolution, relay }),
+                    Err(mut error) => {
+                        let restored = if let (Some(previous_session_id), Some(previous)) =
+                            (current_session_id.as_deref(), suspended)
+                            && previous.was_active
+                        {
+                            let mut resume_target = target;
+                            resume_target.start_seconds = previous.position_seconds.unwrap_or(0.0);
+                            self.sessions
+                                .start(previous_session_id, resume_target, Some(&ffmpeg_path))
+                                .is_ok()
+                        } else {
+                            !restoration_required
+                        };
+                        if !restored {
+                            error.code = "retarget_restore_failed";
+                            error
+                                .message
+                                .push_str("; the previous relay could not be restored");
+                        }
+                        Err(error)
+                    }
+                }
             }
             Command::RelayStatus { session_id } => Ok(Reply::RelayState {
                 relay: self.sessions.status(&session_id)?,

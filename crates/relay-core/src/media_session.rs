@@ -21,7 +21,14 @@ struct MediaSession {
     process: Option<FfmpegProcess>,
     stage: RelayStage,
     playback_url: Option<String>,
+    position_seconds: Option<f64>,
+    duration_seconds: Option<f64>,
     diagnostic: Option<String>,
+}
+
+pub(crate) struct SuspendedSession {
+    pub was_active: bool,
+    pub position_seconds: Option<f64>,
 }
 
 impl MediaSessionStore {
@@ -35,6 +42,11 @@ impl MediaSessionStore {
     pub fn prepare(&mut self, mut resolved: ResolvedSource) -> SourceResolution {
         self.cleanup_expired();
         if let Some(input) = resolved.input {
+            let duration_seconds = resolved
+                .resolution
+                .duration_seconds
+                .map(|value| value as f64);
+            let position_seconds = (!input.is_live).then_some(0.0);
             let session_id = self.create_id();
             resolved.resolution.session_id = Some(session_id.clone());
             resolved.resolution.session_expires_in_seconds = Some(SESSION_TTL.as_secs());
@@ -46,6 +58,8 @@ impl MediaSessionStore {
                     process: None,
                     stage: RelayStage::Stopped,
                     playback_url: None,
+                    position_seconds,
+                    duration_seconds,
                     diagnostic: None,
                 },
             );
@@ -63,14 +77,22 @@ impl MediaSessionStore {
         let ffmpeg_path = ffmpeg_path.ok_or_else(|| {
             RelayError::new("ffmpeg_missing", "No usable FFmpeg executable was found")
         })?;
-        let ingest_url = validate_target(&target)?;
+        let ingest_url = validate_relay_target(&target)?;
         let session = self.sessions.get_mut(session_id).ok_or_else(|| {
             RelayError::new(
                 "media_session_not_found",
                 "Media session expired or does not exist; resolve the source again",
             )
         })?;
+        let start_seconds = normalize_start(
+            target.start_seconds,
+            session.duration_seconds,
+            session.input.is_live,
+        )?;
         if let Some(mut process) = session.process.take() {
+            if let Some(position) = process.position_seconds() {
+                session.position_seconds = Some(position);
+            }
             process.stop();
         }
         let process = FfmpegProcess::spawn(
@@ -78,11 +100,16 @@ impl MediaSessionStore {
             &session.input,
             &ingest_url,
             &target.stream_key,
-            target.start_seconds,
-        )?;
+            start_seconds,
+        )
+        .inspect_err(|error| {
+            session.stage = RelayStage::Failed;
+            session.diagnostic = Some(error.message.clone());
+        })?;
         session.process = Some(process);
         session.stage = RelayStage::Starting;
         session.playback_url = Some(target.playback_url);
+        session.position_seconds = (!session.input.is_live).then_some(start_seconds);
         session.diagnostic = None;
         session.expires_at = Instant::now() + SESSION_TTL;
         Ok(status_for(session_id, session))
@@ -101,20 +128,38 @@ impl MediaSessionStore {
     }
 
     pub fn stop(&mut self, session_id: &str) -> Result<RelayStatus, RelayError> {
-        self.cleanup_expired();
-        let session = self.sessions.get_mut(session_id).ok_or_else(|| {
+        self.suspend(session_id).ok_or_else(|| {
             RelayError::new(
                 "media_session_not_found",
                 "Media session expired or does not exist; resolve the source again",
             )
         })?;
+        let session = self.sessions.get(session_id).ok_or_else(|| {
+            RelayError::new(
+                "media_session_not_found",
+                "Media session expired while it was stopping",
+            )
+        })?;
+        Ok(status_for(session_id, session))
+    }
+
+    pub fn suspend(&mut self, session_id: &str) -> Option<SuspendedSession> {
+        self.cleanup_expired();
+        let session = self.sessions.get_mut(session_id)?;
+        let was_active = session.process.is_some();
         if let Some(mut process) = session.process.take() {
+            if let Some(position) = process.position_seconds() {
+                session.position_seconds = Some(position);
+            }
             process.stop();
         }
         session.stage = RelayStage::Stopped;
         session.diagnostic = None;
         session.expires_at = Instant::now() + SESSION_TTL;
-        Ok(status_for(session_id, session))
+        Some(SuspendedSession {
+            was_active,
+            position_seconds: session.position_seconds,
+        })
     }
 
     pub fn shutdown(&mut self) {
@@ -150,7 +195,11 @@ fn refresh(session: &mut MediaSession) -> Result<(), RelayError> {
     let Some(process) = session.process.as_mut() else {
         return Ok(());
     };
-    match process.poll()? {
+    let poll = process.poll()?;
+    if let Some(position) = process.position_seconds() {
+        session.position_seconds = Some(clamp_position(position, session.duration_seconds));
+    }
+    match poll {
         ProcessPoll::Alive { stable } => {
             session.stage = if stable {
                 RelayStage::Running
@@ -180,11 +229,36 @@ fn status_for(session_id: &str, session: &MediaSession) -> RelayStatus {
         session_id: session_id.to_string(),
         stage: session.stage.clone(),
         playback_url: session.playback_url.clone(),
+        position_seconds: session.position_seconds,
         diagnostic: session.diagnostic.clone(),
     }
 }
 
-fn validate_target(target: &RelayTarget) -> Result<String, RelayError> {
+fn normalize_start(
+    requested: f64,
+    duration_seconds: Option<f64>,
+    is_live: bool,
+) -> Result<f64, RelayError> {
+    if is_live {
+        if requested > 0.0 {
+            return Err(RelayError::new(
+                "seek_not_supported",
+                "Live streams cannot start from a playback position",
+            ));
+        }
+        return Ok(0.0);
+    }
+    Ok(clamp_position(requested, duration_seconds))
+}
+
+fn clamp_position(position: f64, duration_seconds: Option<f64>) -> f64 {
+    let maximum = duration_seconds
+        .map(|duration| (duration - 1.0).max(0.0))
+        .unwrap_or(position.max(0.0));
+    position.clamp(0.0, maximum)
+}
+
+pub(crate) fn validate_relay_target(target: &RelayTarget) -> Result<String, RelayError> {
     let ingest_server = normalize_ingest_server(&target.ingest_server)?;
     let stream_key = target.stream_key.trim();
     if stream_key.is_empty() || stream_key.chars().any(char::is_whitespace) {

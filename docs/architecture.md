@@ -30,6 +30,7 @@ Current commands:
 - `inspect_source`
 - `resolve_source`
 - `start_relay`
+- `retarget_relay`
 - `relay_status`
 - `stop_relay`
 - `ensure_ffmpeg`
@@ -51,7 +52,15 @@ When a usable input is found, Rust retains it in a ten-minute media session and
 returns only the opaque session id. `start_relay` validates the user-provided
 VRCDN target and starts FFmpeg from that private session. `relay_status` reports
 starting, running, completed, stopped, or failed; running requires observed
-FFmpeg media progress, not merely a live operating-system process.
+FFmpeg media progress, not merely a live operating-system process. VOD status
+also includes the current source position parsed from FFmpeg's progress stream.
+
+`retarget_relay` owns the complete part/position replacement workflow. It
+validates the target and resolves fresh Bilibili media before suspending the
+current session, then starts a new short-lived session at the requested second.
+If the new FFmpeg process cannot launch, Rust attempts to resume the suspended
+session. React only supplies user intent and renders the resulting resolution
+and relay state.
 
 Temporary upstream URLs never cross into React. The stream key is supplied by
 the settings UI only in the `start_relay` command and is never returned or
@@ -96,13 +105,20 @@ Resolved media can then be published through its opaque session:
 {"id":3,"type":"start_relay","session_id":"19c0-1","target":{"ingest_server":"rtmp://ingest.vrcdn.live/live","stream_key":"<secret>","playback_url":"rtspt://stream.vrcdn.live/live/<id>","start_seconds":0}}
 ```
 
+A running Bilibili VOD can be replaced without exposing its temporary media
+URLs or duplicating the stop/start workflow in React:
+
+```json
+{"id":4,"type":"retarget_relay","current_session_id":"19c0-1","source":"https://www.bilibili.com/video/BV1PGNQesEkG","requested_part":2,"target":{"ingest_server":"rtmp://ingest.vrcdn.live/live","stream_key":"<secret>","playback_url":"rtspt://stream.vrcdn.live/live/<id>","start_seconds":15}}
+```
+
 The playback URL is an independent value copied from VRCDN. It is never
 constructed from the secret stream key.
 
 When FFmpeg is missing, installation starts through the same protocol:
 
 ```json
-{"id":4,"type":"ensure_ffmpeg"}
+{"id":5,"type":"ensure_ffmpeg"}
 ```
 
 The immediate reply reports `installing`; subsequent `health` replies report
@@ -140,10 +156,9 @@ FFmpeg process.
 
 Implement future behaviour in this order so every slice crosses the same seam:
 
-1. Restart a VOD relay at a changed part or playback position.
-2. Fetch danmaku and render ASS filters through FFmpeg.
-3. Add Bilibili QR login and authenticated source resolution.
-4. Move persisted product settings and credentials behind the Rust interface.
+1. Fetch danmaku and render ASS filters through FFmpeg.
+2. Add Bilibili QR login and authenticated source resolution.
+3. Move persisted product settings and credentials behind the Rust interface.
 
 The approved UI may keep reference data while a slice is under construction,
 but product actions must never manufacture a successful result in TypeScript.
