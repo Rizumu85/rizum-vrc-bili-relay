@@ -7,7 +7,7 @@ mod bilibili;
 
 use bilibili::BilibiliClient;
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -131,6 +131,49 @@ pub struct SourceResolution {
     pub duration_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_status: Option<LiveStatus>,
+    pub routing: RouteDecision,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RouteDecision {
+    pub kind: RouteKind,
+    pub reason: RouteReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_format: Option<MediaFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_bitrate: Option<u64>,
+    pub has_separate_audio: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteKind {
+    Direct,
+    RelayProxy,
+    RelayWithFfmpeg,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteReason {
+    DirectCompatible,
+    RequiresHeaders,
+    DashTracks,
+    FlvContainer,
+    MpegTsContainer,
+    SourceOffline,
+    SourceReplay,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaFormat {
+    Dash,
+    Flv,
+    MpegTs,
 }
 
 #[derive(Debug, Clone, Serialize)]

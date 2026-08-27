@@ -34,10 +34,13 @@ Current commands:
 The first source inspection classifies video, live-room, and short links and
 returns the next resolution step without doing I/O. Source resolution then
 expands b23.tv redirects and reads public Bilibili metadata. For videos it
-returns the canonical BV id, title, parts, CIDs, durations, and selected part.
-For live rooms it returns the canonical room id, title, and live/replay/offline
-state. It deliberately does not pretend that a playback URL or relay has already
-been created.
+returns the canonical BV id, title, parts, CIDs, durations, selected part, and
+the best public H.264 DASH tracks. For live rooms it returns the canonical room
+id, title, live/replay/offline state, and the preferred public H.264 FLV or
+MPEG-TS candidate. Temporary upstream URLs stay inside the Rust module. The UI
+only receives a route decision describing whether FFmpeg or a relay is needed.
+It deliberately does not pretend that a playback URL or relay has already been
+created.
 
 ## Wire protocol
 
@@ -85,11 +88,11 @@ worker running.
 
 Implement future behaviour in this order so every slice crosses the same seam:
 
-1. Resolve public VOD DASH and live H.264 stream candidates.
-2. Probe returned media for direct VRChat compatibility.
-3. Select direct playback or relay automatically.
-4. Manage the local playback server and VRCDN publishing lifecycle.
-5. Download, verify, select, and launch FFmpeg.
+1. Persist resolved upstream details in a short-lived Rust media session.
+2. Start and stop FFmpeg from that session with clean cancellation.
+3. Manage the local playback server and VRCDN publishing lifecycle.
+4. Return the generated VRChat playback URL and live job state.
+5. Download, verify, select, and launch a managed FFmpeg when the system copy is missing.
 6. Fetch danmaku and render ASS filters through FFmpeg.
 7. Move persisted product settings and credentials behind the Rust interface.
 

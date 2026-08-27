@@ -1,4 +1,4 @@
-export const RELAY_PROTOCOL_VERSION = 2;
+export const RELAY_PROTOCOL_VERSION = 3;
 
 export type SourceKind = "video" | "live" | "short_link";
 export type RelayNextStep =
@@ -30,6 +30,23 @@ export interface SourceResolution {
   selected_part?: number;
   duration_seconds?: number;
   live_status?: "offline" | "live" | "replay";
+  routing: RouteDecision;
+}
+
+export interface RouteDecision {
+  kind: "direct" | "relay_proxy" | "relay_with_ffmpeg" | "unavailable";
+  reason:
+    | "direct_compatible"
+    | "requires_headers"
+    | "dash_tracks"
+    | "flv_container"
+    | "mpeg_ts_container"
+    | "source_offline"
+    | "source_replay";
+  media_format?: "dash" | "flv" | "mpeg_ts";
+  quality?: number;
+  estimated_bitrate?: number;
+  has_separate_audio: boolean;
 }
 
 export interface FfmpegStatus {

@@ -23,6 +23,8 @@ comparison. The first real Rust-backed vertical slice is now connected:
 - it expands b23.tv redirects and resolves public metadata through Bilibili APIs;
 - videos return their real title, parts, CIDs, durations, and selected part;
 - live rooms return their canonical room id, title, and live/replay/offline state;
+- Rust selects public H.264 DASH tracks for VOD and H.264 FLV/MPEG-TS candidates for live rooms;
+- temporary Bilibili media URLs remain private to Rust while the UI receives only a route decision;
 - the worker exposes a versioned request/reply protocol over stdio;
 - the TypeScript client owns worker startup, request correlation, timeout, shutdown,
   and packaged-executable discovery;
@@ -39,11 +41,11 @@ The following UI interactions also remain live:
 - copy the generated VRChat URL;
 - edit local VRCDN values and choose system/light/dark appearance.
 
-Media-stream resolution, automatic direct-versus-relay probing, VRCDN streaming,
-FFmpeg download/transcode, account login, and danmaku rendering are the next Rust
-core slices. The untouched startup screen remains the approved visual reference.
+FFmpeg process orchestration, VRCDN streaming, managed FFmpeg download, account
+login, and danmaku rendering are the next Rust core slices. The untouched startup
+screen remains the approved visual reference.
 After the user submits a link, its title and part data are real, while the UI
-explicitly marks the playback address as waiting for the media-routing slice.
+shows the real media route and explicitly marks it as waiting for FFmpeg relay startup.
 
 ## Run
 

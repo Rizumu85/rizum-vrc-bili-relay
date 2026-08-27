@@ -753,7 +753,9 @@ function Result({
 }) {
   const [copied, setCopied] = useState(false);
   const isReference = sourceResolution === null;
-  const output = isReference ? VIDEO_OUTPUT.replace("{part}", part) : "播放地址将在媒体路由接通后生成";
+  const output = isReference
+    ? VIDEO_OUTPUT.replace("{part}", part)
+    : routeDescription(sourceResolution);
   const parts: PlaybackPart[] = sourceResolution?.kind === "video" && sourceResolution.parts?.length
     ? sourceResolution.parts.map((entry) => ({
         value: String(entry.page),
@@ -790,14 +792,18 @@ function Result({
       <div style={{ height: 16, display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
         <StatusDot color={palette.accentViolet} />
         <text style={{ color: palette.inkMuted, fontFamily: FONT_SERIF, fontSize: 11.5, fontWeight: 600 }}>
-          VRChat 播放地址
+          {isReference ? "VRChat 播放地址" : "媒体路由"}
         </text>
         <div style={{ flexGrow: 1 }} />
         <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 9.5 }}>
           {sourceKindLabel}
         </text>
         <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 9.5 }}>
-          {isReference ? "· 中继运行中 · 请保持开启" : "· 来源已解析 · 等待媒体路由"}
+          {isReference
+            ? "· 中继运行中 · 请保持开启"
+            : sourceResolution.routing.kind === "unavailable"
+              ? "· 当前无法生成地址"
+              : "· 媒体已探测 · 等待中继"}
         </text>
       </div>
 
@@ -873,7 +879,11 @@ function Result({
           backgroundColor: palette.nested,
         }}
       >
-        <Icon name="link" size={11} color={palette.accentTeal} />
+        <Icon
+          name="link"
+          size={11}
+          color={sourceResolution?.routing.kind === "unavailable" ? palette.accentViolet : palette.accentTeal}
+        />
         <text
           style={{
             minWidth: 0,
@@ -899,6 +909,25 @@ function Result({
       </div>
     </div>
   );
+}
+
+function routeDescription(source: SourceResolution): string {
+  switch (source.routing.reason) {
+    case "source_offline":
+      return "直播间未开播，暂时无法生成播放地址";
+    case "source_replay":
+      return "当前是轮播，暂不支持生成播放地址";
+    case "dash_tracks":
+      return "已找到 H.264 DASH 视频和音频，需要 FFmpeg 中继";
+    case "flv_container":
+      return "已找到 H.264 FLV 直播流，需要 FFmpeg 转换";
+    case "mpeg_ts_container":
+      return "已找到 H.264 MPEG-TS 直播流，需要 FFmpeg 中继";
+    case "requires_headers":
+      return "已找到媒体流，需要本软件中继";
+    case "direct_compatible":
+      return "媒体流可以直接播放";
+  }
 }
 
 function SectionHeading({
@@ -1904,6 +1933,11 @@ function relayErrorMessage(error: unknown): string {
     case "video_not_found":
     case "live_room_not_found":
       return "这个内容不存在，或暂时无法访问。";
+    case "video_stream_not_found":
+    case "live_stream_not_found":
+    case "h264_stream_not_found":
+    case "unsupported_video_format":
+      return "没有找到可以转换的 H.264 媒体流。";
     case "login_required":
       return "这个内容需要登录后才能读取。";
     case "worker_unavailable":

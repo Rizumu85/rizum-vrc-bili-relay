@@ -5,7 +5,10 @@ use reqwest::header::{ACCEPT, REFERER, USER_AGENT};
 use serde_json::Value;
 use url::Url;
 
-use crate::{LiveStatus, RelayError, SourceKind, SourceResolution, VideoPart, inspect_source};
+use crate::{
+    LiveStatus, MediaFormat, RelayError, RouteDecision, RouteKind, RouteReason, SourceKind,
+    SourceResolution, VideoPart, inspect_source,
+};
 
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
@@ -116,6 +119,16 @@ impl BilibiliClient {
         let duration_seconds = parts
             .get(selected_part.saturating_sub(1) as usize)
             .map(|part| part.duration_seconds);
+        let selected_cid = parts
+            .get(selected_part.saturating_sub(1) as usize)
+            .map(|part| part.cid)
+            .ok_or_else(|| {
+                RelayError::new(
+                    "video_part_not_found",
+                    "Selected Bilibili video part is missing",
+                )
+            })?;
+        let routing = self.resolve_video_route(&bvid, selected_cid)?;
 
         Ok(SourceResolution {
             kind: SourceKind::Video,
@@ -126,6 +139,7 @@ impl BilibiliClient {
             selected_part: Some(selected_part),
             duration_seconds,
             live_status: None,
+            routing,
         })
     }
 
@@ -167,6 +181,11 @@ impl BilibiliClient {
         let title = string_field(info, "title")
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| format!("Bilibili 直播间 {canonical_room}"));
+        let routing = match live_status {
+            LiveStatus::Live => self.resolve_live_route(&canonical_room)?,
+            LiveStatus::Replay => unavailable_route(RouteReason::SourceReplay),
+            LiveStatus::Offline => unavailable_route(RouteReason::SourceOffline),
+        };
 
         Ok(SourceResolution {
             kind: SourceKind::Live,
@@ -177,6 +196,103 @@ impl BilibiliClient {
             selected_part: None,
             duration_seconds: None,
             live_status: Some(live_status),
+            routing,
+        })
+    }
+
+    fn resolve_video_route(&self, bvid: &str, cid: u64) -> Result<RouteDecision, RelayError> {
+        let endpoint = "https://api.bilibili.com/x/player/playurl".to_string()
+            + &format!("?bvid={bvid}&cid={cid}&qn=80&fnval=16&fnver=0&fourk=1");
+        let root = self.get_json(&endpoint, &format!("https://www.bilibili.com/video/{bvid}"))?;
+        let data = api_data(
+            &root,
+            "video_stream_not_found",
+            "Bilibili video streams are unavailable",
+        )?;
+        let dash = data.get("dash").ok_or_else(|| {
+            RelayError::new(
+                "unsupported_video_format",
+                "Bilibili returned a legacy video format instead of DASH",
+            )
+        })?;
+        let video_streams = dash.get("video").and_then(Value::as_array).ok_or_else(|| {
+            RelayError::new(
+                "video_stream_not_found",
+                "Bilibili returned no video tracks",
+            )
+        })?;
+        let video = select_dash_video(video_streams).ok_or_else(|| {
+            RelayError::new(
+                "h264_stream_not_found",
+                "Bilibili returned no H.264 video track at or below 1080p",
+            )
+        })?;
+        let audio = dash
+            .get("audio")
+            .and_then(Value::as_array)
+            .and_then(|streams| select_dash_audio(streams));
+        let has_separate_audio = audio.is_some();
+        let estimated_bitrate = video.bandwidth.checked_add(
+            audio
+                .as_ref()
+                .map(|track| track.bandwidth)
+                .unwrap_or_default(),
+        );
+
+        Ok(RouteDecision {
+            kind: RouteKind::RelayWithFfmpeg,
+            reason: if has_separate_audio {
+                RouteReason::DashTracks
+            } else {
+                RouteReason::RequiresHeaders
+            },
+            media_format: Some(MediaFormat::Dash),
+            quality: Some(video.quality),
+            estimated_bitrate,
+            has_separate_audio,
+        })
+    }
+
+    fn resolve_live_route(&self, room_id: &str) -> Result<RouteDecision, RelayError> {
+        let endpoint = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo"
+            .to_string()
+            + &format!(
+                "?room_id={room_id}&protocol=0,1&format=0,1,2&codec=0&qn=10000&platform=web&ptype=8"
+            );
+        let root = self.get_json(&endpoint, &format!("https://live.bilibili.com/{room_id}"))?;
+        let data = api_data(
+            &root,
+            "live_stream_not_found",
+            "Bilibili live stream is unavailable",
+        )?;
+        let play_url = data
+            .get("playurl_info")
+            .and_then(|value| value.get("playurl"))
+            .ok_or_else(|| {
+                RelayError::new(
+                    "live_stream_not_found",
+                    "Bilibili returned no live playback information",
+                )
+            })?;
+        let selected = select_live_candidate(play_url).ok_or_else(|| {
+            RelayError::new(
+                "h264_stream_not_found",
+                "Bilibili returned no H.264 FLV or MPEG-TS live stream",
+            )
+        })?;
+        let reason = match selected.format {
+            MediaFormat::Flv => RouteReason::FlvContainer,
+            MediaFormat::MpegTs => RouteReason::MpegTsContainer,
+            MediaFormat::Dash => RouteReason::RequiresHeaders,
+        };
+
+        Ok(RouteDecision {
+            kind: RouteKind::RelayWithFfmpeg,
+            reason,
+            media_format: Some(selected.format),
+            quality: Some(selected.quality),
+            estimated_bitrate: None,
+            has_separate_audio: false,
         })
     }
 
@@ -199,6 +315,130 @@ impl BilibiliClient {
                 error,
             )
         })
+    }
+}
+
+struct DashTrack {
+    quality: u32,
+    bandwidth: u64,
+}
+
+struct LiveCandidate {
+    format: MediaFormat,
+    quality: u32,
+    score: (u8, u8, u8),
+}
+
+fn select_dash_video(streams: &[Value]) -> Option<DashTrack> {
+    streams
+        .iter()
+        .filter_map(|stream| {
+            let codec_id = u64_field(stream, "codecid").unwrap_or_default();
+            let codecs = string_field(stream, "codecs").unwrap_or_default();
+            if codec_id != 7 && !codecs.to_ascii_lowercase().starts_with("avc") {
+                return None;
+            }
+            let quality = u32_field(stream, "id").unwrap_or_default();
+            if quality > 80 || read_media_url(stream).is_none() {
+                return None;
+            }
+            Some(DashTrack {
+                quality,
+                bandwidth: u64_field(stream, "bandwidth").unwrap_or_default(),
+            })
+        })
+        .max_by_key(|track| track.quality)
+}
+
+fn select_dash_audio(streams: &[Value]) -> Option<DashTrack> {
+    streams
+        .iter()
+        .filter_map(|stream| {
+            read_media_url(stream)?;
+            Some(DashTrack {
+                quality: u32_field(stream, "id").unwrap_or_default(),
+                bandwidth: u64_field(stream, "bandwidth").unwrap_or_default(),
+            })
+        })
+        .max_by_key(|track| track.bandwidth)
+}
+
+fn select_live_candidate(play_url: &Value) -> Option<LiveCandidate> {
+    let streams = play_url.get("stream")?.as_array()?;
+    streams
+        .iter()
+        .flat_map(|stream| {
+            let protocol = string_field(stream, "protocol_name").unwrap_or_default();
+            let protocol_score = u8::from(protocol != "http_stream");
+            stream
+                .get("format")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .flat_map(move |format| {
+                    let format_name = string_field(format, "format_name").unwrap_or_default();
+                    let media_format = match format_name.as_str() {
+                        "flv" => Some((MediaFormat::Flv, 0)),
+                        "ts" => Some((MediaFormat::MpegTs, 1)),
+                        _ => None,
+                    };
+                    format
+                        .get("codec")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(move |codec| {
+                            if !string_field(codec, "codec_name")
+                                .is_some_and(|value| value.eq_ignore_ascii_case("avc"))
+                            {
+                                return None;
+                            }
+                            let (media_format, format_score) = media_format.clone()?;
+                            let url_info = codec.get("url_info")?.as_array()?;
+                            let has_valid_url = url_info.iter().any(|info| {
+                                let host = string_field(info, "host").unwrap_or_default();
+                                let base = string_field(codec, "base_url").unwrap_or_default();
+                                let extra = string_field(info, "extra").unwrap_or_default();
+                                Url::parse(&(host + &base + &extra))
+                                    .is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+                            });
+                            if !has_valid_url {
+                                return None;
+                            }
+                            let uses_mcdn = url_info.iter().any(|info| {
+                                string_field(info, "host")
+                                    .is_some_and(|host| host.to_ascii_lowercase().contains("mcdn"))
+                            });
+                            Some(LiveCandidate {
+                                format: media_format,
+                                quality: u32_field(codec, "current_qn").unwrap_or_default(),
+                                score: (protocol_score, format_score, u8::from(uses_mcdn)),
+                            })
+                        })
+                })
+        })
+        .min_by(|left, right| {
+            left.score
+                .cmp(&right.score)
+                .then_with(|| right.quality.cmp(&left.quality))
+        })
+}
+
+fn read_media_url(stream: &Value) -> Option<Url> {
+    let value = string_field(stream, "baseUrl").or_else(|| string_field(stream, "base_url"))?;
+    Url::parse(&value)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https"))
+}
+
+fn unavailable_route(reason: RouteReason) -> RouteDecision {
+    RouteDecision {
+        kind: RouteKind::Unavailable,
+        reason,
+        media_format: None,
+        quality: None,
+        estimated_bitrate: None,
+        has_separate_audio: false,
     }
 }
 
