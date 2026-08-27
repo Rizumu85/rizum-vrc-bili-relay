@@ -126,6 +126,10 @@ carry or return it. FFmpeg is launched without a shell or console window. Its bo
 diagnostic tail is scrubbed of the output URL and stream key before it can be
 returned. Replacing, stopping, or dropping a session kills and waits for its
 child process.
+On Windows, the worker also assigns each FFmpeg child to its own unnamed Job
+Object with `KILL_ON_JOB_CLOSE`. Normal cleanup still uses the explicit stop and
+wait path, while abrupt worker termination delegates final process recovery to
+the operating system instead of relying on Rust destructors being allowed to run.
 
 `ffmpeg_manager` is the single Rust module responsible for FFmpeg/FFprobe
 toolchain selection and managed installation. Its external interface is
@@ -219,8 +223,10 @@ log line can never corrupt request correlation.
 
 Development builds the worker at `target/debug/relay-worker.exe`. Release builds
 copy it beside the GPUIX executable. The TypeScript adapter checks an explicit
-`VRC_BILI_RELAY_WORKER` override, development targets, and then the packaged
-sibling path.
+`VRC_BILI_RELAY_WORKER` override, then the packaged sibling path, and finally
+repository debug and release targets. A packaged executable therefore cannot
+select a stale development worker merely because it was launched from the
+repository root.
 
 The worker exits after a `shutdown` command or when its stdin closes. Killing or
 closing the GPUIX host therefore does not intentionally leave a background

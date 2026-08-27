@@ -358,9 +358,9 @@ function findWorkerExecutable(): string | null {
   const configured = process.env.VRC_BILI_RELAY_WORKER;
   const candidates = [
     configured,
+    join(dirname(process.execPath), "relay-worker.exe"),
     resolve(process.cwd(), "target", "debug", "relay-worker.exe"),
     resolve(process.cwd(), "target", "release", "relay-worker.exe"),
-    join(dirname(process.execPath), "relay-worker.exe"),
   ];
   return candidates.find((candidate): candidate is string => Boolean(candidate && existsSync(candidate))) ?? null;
 }

@@ -40,6 +40,8 @@ vertical slice is connected end to end:
 - the managed installer verifies the publisher's SHA-256 value before activating `ffmpeg.exe` and `ffprobe.exe`;
 - resolved media is held in short-lived Rust sessions instead of exposing temporary Bilibili URLs to React;
 - Rust starts, observes, stops, and cleans up FFmpeg relay processes;
+- on Windows, every FFmpeg process belongs to a kill-on-close Job Object so a
+  crashed or forcibly terminated worker cannot leave media running in the background;
 - a relay is reported as running only after FFmpeg has produced media output;
 - FFmpeg playback progress is reported back to the seek control;
 - changing a Bilibili part resolves fresh media and replaces the relay through one Rust workflow;
@@ -60,7 +62,9 @@ vertical slice is connected end to end:
 - legacy plaintext stream keys migrate to Windows current-user encryption, while replies expose only `missing`, `available`, or `unavailable` state;
 - the stream key and its protected value stay inside Rust, and relay commands no longer carry either one;
 - the ready view now follows the real starting/running/completed/stopped/failed lifecycle;
-- release builds put `vrc-bili-relay-gpuix.exe` and `relay-worker.exe` together in `dist/`.
+- release builds put `vrc-bili-relay-gpuix.exe` and `relay-worker.exe` together in `dist/`;
+- a packaged UI prefers its sibling worker over repository build artifacts, while
+  the explicit worker override remains available for development diagnostics.
 
 The following UI interactions also remain live:
 

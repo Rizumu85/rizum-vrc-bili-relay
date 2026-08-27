@@ -7,6 +7,18 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
+
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+    SetInformationJobObject,
+};
+
 use crate::danmaku::{
     AUDIO_BITRATE_KBPS, DanmakuOverlay, OUTPUT_FPS, OUTPUT_HEIGHT, OUTPUT_WIDTH, VIDEO_BITRATE_KBPS,
 };
@@ -19,6 +31,8 @@ const LOG_LINE_LIMIT: usize = 24;
 
 pub(crate) struct FfmpegProcess {
     child: Child,
+    #[cfg(windows)]
+    _job: FfmpegJob,
     started_at: Instant,
     stderr: Arc<Mutex<VecDeque<String>>>,
     has_output: Arc<AtomicBool>,
@@ -92,6 +106,18 @@ impl FfmpegProcess {
                 format!("FFmpeg could not be started: {error}"),
             )
         })?;
+        #[cfg(windows)]
+        let job = match FfmpegJob::attach(&child) {
+            Ok(job) => job,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(RelayError::new(
+                    "ffmpeg_start_failed",
+                    format!("FFmpeg process guard could not be created: {error}"),
+                ));
+            }
+        };
         let stderr = Arc::new(Mutex::new(VecDeque::with_capacity(LOG_LINE_LIMIT)));
         if let Some(pipe) = child.stderr.take() {
             drain_stderr(
@@ -108,6 +134,8 @@ impl FfmpegProcess {
 
         Ok(Self {
             child,
+            #[cfg(windows)]
+            _job: job,
             started_at: Instant::now(),
             stderr,
             has_output,
@@ -165,6 +193,62 @@ impl FfmpegProcess {
             .lock()
             .map(|lines| lines.iter().cloned().collect::<Vec<_>>().join("\n"))
             .unwrap_or_default()
+    }
+}
+
+#[cfg(windows)]
+struct FfmpegJob {
+    handle: HANDLE,
+}
+
+#[cfg(windows)]
+impl FfmpegJob {
+    fn attach(child: &Child) -> std::io::Result<Self> {
+        // SAFETY: null security attributes and name request an unnamed job with
+        // default security. The returned handle is owned by this value.
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: `limits` has the exact layout and byte length required by the
+        // selected information class, and `handle` remains valid for the call.
+        let configured = unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_ref(&limits).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            )
+        };
+        if configured == 0 {
+            let error = std::io::Error::last_os_error();
+            // SAFETY: `handle` was created above and has not been closed.
+            unsafe { CloseHandle(handle) };
+            return Err(error);
+        }
+
+        let process = child.as_raw_handle() as HANDLE;
+        // SAFETY: `process` is the live handle owned by `child`, while `handle`
+        // is a configured job object owned by this function.
+        if unsafe { AssignProcessToJobObject(handle, process) } == 0 {
+            let error = std::io::Error::last_os_error();
+            // SAFETY: `handle` was created above and has not been closed.
+            unsafe { CloseHandle(handle) };
+            return Err(error);
+        }
+
+        Ok(Self { handle })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for FfmpegJob {
+    fn drop(&mut self) {
+        // SAFETY: this value owns `handle` and closes it exactly once.
+        unsafe { CloseHandle(self.handle) };
     }
 }
 

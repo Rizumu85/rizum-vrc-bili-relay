@@ -21,4 +21,10 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 sha2 = "0.10"
 zeromq = { version = "0.6.0", default-features = false, features = ["tcp-transport", "tokio-runtime"] }
 zip = { version = "8.6", default-features = false, features = ["deflate"] }
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Cryptography",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
