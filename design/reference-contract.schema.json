@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Rizumu85/rizum-glass/adapters/gpui/reference-contract.schema.json",
+  "title": "Rizum Glass GPUI Reference Contract",
+  "type": "object",
+  "required": ["reference", "viewport", "components", "motion", "materialFallbacks"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "reference": {
+      "type": "object",
+      "required": ["stack", "source", "approvedAt"],
+      "properties": {
+        "stack": { "const": "React + TypeScript + Vite + Tailwind CSS + shadcn/ui + Rizum Glass" },
+        "source": { "type": "string", "minLength": 1 },
+        "approvedAt": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "viewport": {
+      "type": "object",
+      "required": ["width", "height", "scale"],
+      "properties": {
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 },
+        "scale": { "type": "number", "exclusiveMinimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "primitive", "dimensions", "tokens", "states"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "primitive": { "type": "string", "minLength": 1 },
+          "dimensions": {
+            "type": "object",
+            "required": ["preferredWidth", "preferredHeight"],
+            "properties": {
+              "minWidth": { "type": ["number", "null"] },
+              "preferredWidth": { "type": "number", "exclusiveMinimum": 0 },
+              "maxWidth": { "type": ["number", "null"] },
+              "preferredHeight": { "type": "number", "exclusiveMinimum": 0 },
+              "padding": { "type": "string" },
+              "gap": { "type": "number" }
+            },
+            "additionalProperties": false
+          },
+          "tokens": {
+            "type": "object",
+            "additionalProperties": { "type": ["string", "number", "boolean"] }
+          },
+          "states": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["name", "evidence"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "evidence": { "type": "string", "minLength": 1 },
+                "notes": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "motion": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "from", "to", "durationMs", "easing", "interruptible", "reducedMotion"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "from": { "type": "string", "minLength": 1 },
+          "to": { "type": "string", "minLength": 1 },
+          "durationMs": { "type": "number", "minimum": 0 },
+          "easing": { "type": "string", "minLength": 1 },
+          "interruptible": { "type": "boolean" },
+          "reducedMotion": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "materialFallbacks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["webEffect", "gpuiStrategy", "acceptedDifference"],
+        "properties": {
+          "webEffect": { "type": "string", "minLength": 1 },
+          "gpuiStrategy": { "type": "string", "minLength": 1 },
+          "acceptedDifference": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

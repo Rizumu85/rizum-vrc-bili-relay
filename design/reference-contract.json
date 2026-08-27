@@ -1,0 +1,111 @@
+{
+  "$schema": "./reference-contract.schema.json",
+  "reference": {
+    "stack": "React + TypeScript + Vite + Tailwind CSS + shadcn/ui + Rizum Glass",
+    "source": "workspace:design/product-reference-v3-agent; evidence copied into design/reference",
+    "approvedAt": "2026-08-26T00:00:00-04:00"
+  },
+  "viewport": {
+    "width": 428,
+    "height": 478,
+    "scale": 1
+  },
+  "components": [
+    {
+      "id": "application-shell",
+      "primitive": "GPUIX div + text + svg",
+      "dimensions": {
+        "minWidth": 428,
+        "preferredWidth": 428,
+        "maxWidth": 428,
+        "preferredHeight": 478,
+        "padding": "header 16px 24px 11px; body 16px 24px 24px",
+        "gap": 12
+      },
+      "tokens": {
+        "lightSurface": "rgba(255,255,255,.92)",
+        "darkSurface": "rgba(39,39,42,.94)",
+        "panelRadius": 20,
+        "identityTitle": "Noto Serif SC 16px semibold",
+        "logoAccent": "#fb7185"
+      },
+      "states": [
+        {
+          "name": "empty-light",
+          "evidence": "reference/empty-light.png",
+          "notes": "The browser ambient canvas is presentation-only and is not translated into the native window."
+        },
+        {
+          "name": "ready-vod-light",
+          "evidence": "reference/ready-vod-light.png",
+          "notes": "The default spike state exercises the densest main surface."
+        },
+        {
+          "name": "ready-vod-dark",
+          "evidence": "reference/ready-vod-dark.png",
+          "notes": "Dark appearance uses a solid neutral semantic remap."
+        }
+      ]
+    },
+    {
+      "id": "source-and-result",
+      "primitive": "GPUIX input + headless Select + interactive div controls",
+      "dimensions": {
+        "minWidth": 380,
+        "preferredWidth": 380,
+        "maxWidth": 380,
+        "preferredHeight": 374,
+        "padding": "0",
+        "gap": 13
+      },
+      "tokens": {
+        "inputHeight": 32,
+        "buttonHeight": 30,
+        "controlRadius": 8,
+        "resultSeparatorTop": 18,
+        "resultSeparatorPadding": 16,
+        "seekVisualTrack": 2,
+        "seekHitTarget": 28
+      },
+      "states": [
+        {
+          "name": "ready-vod",
+          "evidence": "reference/ready-vod-light.png",
+          "notes": "Includes part selection, seek adjustment, danmaku visibility, and copy output."
+        }
+      ]
+    }
+  ],
+  "motion": [
+    {
+      "id": "surface-content-enter",
+      "from": "not rendered",
+      "to": "named state",
+      "durationMs": 220,
+      "easing": "cubic-bezier(.23, 1, .32, 1)",
+      "interruptible": true,
+      "reducedMotion": "Render the final state immediately with no transform."
+    },
+    {
+      "id": "control-response",
+      "from": "rest",
+      "to": "hover or active",
+      "durationMs": 180,
+      "easing": "ease-out",
+      "interruptible": true,
+      "reducedMotion": "Retain semantic color changes and omit positional movement."
+    }
+  ],
+  "materialFallbacks": [
+    {
+      "webEffect": "Per-panel backdrop-filter blur over an ambient radial presentation canvas",
+      "gpuiStrategy": "Use GPUI window-level blur with a neutral translucent root surface, one quiet border, and a soft shadow.",
+      "acceptedDifference": "GPUIX cannot reproduce CSS per-element refraction; the native surface is flatter and the browser canvas is intentionally omitted."
+    },
+    {
+      "webEffect": "CSS transforms for 1px hover lift and 0.97 press scale",
+      "gpuiStrategy": "Use GPUIX native hover and active surface states without changing control geometry.",
+      "acceptedDifference": "The first spike preserves semantic feedback but omits transform-based pointer motion."
+    }
+  ]
+}

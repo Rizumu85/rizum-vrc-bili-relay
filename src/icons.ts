@@ -1,0 +1,13 @@
+export const ICONS = {
+  logo: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5 5.5h14a2.5 2.5 0 0 1 2.5 2.5v8A2.5 2.5 0 0 1 19 18.5H5A2.5 2.5 0 0 1 2.5 16V8A2.5 2.5 0 0 1 5 5.5Z" stroke="currentColor" stroke-width="1.8"/><path d="m10.1 9 5 3-5 3V9Z" fill="currentColor"/><path d="M9 21h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+  settings: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z" stroke="currentColor" stroke-width="1.7"/><path d="M19.2 13.3a7.8 7.8 0 0 0 0-2.6l2-1.5-2-3.4-2.5 1a8.8 8.8 0 0 0-2.2-1.3L14.2 3h-4.4l-.3 2.5a8.8 8.8 0 0 0-2.2 1.3l-2.5-1-2 3.4 2 1.5a7.8 7.8 0 0 0 0 2.6l-2 1.5 2 3.4 2.5-1a8.8 8.8 0 0 0 2.2 1.3l.3 2.5h4.4l.3-2.5a8.8 8.8 0 0 0 2.2-1.3l2.5 1 2-3.4-2-1.5Z" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/></svg>`,
+  clipboard: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 5.5H6.8A1.8 1.8 0 0 0 5 7.3v11A1.8 1.8 0 0 0 6.8 20h10.4a1.8 1.8 0 0 0 1.8-1.8v-11a1.8 1.8 0 0 0-1.8-1.8H15" stroke="currentColor" stroke-width="1.7"/><path d="M9 4.7A1.7 1.7 0 0 1 10.7 3h2.6A1.7 1.7 0 0 1 15 4.7V7H9V4.7Z" stroke="currentColor" stroke-width="1.7"/></svg>`,
+  play: `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="m5 3 7 5-7 5V3Z" fill="currentColor"/></svg>`,
+  link: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9.5 14.5 14.5 9.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="m7.7 17.8-1 .9a3.8 3.8 0 0 1-5.4-5.4l3-3a3.8 3.8 0 0 1 5.4 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="m16.3 6.2 1-.9a3.8 3.8 0 0 1 5.4 5.4l-3 3a3.8 3.8 0 0 1-5.4 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+  copy: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="8" y="8" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="currentColor" stroke-width="1.7"/></svg>`,
+  check: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="m5 12.5 4.3 4.3L19 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  chevron: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="m7 9.5 5 5 5-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+} as const;
+
+export type IconName = keyof typeof ICONS;
+
