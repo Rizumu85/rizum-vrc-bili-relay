@@ -62,6 +62,16 @@ If the new FFmpeg process cannot launch, Rust attempts to resume the suspended
 session. React only supplies user intent and renders the resulting resolution
 and relay state.
 
+Public VOD resolution also retains the Bilibili CID and duration inside the
+same private media session. When `options.danmaku.enabled` is true, Rust fetches
+the remaining six-minute protobuf segments as a guest, applies the UI's style
+and type filters, and atomically writes a bounded temporary ASS file. FFmpeg
+then scales and pads to 1280×720 at 30 FPS, burns that ASS overlay, and encodes
+H.264/AAC for the FLV relay. Seeking starts both the media and the regenerated
+ASS timeline at the normalized source position. The media session owns the ASS
+file, so replacement, completion, failure, stop, expiry, and shutdown all clean
+it up. No upstream media URL or danmaku payload crosses into React.
+
 Temporary upstream URLs never cross into React. The stream key is supplied by
 the settings UI only in the `start_relay` command and is never returned or
 logged. FFmpeg is launched without a shell or console window. Its bounded
@@ -102,14 +112,14 @@ Network resolution uses a separate command so callers can inspect without I/O:
 Resolved media can then be published through its opaque session:
 
 ```json
-{"id":3,"type":"start_relay","session_id":"19c0-1","target":{"ingest_server":"rtmp://ingest.vrcdn.live/live","stream_key":"<secret>","playback_url":"rtspt://stream.vrcdn.live/live/<id>","start_seconds":0}}
+{"id":3,"type":"start_relay","session_id":"19c0-1","target":{"ingest_server":"rtmp://ingest.vrcdn.live/live","stream_key":"<secret>","playback_url":"rtspt://stream.vrcdn.live/live/<id>","start_seconds":0},"options":{"danmaku":{"enabled":true}}}
 ```
 
 A running Bilibili VOD can be replaced without exposing its temporary media
 URLs or duplicating the stop/start workflow in React:
 
 ```json
-{"id":4,"type":"retarget_relay","current_session_id":"19c0-1","source":"https://www.bilibili.com/video/BV1PGNQesEkG","requested_part":2,"target":{"ingest_server":"rtmp://ingest.vrcdn.live/live","stream_key":"<secret>","playback_url":"rtspt://stream.vrcdn.live/live/<id>","start_seconds":15}}
+{"id":4,"type":"retarget_relay","current_session_id":"19c0-1","source":"https://www.bilibili.com/video/BV1PGNQesEkG","requested_part":2,"target":{"ingest_server":"rtmp://ingest.vrcdn.live/live","stream_key":"<secret>","playback_url":"rtspt://stream.vrcdn.live/live/<id>","start_seconds":15},"options":{"danmaku":{"enabled":true}}}
 ```
 
 The playback URL is an independent value copied from VRCDN. It is never
@@ -156,7 +166,7 @@ FFmpeg process.
 
 Implement future behaviour in this order so every slice crosses the same seam:
 
-1. Fetch danmaku and render ASS filters through FFmpeg.
+1. Add the live-room danmaku websocket and a bounded live overlay path.
 2. Add Bilibili QR login and authenticated source resolution.
 3. Move persisted product settings and credentials behind the Rust interface.
 

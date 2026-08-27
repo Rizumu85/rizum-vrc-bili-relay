@@ -24,6 +24,7 @@ import {
 import {
   type FfmpegStatus,
   type HealthReply,
+  type PlaybackOptions,
   type RelayStatus,
   type RelayTarget,
   type SourceResolution,
@@ -39,7 +40,7 @@ type DanmakuFont = "microsoft-yahei" | "noto-sans-sc" | "source-han-sans" | "sim
 type DanmakuWeight = "regular" | "bold";
 type DanmakuOutline = "heavy" | "outline" | "shadow";
 type DanmakuFilter = "rolling" | "fixed" | "colored" | "advanced";
-type PlaybackUpdate = "part" | "seek" | null;
+type PlaybackUpdate = "part" | "seek" | "danmaku" | null;
 type MediaComponentState =
   | "checking"
   | "external"
@@ -181,6 +182,35 @@ function configuredRelayTarget(startSeconds: number): RelayTarget | null {
     playback_url: settings.playbackUrl,
     start_seconds: startSeconds,
   };
+}
+
+function configuredPlaybackOptions(
+  visibility: DanmakuVisibility,
+  settings: DanmakuSettings,
+): PlaybackOptions {
+  const font = {
+    "microsoft-yahei": "microsoft_yahei",
+    "noto-sans-sc": "noto_sans_sc",
+    "source-han-sans": "source_han_sans",
+    simhei: "simhei",
+  } as const;
+  return {
+    danmaku: {
+      enabled: visibility === "shown",
+      size: settings.size,
+      area: settings.area,
+      speed: settings.speed,
+      opacity: settings.opacity,
+      font: font[settings.font],
+      weight: settings.weight,
+      outline: settings.outline,
+      hidden_types: settings.hiddenTypes,
+    },
+  };
+}
+
+function playbackOptionsSignature(options: PlaybackOptions): string {
+  return JSON.stringify(options);
 }
 
 function Icon({ name, size, color }: { name: IconName; size: number; color: string }) {
@@ -809,7 +839,7 @@ function Result({
   playbackUpdating,
   playbackMessage,
   danmaku,
-  setDanmaku,
+  onDanmakuChange,
   onOpenDanmaku,
   onOpenSettings,
   onStopRelay,
@@ -828,7 +858,7 @@ function Result({
   playbackUpdating: PlaybackUpdate;
   playbackMessage: string | null;
   danmaku: DanmakuVisibility;
-  setDanmaku: (value: DanmakuVisibility) => void;
+  onDanmakuChange: (value: DanmakuVisibility) => void;
   onOpenDanmaku: () => void;
   onOpenSettings: () => void;
   onStopRelay: () => void;
@@ -854,6 +884,7 @@ function Result({
     : REFERENCE_PARTS;
   const isLive = sourceResolution?.kind === "live";
   const showPlaybackControls = isReference || sourceResolution?.kind === "video";
+  const showDanmakuControls = isReference || sourceResolution?.kind === "video";
   const playbackDuration = parts.find((entry) => entry.value === part)?.duration ?? 0;
   const sourceKindLabel = sourceResolution?.kind === "media"
     ? "媒体"
@@ -945,7 +976,7 @@ function Result({
         </>
       ) : null}
 
-      {isReference ? (
+      {showDanmakuControls ? (
         <div
           style={{
             position: "relative",
@@ -963,7 +994,7 @@ function Result({
           </div>
           <Segmented
             value={danmaku}
-            onChange={setDanmaku}
+            onChange={onDanmakuChange}
             options={VISIBILITY_OPTIONS}
             width={92}
             height={24}
@@ -1046,6 +1077,7 @@ function resultStatusLabel(
   if (source?.routing.kind === "direct" && source.playback_url) return "· 可直接播放 · 软件可关闭";
   if (playbackUpdating === "part") return "· 正在切换分 P";
   if (playbackUpdating === "seek") return "· 正在跳转";
+  if (playbackUpdating === "danmaku") return "· 正在更新弹幕";
   if (playbackMessage) return `· ${playbackMessage}`;
   if (relayError && !relay) return "· 需要完成设置";
   switch (relay?.stage) {
@@ -1935,6 +1967,7 @@ export function AppSurface({
   const relayWorker = useRef<RelayWorkerClient | null>(null);
   const conversionEpoch = useRef(0);
   const playbackEpoch = useRef(0);
+  const appliedPlaybackOptions = useRef<string | null>(null);
   const sceneBeforeConversion = useRef<Scene>(initialScene);
   const resolvedAppearance: Appearance =
     themePreference === "system" ? initialAppearance : themePreference;
@@ -2043,6 +2076,7 @@ export function AppSurface({
     setPlaybackUpdating(null);
     setPlaybackMessage(null);
     setSeekInteractionActive(false);
+    appliedPlaybackOptions.current = null;
     setScene("loading");
     try {
       if (relayStatus && (relayStatus.stage === "starting" || relayStatus.stage === "running")) {
@@ -2062,8 +2096,10 @@ export function AppSurface({
           return;
         }
         try {
-          const started = await getRelayWorker().startRelay(resolution.session_id, target);
+          const options = configuredPlaybackOptions(danmaku, danmakuSettings);
+          const started = await getRelayWorker().startRelay(resolution.session_id, target, options);
           if (conversionEpoch.current === epoch) {
+            appliedPlaybackOptions.current = playbackOptionsSignature(options);
             setRelayStatus(started);
             if (started.position_seconds !== undefined) setPlaybackPosition(started.position_seconds);
           }
@@ -2082,6 +2118,7 @@ export function AppSurface({
     requestedPart: number,
     startSeconds: number,
     update: Exclude<PlaybackUpdate, null>,
+    options = configuredPlaybackOptions(danmaku, danmakuSettings),
   ) => {
     const previousResolution = sourceResolution;
     if (!previousResolution || previousResolution.kind !== "video" || playbackUpdating !== null) return;
@@ -2124,6 +2161,7 @@ export function AppSurface({
         previousResolution.canonical_url,
         requestedPart,
         target,
+        options,
       );
       if (playbackEpoch.current !== epoch) {
         await getRelayWorker().stopRelay(playback.relay.session_id).catch(() => undefined);
@@ -2136,6 +2174,7 @@ export function AppSurface({
       setRelayStatus(playback.relay);
       setRelayError(null);
       setPlaybackMessage(null);
+      appliedPlaybackOptions.current = playbackOptionsSignature(options);
     } catch (error) {
       if (playbackEpoch.current !== epoch) return;
       setPart(previousPart);
@@ -2146,12 +2185,22 @@ export function AppSurface({
         setRelayStatus(previousRelay);
         setRelayError(null);
         setPlaybackMessage(
-          update === "part" ? "切换失败 · 原内容仍在播放" : "跳转失败 · 原内容仍在播放",
+          update === "part"
+            ? "切换失败 · 原内容仍在播放"
+            : update === "seek"
+              ? "跳转失败 · 原内容仍在播放"
+              : "弹幕更新失败 · 原内容仍在播放",
         );
       } else {
         setRelayStatus(null);
         setRelayError(relayErrorMessage(error));
-        setPlaybackMessage(update === "part" ? "切换失败 · 请重试" : "跳转失败 · 请重试");
+        setPlaybackMessage(
+          update === "part"
+            ? "切换失败 · 请重试"
+            : update === "seek"
+              ? "跳转失败 · 请重试"
+              : "弹幕更新失败 · 请重试",
+        );
       }
     } finally {
       if (playbackEpoch.current === epoch) setPlaybackUpdating(null);
@@ -2178,6 +2227,20 @@ export function AppSurface({
     if (sourceResolution?.kind !== "video") return;
     const requestedPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
     void retargetPlayback(requestedPart, position, "seek");
+  };
+
+  const changeDanmakuVisibility = (next: DanmakuVisibility) => {
+    if (next === danmaku || playbackUpdating !== null) return;
+    setDanmaku(next);
+    const active = relayStatus?.stage === "starting" || relayStatus?.stage === "running";
+    if (!active || sourceResolution?.kind !== "video") return;
+    const requestedPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
+    void retargetPlayback(
+      requestedPart,
+      playbackPosition,
+      "danmaku",
+      configuredPlaybackOptions(next, danmakuSettings),
+    );
   };
 
   const stopRelay = async () => {
@@ -2209,7 +2272,20 @@ export function AppSurface({
   };
 
   const leaveSubview = () => {
-    setScene(lastMainScene === "settings" || lastMainScene === "danmaku" ? "ready-vod" : lastMainScene);
+    const returnScene = lastMainScene === "settings" || lastMainScene === "danmaku"
+      ? "ready-vod"
+      : lastMainScene;
+    const active = relayStatus?.stage === "starting" || relayStatus?.stage === "running";
+    const options = configuredPlaybackOptions(danmaku, danmakuSettings);
+    const shouldApplyDanmaku = scene === "danmaku"
+      && active
+      && sourceResolution?.kind === "video"
+      && appliedPlaybackOptions.current !== playbackOptionsSignature(options);
+    setScene(returnScene);
+    if (shouldApplyDanmaku && sourceResolution?.kind === "video") {
+      const requestedPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
+      void retargetPlayback(requestedPart, playbackPosition, "danmaku", options);
+    }
   };
 
   return (
@@ -2327,7 +2403,7 @@ export function AppSurface({
               playbackUpdating={playbackUpdating}
               playbackMessage={playbackMessage}
               danmaku={danmaku}
-              setDanmaku={setDanmaku}
+              onDanmakuChange={changeDanmakuVisibility}
               onOpenDanmaku={() => showSubview("danmaku")}
               onOpenSettings={() => showSubview("settings")}
               onStopRelay={() => void stopRelay()}
@@ -2389,6 +2465,14 @@ function relayErrorMessage(error: unknown): string {
       return "这个分 P 暂时无法中继。";
     case "retarget_restore_failed":
       return "切换失败，原来的中继也没有恢复，请重新生成地址。";
+    case "danmaku_fetch_failed":
+      return "弹幕暂时无法读取，请稍后再试。";
+    case "danmaku_invalid_data":
+      return "弹幕数据格式异常，请稍后再试。";
+    case "danmaku_too_large":
+      return "这段视频的弹幕太多，暂时无法处理。";
+    case "danmaku_storage_failed":
+      return "弹幕临时文件无法保存，请检查磁盘空间。";
     case "ffmpeg_start_failed":
     case "ffmpeg_status_failed":
       return "FFmpeg 无法启动，请检查视频处理设置。";

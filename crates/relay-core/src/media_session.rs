@@ -3,6 +3,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use url::Url;
 
+use crate::danmaku::{DanmakuOverlay, VideoDanmakuSource};
 use crate::ffmpeg::{FfmpegProcess, ProcessPoll};
 use crate::{
     MediaInput, RelayError, RelayStage, RelayStatus, RelayTarget, ResolvedSource, SourceResolution,
@@ -19,6 +20,8 @@ struct MediaSession {
     input: MediaInput,
     expires_at: Instant,
     process: Option<FfmpegProcess>,
+    overlay: Option<DanmakuOverlay>,
+    danmaku_events: Option<u64>,
     stage: RelayStage,
     playback_url: Option<String>,
     position_seconds: Option<f64>,
@@ -56,6 +59,8 @@ impl MediaSessionStore {
                     input,
                     expires_at: Instant::now() + SESSION_TTL,
                     process: None,
+                    overlay: None,
+                    danmaku_events: None,
                     stage: RelayStage::Stopped,
                     playback_url: None,
                     position_seconds,
@@ -72,6 +77,7 @@ impl MediaSessionStore {
         session_id: &str,
         target: RelayTarget,
         ffmpeg_path: Option<&str>,
+        overlay: Option<DanmakuOverlay>,
     ) -> Result<RelayStatus, RelayError> {
         self.cleanup_expired();
         let ffmpeg_path = ffmpeg_path.ok_or_else(|| {
@@ -95,17 +101,22 @@ impl MediaSessionStore {
             }
             process.stop();
         }
+        session.overlay = None;
+        session.danmaku_events = None;
         let process = FfmpegProcess::spawn(
             ffmpeg_path,
             &session.input,
             &ingest_url,
             &target.stream_key,
             start_seconds,
+            overlay.as_ref().map(DanmakuOverlay::path),
         )
         .inspect_err(|error| {
             session.stage = RelayStage::Failed;
             session.diagnostic = Some(error.message.clone());
         })?;
+        session.danmaku_events = overlay.as_ref().map(DanmakuOverlay::event_count);
+        session.overlay = overlay;
         session.process = Some(process);
         session.stage = RelayStage::Starting;
         session.playback_url = Some(target.playback_url);
@@ -113,6 +124,26 @@ impl MediaSessionStore {
         session.diagnostic = None;
         session.expires_at = Instant::now() + SESSION_TTL;
         Ok(status_for(session_id, session))
+    }
+
+    pub fn playback_context(
+        &mut self,
+        session_id: &str,
+        requested_start: f64,
+    ) -> Result<(Option<VideoDanmakuSource>, f64), RelayError> {
+        self.cleanup_expired();
+        let session = self.sessions.get(session_id).ok_or_else(|| {
+            RelayError::new(
+                "media_session_not_found",
+                "Media session expired or does not exist; resolve the source again",
+            )
+        })?;
+        let start_seconds = normalize_start(
+            requested_start,
+            session.duration_seconds,
+            session.input.is_live,
+        )?;
+        Ok((session.input.danmaku_source.clone(), start_seconds))
     }
 
     pub fn status(&mut self, session_id: &str) -> Result<RelayStatus, RelayError> {
@@ -153,6 +184,8 @@ impl MediaSessionStore {
             }
             process.stop();
         }
+        session.overlay = None;
+        session.danmaku_events = None;
         session.stage = RelayStage::Stopped;
         session.diagnostic = None;
         session.expires_at = Instant::now() + SESSION_TTL;
@@ -218,6 +251,8 @@ fn refresh(session: &mut MediaSession) -> Result<(), RelayError> {
             };
             session.diagnostic = (!diagnostic.is_empty()).then_some(diagnostic);
             session.process = None;
+            session.overlay = None;
+            session.danmaku_events = None;
             session.expires_at = Instant::now() + SESSION_TTL;
         }
     }
@@ -230,6 +265,7 @@ fn status_for(session_id: &str, session: &MediaSession) -> RelayStatus {
         stage: session.stage.clone(),
         playback_url: session.playback_url.clone(),
         position_seconds: session.position_seconds,
+        danmaku_events: session.danmaku_events,
         diagnostic: session.diagnostic.clone(),
     }
 }

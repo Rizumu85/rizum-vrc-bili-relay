@@ -1,11 +1,15 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::danmaku::{
+    AUDIO_BITRATE_KBPS, OUTPUT_FPS, OUTPUT_HEIGHT, OUTPUT_WIDTH, VIDEO_BITRATE_KBPS,
+};
 use crate::{MediaInput, RelayError};
 
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
@@ -35,6 +39,7 @@ impl FfmpegProcess {
         ingest_url: &str,
         stream_key: &str,
         start_seconds: f64,
+        overlay_path: Option<&Path>,
     ) -> Result<Self, RelayError> {
         let mut command = Command::new(executable);
         command
@@ -60,11 +65,12 @@ impl FfmpegProcess {
         } else {
             command.args(["-map", "0:v:0", "-map", "0:a:0?"]);
         }
+        if let Some(overlay_path) = overlay_path {
+            add_danmaku_transcode(&mut command, overlay_path);
+        } else {
+            command.args(["-c:v", "copy", "-c:a", "copy"]);
+        }
         command.args([
-            "-c:v",
-            "copy",
-            "-c:a",
-            "copy",
             "-max_muxing_queue_size",
             "1024",
             "-flvflags",
@@ -160,6 +166,62 @@ impl FfmpegProcess {
             .map(|lines| lines.iter().cloned().collect::<Vec<_>>().join("\n"))
             .unwrap_or_default()
     }
+}
+
+fn add_danmaku_transcode(command: &mut Command, overlay_path: &Path) {
+    let filter = format!(
+        "scale=w={OUTPUT_WIDTH}:h={OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,\
+         pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2,\
+         fps={OUTPUT_FPS},ass=filename='{}'",
+        escape_filter_path(overlay_path)
+    );
+    let video_bitrate = format!("{VIDEO_BITRATE_KBPS}k");
+    let video_buffer = format!("{}k", VIDEO_BITRATE_KBPS * 2);
+    let keyframe_interval = OUTPUT_FPS.to_string();
+    let audio_bitrate = format!("{AUDIO_BITRATE_KBPS}k");
+    command.args(["-vf", &filter, "-pix_fmt", "yuv420p"]);
+    command.args([
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-tune",
+        "zerolatency",
+        "-b:v",
+        &video_bitrate,
+        "-maxrate",
+        &video_bitrate,
+        "-bufsize",
+        &video_buffer,
+        "-g",
+        &keyframe_interval,
+        "-keyint_min",
+        &keyframe_interval,
+        "-sc_threshold",
+        "0",
+        "-bf",
+        "0",
+        "-c:a",
+        "aac",
+        "-b:a",
+        &audio_bitrate,
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        "-af",
+        "aresample=async=1:first_pts=0",
+    ]);
+}
+
+fn escape_filter_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', r"\:")
+        .replace('\'', r"\'")
+        .replace('[', r"\[")
+        .replace(']', r"\]")
+        .replace(',', r"\,")
 }
 
 impl Drop for FfmpegProcess {

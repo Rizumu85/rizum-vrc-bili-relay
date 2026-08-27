@@ -1,4 +1,4 @@
-export const RELAY_PROTOCOL_VERSION = 7;
+export const RELAY_PROTOCOL_VERSION = 8;
 
 export type SourceKind = "video" | "live" | "media" | "short_link";
 export type RelayNextStep =
@@ -44,11 +44,40 @@ export interface RelayTarget {
   start_seconds?: number;
 }
 
+export type ProtocolDanmakuSize = "small" | "medium" | "large";
+export type ProtocolDanmakuArea = "quarter" | "half" | "full";
+export type ProtocolDanmakuSpeed = "slow" | "normal" | "fast";
+export type ProtocolDanmakuFont =
+  | "microsoft_yahei"
+  | "noto_sans_sc"
+  | "source_han_sans"
+  | "simhei";
+export type ProtocolDanmakuWeight = "regular" | "bold";
+export type ProtocolDanmakuOutline = "heavy" | "outline" | "shadow";
+export type ProtocolDanmakuFilter = "rolling" | "fixed" | "colored" | "advanced";
+
+export interface ProtocolDanmakuSettings {
+  enabled: boolean;
+  size: ProtocolDanmakuSize;
+  area: ProtocolDanmakuArea;
+  speed: ProtocolDanmakuSpeed;
+  opacity: number;
+  font: ProtocolDanmakuFont;
+  weight: ProtocolDanmakuWeight;
+  outline: ProtocolDanmakuOutline;
+  hidden_types: ProtocolDanmakuFilter[];
+}
+
+export interface PlaybackOptions {
+  danmaku: ProtocolDanmakuSettings;
+}
+
 export interface RelayStatus {
   session_id: string;
   stage: "starting" | "running" | "completed" | "stopped" | "failed";
   playback_url?: string;
   position_seconds?: number;
+  danmaku_events?: number;
   diagnostic?: string;
 }
 

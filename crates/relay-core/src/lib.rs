@@ -2,16 +2,18 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 mod bilibili;
+mod danmaku;
 mod ffmpeg;
 mod ffmpeg_manager;
 mod media_session;
 mod media_source;
 
 use bilibili::BilibiliClient;
+use danmaku::{DanmakuOverlay, DanmakuService};
 use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -35,12 +37,16 @@ pub enum Command {
     StartRelay {
         session_id: String,
         target: RelayTarget,
+        #[serde(default)]
+        options: PlaybackOptions,
     },
     RetargetRelay {
         current_session_id: Option<String>,
         source: String,
         requested_part: u32,
         target: RelayTarget,
+        #[serde(default)]
+        options: PlaybackOptions,
     },
     RelayStatus {
         session_id: String,
@@ -196,6 +202,105 @@ pub struct RelayTarget {
     pub start_seconds: f64,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PlaybackOptions {
+    pub danmaku: DanmakuSettings,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DanmakuSettings {
+    pub enabled: bool,
+    pub size: DanmakuSize,
+    pub area: DanmakuArea,
+    pub speed: DanmakuSpeed,
+    pub opacity: u8,
+    pub font: DanmakuFont,
+    pub weight: DanmakuWeight,
+    pub outline: DanmakuOutline,
+    pub hidden_types: Vec<DanmakuFilter>,
+}
+
+impl Default for DanmakuSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            size: DanmakuSize::Medium,
+            area: DanmakuArea::Half,
+            speed: DanmakuSpeed::Normal,
+            opacity: 80,
+            font: DanmakuFont::MicrosoftYahei,
+            weight: DanmakuWeight::Bold,
+            outline: DanmakuOutline::Heavy,
+            hidden_types: vec![DanmakuFilter::Advanced],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DanmakuSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DanmakuArea {
+    Quarter,
+    #[default]
+    Half,
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DanmakuSpeed {
+    Slow,
+    #[default]
+    Normal,
+    Fast,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DanmakuFont {
+    #[default]
+    MicrosoftYahei,
+    NotoSansSc,
+    SourceHanSans,
+    Simhei,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DanmakuWeight {
+    Regular,
+    #[default]
+    Bold,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DanmakuOutline {
+    #[default]
+    Heavy,
+    Outline,
+    Shadow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DanmakuFilter {
+    Rolling,
+    Fixed,
+    Colored,
+    Advanced,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RelayStatus {
     pub session_id: String,
@@ -204,6 +309,8 @@ pub struct RelayStatus {
     pub playback_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub danmaku_events: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<String>,
 }
@@ -270,6 +377,7 @@ pub(crate) struct MediaInput {
     pub referer: String,
     pub is_live: bool,
     pub requires_bilibili_headers: bool,
+    pub danmaku_source: Option<danmaku::VideoDanmakuSource>,
 }
 
 pub(crate) struct ResolvedSource {
@@ -314,6 +422,7 @@ pub enum NextStep {
 pub struct RelayCore {
     ffmpeg: FfmpegManager,
     bilibili: BilibiliClient,
+    danmaku: DanmakuService,
     sessions: MediaSessionStore,
 }
 
@@ -328,6 +437,7 @@ impl RelayCore {
         Self {
             ffmpeg: FfmpegManager::new(),
             bilibili: BilibiliClient::new(),
+            danmaku: DanmakuService::new(),
             sessions: MediaSessionStore::new(),
         }
     }
@@ -362,19 +472,33 @@ impl RelayCore {
                     resolution: self.sessions.prepare(resolved),
                 })
             }
-            Command::StartRelay { session_id, target } => {
-                let ffmpeg_path = self.ffmpeg.executable_path();
+            Command::StartRelay {
+                session_id,
+                mut target,
+                options,
+            } => {
+                media_session::validate_relay_target(&target)?;
+                let ffmpeg_path = self.ffmpeg.executable_path().ok_or_else(|| {
+                    RelayError::new("ffmpeg_missing", "No usable FFmpeg executable was found")
+                })?;
+                let (overlay, normalized_start) = self.prepare_danmaku_overlay(
+                    &session_id,
+                    &options.danmaku,
+                    target.start_seconds,
+                )?;
+                target.start_seconds = normalized_start;
                 Ok(Reply::RelayState {
                     relay: self
                         .sessions
-                        .start(&session_id, target, ffmpeg_path.as_deref())?,
+                        .start(&session_id, target, Some(&ffmpeg_path), overlay)?,
                 })
             }
             Command::RetargetRelay {
                 current_session_id,
                 source,
                 requested_part,
-                target,
+                mut target,
+                options,
             } => {
                 media_session::validate_relay_target(&target)?;
                 let ffmpeg_path = self.ffmpeg.executable_path().ok_or_else(|| {
@@ -388,14 +512,24 @@ impl RelayCore {
                         "Selected video part cannot be relayed",
                     )
                 })?;
-                let restoration_required = current_session_id.is_some();
+                let (next_overlay, normalized_start) = self.prepare_danmaku_overlay(
+                    &next_session_id,
+                    &options.danmaku,
+                    target.start_seconds,
+                )?;
+                target.start_seconds = normalized_start;
                 let suspended = current_session_id
                     .as_deref()
                     .and_then(|session_id| self.sessions.suspend(session_id));
-                match self
-                    .sessions
-                    .start(&next_session_id, target.clone(), Some(&ffmpeg_path))
-                {
+                let restoration_required = suspended
+                    .as_ref()
+                    .is_some_and(|previous| previous.was_active);
+                match self.sessions.start(
+                    &next_session_id,
+                    target.clone(),
+                    Some(&ffmpeg_path),
+                    next_overlay,
+                ) {
                     Ok(relay) => Ok(Reply::PlaybackState { resolution, relay }),
                     Err(mut error) => {
                         let restored = if let (Some(previous_session_id), Some(previous)) =
@@ -404,9 +538,21 @@ impl RelayCore {
                         {
                             let mut resume_target = target;
                             resume_target.start_seconds = previous.position_seconds.unwrap_or(0.0);
-                            self.sessions
-                                .start(previous_session_id, resume_target, Some(&ffmpeg_path))
-                                .is_ok()
+                            self.prepare_danmaku_overlay(
+                                previous_session_id,
+                                &options.danmaku,
+                                resume_target.start_seconds,
+                            )
+                            .and_then(|(overlay, normalized_start)| {
+                                resume_target.start_seconds = normalized_start;
+                                self.sessions.start(
+                                    previous_session_id,
+                                    resume_target,
+                                    Some(&ffmpeg_path),
+                                    overlay,
+                                )
+                            })
+                            .is_ok()
                         } else {
                             !restoration_required
                         };
@@ -435,6 +581,22 @@ impl RelayCore {
                 Ok(Reply::ShutdownAccepted)
             }
         }
+    }
+
+    fn prepare_danmaku_overlay(
+        &mut self,
+        session_id: &str,
+        settings: &DanmakuSettings,
+        requested_start: f64,
+    ) -> Result<(Option<DanmakuOverlay>, f64), RelayError> {
+        let (source, normalized_start) = self
+            .sessions
+            .playback_context(session_id, requested_start)?;
+        let overlay = match source {
+            Some(source) => self.danmaku.prepare(&source, settings, normalized_start)?,
+            None => None,
+        };
+        Ok((overlay, normalized_start))
     }
 }
 

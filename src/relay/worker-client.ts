@@ -6,6 +6,7 @@ import {
   type FfmpegStateReply,
   type FfmpegStatus,
   type HealthReply,
+  type PlaybackOptions,
   type PlaybackStateReply,
   type RelayReply,
   type RelayResponse,
@@ -81,8 +82,15 @@ export class RelayWorkerClient {
     return (reply as SourceResolutionReply).resolution;
   }
 
-  async startRelay(sessionId: string, target: RelayTarget): Promise<RelayStatus> {
-    return this.relayRequest({ type: "start_relay", session_id: sessionId, target }, 20_000);
+  async startRelay(
+    sessionId: string,
+    target: RelayTarget,
+    options: PlaybackOptions,
+  ): Promise<RelayStatus> {
+    return this.relayRequest(
+      { type: "start_relay", session_id: sessionId, target, options },
+      30_000,
+    );
   }
 
   async retargetRelay(
@@ -90,6 +98,7 @@ export class RelayWorkerClient {
     source: string,
     requestedPart: number,
     target: RelayTarget,
+    options: PlaybackOptions,
   ): Promise<{ resolution: SourceResolution; relay: RelayStatus }> {
     await this.health();
     const reply = await this.request(
@@ -99,8 +108,9 @@ export class RelayWorkerClient {
         source,
         requested_part: requestedPart,
         target,
+        options,
       },
-      40_000,
+      50_000,
     );
     if (reply.type !== "playback_state") {
       throw new RelayWorkerError(

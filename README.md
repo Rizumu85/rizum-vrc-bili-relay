@@ -41,6 +41,11 @@ comparison. The first real Rust-backed vertical slice is now connected:
 - FFmpeg playback progress is reported back to the seek control;
 - changing a Bilibili part resolves fresh media and replaces the relay through one Rust workflow;
 - seeking commits when the pointer is released, then restarts from the selected second;
+- public VOD danmaku is fetched as Bilibili's segmented protobuf data and rendered into ASS;
+- enabling danmaku switches the relay to a 1280×720 H.264/AAC transcode and burns the selected style into the picture;
+- danmaku visibility, size, area, speed, opacity, font, weight, outline, and type filters cross the versioned Rust protocol;
+- changing danmaku settings, switching parts, or seeking regenerates the overlay for the new source position;
+- temporary ASS files stay owned by their Rust media session and are removed on replacement, stop, failure, and shutdown;
 - the ready view now follows the real starting/running/completed/stopped/failed lifecycle;
 - release builds put `vrc-bili-relay-gpuix.exe` and `relay-worker.exe` together in `dist/`.
 
@@ -53,13 +58,15 @@ The following UI interactions also remain live:
 - copy the generated VRChat URL;
 - edit local VRCDN values and choose system/light/dark appearance.
 
-The current relay path remuxes the selected Bilibili H.264 video and audio into
-FLV and publishes it to the configured RTMP/RTMPS ingest. The user must copy the
+The current relay path remuxes the selected Bilibili H.264 video and audio when
+no picture processing is needed. With VOD danmaku enabled it transcodes to
+1280×720 at 30 FPS, burns the ASS overlay, and publishes H.264/AAC FLV to the
+configured RTMP/RTMPS ingest. The user must copy the
 ingest server, stream key, and complete playback URL from VRCDN; a playback URL
 cannot be derived safely from the key. FFmpeg processes are stopped when the
 user stops a relay, starts a replacement, or closes the app.
 
-Danmaku rendering, account login, and persisted Rust-owned settings remain
+Live-room danmaku, account login, and persisted Rust-owned settings remain
 future core slices. The untouched startup screen remains the approved visual
 reference.
 

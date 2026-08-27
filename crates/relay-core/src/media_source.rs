@@ -97,6 +97,7 @@ pub(crate) fn resolve(source: &str, ffprobe_path: &str) -> Result<ResolvedSource
         referer: descriptor.referer.clone(),
         is_live: duration_seconds.is_none(),
         requires_bilibili_headers: descriptor.requires_bilibili_headers,
+        danmaku_source: None,
     });
 
     Ok(ResolvedSource {

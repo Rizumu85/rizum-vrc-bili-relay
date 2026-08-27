@@ -133,7 +133,8 @@ impl BilibiliClient {
                 )
             })?;
         let referer = format!("https://www.bilibili.com/video/{bvid}");
-        let (routing, input) = self.resolve_video_route(&bvid, selected_cid, &referer)?;
+        let (routing, input) =
+            self.resolve_video_route(&bvid, selected_cid, duration_seconds.unwrap_or(1), &referer)?;
 
         Ok(ResolvedSource {
             resolution: SourceResolution {
@@ -225,6 +226,7 @@ impl BilibiliClient {
         &self,
         bvid: &str,
         cid: u64,
+        duration_seconds: u64,
         referer: &str,
     ) -> Result<(RouteDecision, MediaInput), RelayError> {
         let endpoint = "https://api.bilibili.com/x/player/playurl".to_string()
@@ -284,6 +286,11 @@ impl BilibiliClient {
                 referer: referer.to_string(),
                 is_live: false,
                 requires_bilibili_headers: true,
+                danmaku_source: Some(crate::danmaku::VideoDanmakuSource {
+                    cid,
+                    duration_seconds: duration_seconds.max(1),
+                    referer: referer.to_string(),
+                }),
             },
         ))
     }
@@ -341,6 +348,7 @@ impl BilibiliClient {
                 referer: referer.to_string(),
                 is_live: true,
                 requires_bilibili_headers: true,
+                danmaku_source: None,
             },
         ))
     }
