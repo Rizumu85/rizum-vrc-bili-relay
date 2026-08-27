@@ -432,7 +432,7 @@ function SourceField({
       <input
         testId="source-input"
         value={source}
-        placeholder="粘贴直播或视频链接"
+        placeholder="粘贴 B 站或媒体链接"
         onChange={(event) => setSource(event.value ?? "")}
         theme={{ appearance: palette === PALETTES.dark ? "dark" : "light", caret: palette.accentTeal }}
         style={{
@@ -773,7 +773,8 @@ function Result({
     ? VIDEO_OUTPUT.replace("{part}", part)
     : relayOutputDescription(sourceResolution, relayStatus, relayError);
   const relayRunning = relayStatus?.stage === "running" && Boolean(relayStatus.playback_url);
-  const canCopy = isReference || relayRunning;
+  const directReady = sourceResolution?.routing.kind === "direct" && Boolean(sourceResolution.playback_url);
+  const canCopy = isReference || relayRunning || directReady;
   const parts: PlaybackPart[] = sourceResolution?.kind === "video" && sourceResolution.parts?.length
     ? sourceResolution.parts.map((entry) => ({
         value: String(entry.page),
@@ -782,8 +783,11 @@ function Result({
       }))
     : REFERENCE_PARTS;
   const isLive = sourceResolution?.kind === "live";
-  const sourceKindLabel = !isLive
-    ? "视频"
+  const showPlaybackControls = isReference || sourceResolution?.kind === "video";
+  const sourceKindLabel = sourceResolution?.kind === "media"
+    ? "媒体"
+    : !isLive
+      ? "视频"
     : sourceResolution?.live_status === "live"
       ? "直播"
       : sourceResolution?.live_status === "replay"
@@ -810,7 +814,7 @@ function Result({
       <div style={{ height: 16, display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
         <StatusDot color={palette.accentViolet} />
         <text style={{ color: palette.inkMuted, fontFamily: FONT_SERIF, fontSize: 11.5, fontWeight: 600 }}>
-          {isReference || relayRunning ? "VRChat 播放地址" : "媒体路由"}
+          {isReference || relayRunning || directReady ? "VRChat 播放地址" : "媒体路由"}
         </text>
         <div style={{ flexGrow: 1 }} />
         <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 9.5 }}>
@@ -834,7 +838,7 @@ function Result({
         {sourceResolution?.title ?? VIDEO_TITLE}
       </text>
 
-      {!isLive ? (
+      {showPlaybackControls ? (
         <>
           <div style={{ marginTop: 9, display: "flex", flexDirection: "row", alignItems: "center", gap: 10 }}>
             <text style={{ width: 42, color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 11 }}>
@@ -945,6 +949,7 @@ function resultStatusLabel(
 ): string {
   if (isReference) return "· 中继运行中 · 请保持开启";
   if (source?.routing.kind === "unavailable") return "· 当前无法生成地址";
+  if (source?.routing.kind === "direct" && source.playback_url) return "· 可直接播放 · 软件可关闭";
   if (relayError && !relay) return "· 需要完成设置";
   switch (relay?.stage) {
     case "starting":
@@ -967,6 +972,7 @@ function relayOutputDescription(
   relay: RelayStatus | null,
   relayError: string | null,
 ): string {
+  if (source.routing.kind === "direct" && source.playback_url) return source.playback_url;
   if (relay?.stage === "running" && relay.playback_url) return relay.playback_url;
   if (relay?.stage === "starting") return "正在启动 FFmpeg 并连接 VRCDN";
   if (relay?.stage === "completed") return "视频已播放完成";
@@ -989,6 +995,8 @@ function routeDescription(source: SourceResolution): string {
       return "已找到 H.264 MPEG-TS 直播流，需要 FFmpeg 中继";
     case "requires_headers":
       return "已找到媒体流，需要本软件中继";
+    case "expiring_url":
+      return "媒体地址带有时效签名，需要本软件中继";
     case "direct_compatible":
       return "媒体流可以直接播放";
   }
@@ -2048,7 +2056,7 @@ export function AppSurface({
       ) : (
         <div style={{ flexGrow: 1, minHeight: 0, paddingTop: 16, paddingRight: 24, paddingBottom: 24, paddingLeft: 24 }}>
           <text style={{ color: palette.inkMuted, fontFamily: FONT_SERIF, fontSize: 11.5, fontWeight: 600 }}>
-            B 站链接
+            视频链接
           </text>
           <div style={{ marginTop: 7 }}>
             <SourceField source={source} setSource={setSource} palette={palette} />
@@ -2134,6 +2142,16 @@ function relayErrorMessage(error: unknown): string {
     case "h264_stream_not_found":
     case "unsupported_video_format":
       return "没有找到可以转换的 H.264 媒体流。";
+    case "unsupported_media_source":
+    case "invalid_media_source":
+      return "只支持 MP4、HLS、MPEG-TS 和 FLV 媒体链接。";
+    case "ffprobe_start_failed":
+    case "ffprobe_status_failed":
+      return "FFprobe 无法启动，请在设置中重新下载视频处理组件。";
+    case "media_probe_timeout":
+      return "读取媒体信息超时，请检查链接后重试。";
+    case "media_probe_failed":
+      return "媒体链接暂时无法读取，或服务器拒绝了连接。";
     case "login_required":
       return "这个内容需要登录后才能读取。";
     case "ffmpeg_missing":

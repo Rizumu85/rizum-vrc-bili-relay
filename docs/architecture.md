@@ -35,14 +35,18 @@ Current commands:
 - `ensure_ffmpeg`
 - `shutdown`
 
-The first source inspection classifies video, live-room, and short links and
-returns the next resolution step without doing I/O. Source resolution then
-expands b23.tv redirects and reads public Bilibili metadata. For videos it
+The first source inspection classifies video, live-room, short, and generic
+media links and returns the next resolution step without doing I/O. Source
+resolution then expands b23.tv redirects and reads public Bilibili metadata.
+For videos it
 returns the canonical BV id, title, parts, CIDs, durations, selected part, and
 the best public H.264 DASH tracks. For live rooms it returns the canonical room
 id, title, live/replay/offline state, and the preferred public H.264 FLV or
-MPEG-TS candidate. Temporary upstream URLs stay inside the Rust module. The UI
-only receives a route decision describing whether FFmpeg or a relay is needed.
+MPEG-TS candidate. Generic MP4, HLS, MPEG-TS, and FLV URLs are inspected by
+FFprobe. A stable public H.264/AAC input can cross the seam as a direct playback
+URL; expiring, header-bound, Bilibili-media, and FLV inputs stay inside Rust and
+become relay sessions. The UI receives the route decision, not private upstream
+credentials or temporary URLs.
 When a usable input is found, Rust retains it in a ten-minute media session and
 returns only the opaque session id. `start_relay` validates the user-provided
 VRCDN target and starts FFmpeg from that private session. `relay_status` reports
@@ -56,10 +60,10 @@ diagnostic tail is scrubbed of the output URL and stream key before it can be
 returned. Replacing, stopping, or dropping a session kills and waits for its
 child process.
 
-`ffmpeg_manager` is the single Rust module responsible for executable
-selection and managed installation. Its external interface is deliberately
-small: report status, ensure availability, return the selected executable path,
-and cancel on shutdown. System-path detection, data-directory selection,
+`ffmpeg_manager` is the single Rust module responsible for FFmpeg/FFprobe
+toolchain selection and managed installation. Its external interface is
+deliberately small: report status, ensure availability, return selected tool
+paths, and cancel on shutdown. System-path detection, data-directory selection,
 background HTTP transfer, byte progress, size limits, SHA-256 verification,
 safe ZIP extraction, install metadata, and atomic replacement remain inside the
 module.
@@ -111,7 +115,7 @@ Success and failure are explicit:
 ```
 
 ```json
-{"status":"error","id":1,"error":{"code":"unsupported_source","message":"Only Bilibili video, live-room, and b23.tv links are supported"}}
+{"status":"error","id":1,"error":{"code":"unsupported_source","message":"Only Bilibili pages and HTTP(S) MP4, HLS, MPEG-TS, or FLV media links are supported"}}
 ```
 
 Protocol version changes are reported by `health`. The UI rejects a worker with
@@ -136,11 +140,10 @@ FFmpeg process.
 
 Implement future behaviour in this order so every slice crosses the same seam:
 
-1. Add local direct/proxy playback for sources that do not require VRCDN.
+1. Restart a VOD relay at a changed part or playback position.
 2. Fetch danmaku and render ASS filters through FFmpeg.
-3. Restart a VOD relay at a changed part or playback position.
-4. Add Bilibili QR login and authenticated source resolution.
-5. Move persisted product settings and credentials behind the Rust interface.
+3. Add Bilibili QR login and authenticated source resolution.
+4. Move persisted product settings and credentials behind the Rust interface.
 
 The approved UI may keep reference data while a slice is under construction,
 but product actions must never manufacture a successful result in TypeScript.

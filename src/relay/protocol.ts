@@ -1,9 +1,10 @@
-export const RELAY_PROTOCOL_VERSION = 5;
+export const RELAY_PROTOCOL_VERSION = 6;
 
-export type SourceKind = "video" | "live" | "short_link";
+export type SourceKind = "video" | "live" | "media" | "short_link";
 export type RelayNextStep =
   | "probe_direct_playback"
   | "resolve_live_room"
+  | "probe_media"
   | "expand_short_link";
 
 export interface SourceInspection {
@@ -22,7 +23,7 @@ export interface VideoPart {
 }
 
 export interface SourceResolution {
-  kind: "video" | "live";
+  kind: "video" | "live" | "media";
   source_id: string;
   canonical_url: string;
   title: string;
@@ -31,6 +32,7 @@ export interface SourceResolution {
   duration_seconds?: number;
   live_status?: "offline" | "live" | "replay";
   routing: RouteDecision;
+  playback_url?: string;
   session_id?: string;
   session_expires_in_seconds?: number;
 }
@@ -54,12 +56,13 @@ export interface RouteDecision {
   reason:
     | "direct_compatible"
     | "requires_headers"
+    | "expiring_url"
     | "dash_tracks"
     | "flv_container"
     | "mpeg_ts_container"
     | "source_offline"
     | "source_replay";
-  media_format?: "dash" | "flv" | "mpeg_ts";
+  media_format?: "dash" | "flv" | "mpeg_ts" | "hls" | "mp4";
   quality?: number;
   estimated_bitrate?: number;
   has_separate_audio: boolean;
@@ -68,6 +71,7 @@ export interface RouteDecision {
 export interface FfmpegStatus {
   availability: "system" | "managed" | "missing" | "installing" | "failed";
   path?: string;
+  probe_path?: string;
   version?: string;
   downloaded_bytes?: number;
   total_bytes?: number;

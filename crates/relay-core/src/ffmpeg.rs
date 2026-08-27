@@ -175,14 +175,15 @@ fn add_input(command: &mut Command, input: &MediaInput, url: &str, start_seconds
             command.args(["-ss", &format!("{start_seconds:.3}")]);
         }
     }
-    command.args([
-        "-user_agent",
-        BROWSER_USER_AGENT,
-        "-referer",
-        &input.referer,
-        "-i",
-        url,
-    ]);
+    if input.requires_bilibili_headers {
+        command.args([
+            "-user_agent",
+            BROWSER_USER_AGENT,
+            "-referer",
+            &input.referer,
+        ]);
+    }
+    command.args(["-i", url]);
 }
 
 fn drain_stderr(

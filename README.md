@@ -24,6 +24,9 @@ comparison. The first real Rust-backed vertical slice is now connected:
 - videos return their real title, parts, CIDs, durations, and selected part;
 - live rooms return their canonical room id, title, and live/replay/offline state;
 - Rust selects public H.264 DASH tracks for VOD and H.264 FLV/MPEG-TS candidates for live rooms;
+- public MP4, HLS, MPEG-TS, and FLV media URLs are inspected with FFprobe;
+- stable public H.264/AAC MP4, HLS, and MPEG-TS URLs are returned directly without using VRCDN;
+- expiring, header-bound, Bilibili-media, and FLV URLs are retained in a Rust relay session instead;
 - temporary Bilibili media URLs remain private to Rust while the UI receives only a route decision;
 - the worker exposes a versioned request/reply protocol over stdio;
 - the TypeScript client owns worker startup, request correlation, timeout, shutdown,
@@ -31,7 +34,7 @@ comparison. The first real Rust-backed vertical slice is now connected:
 - source conversion uses the Rust network resolution instead of a frontend regex and timer;
 - FFmpeg discovery runs in Rust and feeds the existing settings surface;
 - when no system FFmpeg is present, the settings page can install a managed copy without blocking the worker;
-- the managed installer verifies the publisher's SHA-256 value before activating `ffmpeg.exe`;
+- the managed installer verifies the publisher's SHA-256 value before activating `ffmpeg.exe` and `ffprobe.exe`;
 - resolved media is held in short-lived Rust sessions instead of exposing temporary Bilibili URLs to React;
 - Rust starts, observes, stops, and cleans up FFmpeg relay processes;
 - a relay is reported as running only after FFmpeg has produced media output;
@@ -40,7 +43,7 @@ comparison. The first real Rust-backed vertical slice is now connected:
 
 The following UI interactions also remain live:
 
-- edit or paste a Bilibili URL;
+- edit or paste a Bilibili page or supported media URL;
 - generate a ready, loading, or error state;
 - choose a video part and adjust playback position;
 - show or hide danmaku and edit its advanced settings;
@@ -53,22 +56,28 @@ ingest server, stream key, and complete playback URL from VRCDN; a playback URL
 cannot be derived safely from the key. FFmpeg processes are stopped when the
 user stops a relay, starts a replacement, or closes the app.
 
-Account login, local direct/proxy playback, danmaku rendering, and richer
-playback controls remain future Rust core slices. The untouched startup screen
+Precise part/position switching, danmaku rendering, account login, and persisted
+Rust-owned settings remain future core slices. The untouched startup screen
 remains the approved visual reference.
+
+Direct playback is deliberately limited to a stable public URL that every
+VRChat viewer can reach. The app does not publish a `localhost` proxy URL:
+inside a shared VRChat instance, that address would point to each viewer's own
+computer instead of the relay owner's machine.
 
 ## Managed FFmpeg
 
-If `ffmpeg.exe` is already available on `PATH`, the app uses it and does not
-offer a redundant download. Otherwise, the settings page can download the
+If both `ffmpeg.exe` and `ffprobe.exe` are already available on `PATH`, the app
+uses them and does not offer a redundant download. Otherwise, the settings page can download the
 Windows release-essentials ZIP published by [gyan.dev](https://www.gyan.dev/ffmpeg/builds/),
 one of the Windows build providers linked by the official
 [FFmpeg download page](https://ffmpeg.org/download.html).
 
 Rust downloads the ZIP in the background, obtains the matching publisher
 SHA-256 value, rejects oversized or mismatched files, extracts only
-`bin/ffmpeg.exe`, checks its Windows executable signature, and activates it with
-an atomic replacement. The managed executable and its source metadata live at:
+`bin/ffmpeg.exe` and `bin/ffprobe.exe`, checks both Windows executable
+signatures, and activates the pair with an atomic replacement. The managed
+toolchain and its source metadata live at:
 
 ```text
 %LOCALAPPDATA%\VRC Bili Relay\media\ffmpeg\

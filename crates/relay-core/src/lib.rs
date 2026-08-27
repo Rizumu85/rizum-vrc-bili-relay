@@ -5,12 +5,13 @@ mod bilibili;
 mod ffmpeg;
 mod ffmpeg_manager;
 mod media_session;
+mod media_source;
 
 use bilibili::BilibiliClient;
 use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -118,6 +119,8 @@ pub struct FfmpegStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub probe_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub downloaded_bytes: Option<u64>,
@@ -163,6 +166,8 @@ pub struct SourceResolution {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_status: Option<LiveStatus>,
     pub routing: RouteDecision,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playback_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -225,6 +230,7 @@ pub enum RouteKind {
 pub enum RouteReason {
     DirectCompatible,
     RequiresHeaders,
+    ExpiringUrl,
     DashTracks,
     FlvContainer,
     MpegTsContainer,
@@ -232,12 +238,14 @@ pub enum RouteReason {
     SourceReplay,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaFormat {
     Dash,
     Flv,
     MpegTs,
+    Hls,
+    Mp4,
 }
 
 #[derive(Debug, Clone)]
@@ -246,6 +254,7 @@ pub(crate) struct MediaInput {
     pub audio_url: Option<String>,
     pub referer: String,
     pub is_live: bool,
+    pub requires_bilibili_headers: bool,
 }
 
 pub(crate) struct ResolvedSource {
@@ -274,6 +283,7 @@ pub enum LiveStatus {
 pub enum SourceKind {
     Video,
     Live,
+    Media,
     ShortLink,
 }
 
@@ -282,6 +292,7 @@ pub enum SourceKind {
 pub enum NextStep {
     ProbeDirectPlayback,
     ResolveLiveRoom,
+    ProbeMedia,
     ExpandShortLink,
 }
 
@@ -320,7 +331,18 @@ impl RelayCore {
                 source,
                 requested_part,
             } => {
-                let resolved = self.bilibili.resolve(&source, requested_part)?;
+                let inspection = inspect_source(&source)?;
+                let resolved = if matches!(inspection.kind, SourceKind::Media) {
+                    let ffprobe_path = self.ffmpeg.probe_path().ok_or_else(|| {
+                        RelayError::new(
+                            "ffmpeg_missing",
+                            "A complete FFmpeg and FFprobe toolchain is required to analyze media URLs",
+                        )
+                    })?;
+                    media_source::resolve(&source, &ffprobe_path)?
+                } else {
+                    self.bilibili.resolve(&source, requested_part)?
+                };
                 Ok(Reply::SourceResolution {
                     resolution: self.sessions.prepare(resolved),
                 })
@@ -354,7 +376,7 @@ impl RelayCore {
 pub fn inspect_source(source: &str) -> Result<SourceInspection, RelayError> {
     let source = source.trim();
     if source.is_empty() {
-        return Err(RelayError::new("empty_source", "Bilibili source is empty"));
+        return Err(RelayError::new("empty_source", "Media source is empty"));
     }
 
     if is_video_id(source) {
@@ -400,6 +422,10 @@ pub fn inspect_source(source: &str) -> Result<SourceInspection, RelayError> {
         });
     }
 
+    if let Some(inspection) = media_source::inspect(&url) {
+        return Ok(inspection);
+    }
+
     if host == "bilibili.com" || host.ends_with(".bilibili.com") {
         let segments: Vec<_> = url
             .path_segments()
@@ -418,7 +444,7 @@ pub fn inspect_source(source: &str) -> Result<SourceInspection, RelayError> {
 
     Err(RelayError::new(
         "unsupported_source",
-        "Only Bilibili video, live-room, and b23.tv links are supported",
+        "Only Bilibili pages and HTTP(S) MP4, HLS, MPEG-TS, or FLV media links are supported",
     ))
 }
 

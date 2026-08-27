@@ -48,6 +48,10 @@ impl BilibiliClient {
             }
             SourceKind::Video => self.resolve_video(source, inspection.source_id, requested_part),
             SourceKind::Live => self.resolve_live(inspection.source_id),
+            SourceKind::Media => Err(RelayError::new(
+                "invalid_media_source",
+                "Generic media sources are resolved by the media source module",
+            )),
         }
     }
 
@@ -142,6 +146,7 @@ impl BilibiliClient {
                 duration_seconds,
                 live_status: None,
                 routing,
+                playback_url: None,
                 session_id: None,
                 session_expires_in_seconds: None,
             },
@@ -208,6 +213,7 @@ impl BilibiliClient {
                 duration_seconds: None,
                 live_status: Some(live_status),
                 routing,
+                playback_url: None,
                 session_id: None,
                 session_expires_in_seconds: None,
             },
@@ -277,6 +283,7 @@ impl BilibiliClient {
                 audio_url: audio.map(|track| track.url),
                 referer: referer.to_string(),
                 is_live: false,
+                requires_bilibili_headers: true,
             },
         ))
     }
@@ -316,6 +323,7 @@ impl BilibiliClient {
             MediaFormat::Flv => RouteReason::FlvContainer,
             MediaFormat::MpegTs => RouteReason::MpegTsContainer,
             MediaFormat::Dash => RouteReason::RequiresHeaders,
+            MediaFormat::Hls | MediaFormat::Mp4 => RouteReason::RequiresHeaders,
         };
 
         Ok((
@@ -332,6 +340,7 @@ impl BilibiliClient {
                 audio_url: None,
                 referer: referer.to_string(),
                 is_live: true,
+                requires_bilibili_headers: true,
             },
         ))
     }
@@ -438,7 +447,7 @@ fn select_live_candidate(play_url: &Value) -> Option<LiveCandidate> {
                             {
                                 return None;
                             }
-                            let (media_format, format_score) = media_format.clone()?;
+                            let (media_format, format_score) = media_format?;
                             let url_info = codec.get("url_info")?.as_array()?;
                             let selected_url = url_info.iter().find_map(|info| {
                                 let host = string_field(info, "host").unwrap_or_default();

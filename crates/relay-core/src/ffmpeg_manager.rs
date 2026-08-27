@@ -23,10 +23,16 @@ const DOWNLOAD_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
 const COPY_BUFFER_BYTES: usize = 128 * 1024;
 
 pub(crate) struct FfmpegManager {
-    system_path: Option<PathBuf>,
+    system: Option<FfmpegToolchain>,
     managed_root: PathBuf,
     state: Arc<Mutex<InstallState>>,
     cancelled: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+struct FfmpegToolchain {
+    ffmpeg: PathBuf,
+    ffprobe: PathBuf,
 }
 
 #[derive(Default)]
@@ -58,7 +64,7 @@ impl FfmpegManager {
         let managed_root = managed_root();
         let metadata = read_metadata(&managed_root);
         Self {
-            system_path: detect_system_ffmpeg(),
+            system: detect_system_toolchain(),
             managed_root,
             state: Arc::new(Mutex::new(InstallState {
                 version: metadata.map(|metadata| metadata.version),
@@ -74,14 +80,18 @@ impl FfmpegManager {
             return FfmpegStatus {
                 availability: FfmpegAvailability::Installing,
                 path: None,
+                probe_path: None,
                 version: state.version.clone(),
                 downloaded_bytes: Some(state.downloaded_bytes),
                 total_bytes: state.total_bytes,
                 diagnostic: None,
             };
         }
-        if let Some(path) = self.ready_path() {
-            let is_system = self.system_path.as_deref() == Some(path.as_path());
+        if let Some(toolchain) = self.ready_toolchain() {
+            let is_system = self
+                .system
+                .as_ref()
+                .is_some_and(|system| system.ffmpeg == toolchain.ffmpeg);
             let availability = if is_system {
                 FfmpegAvailability::System
             } else {
@@ -89,7 +99,8 @@ impl FfmpegManager {
             };
             return FfmpegStatus {
                 availability,
-                path: Some(path.to_string_lossy().into_owned()),
+                path: Some(toolchain.ffmpeg.to_string_lossy().into_owned()),
+                probe_path: Some(toolchain.ffprobe.to_string_lossy().into_owned()),
                 version: if is_system {
                     None
                 } else {
@@ -104,6 +115,7 @@ impl FfmpegManager {
             return FfmpegStatus {
                 availability: FfmpegAvailability::Failed,
                 path: None,
+                probe_path: None,
                 version: state.version.clone(),
                 downloaded_bytes: Some(state.downloaded_bytes),
                 total_bytes: state.total_bytes,
@@ -113,6 +125,7 @@ impl FfmpegManager {
         FfmpegStatus {
             availability: FfmpegAvailability::Missing,
             path: None,
+            probe_path: None,
             version: None,
             downloaded_bytes: None,
             total_bytes: None,
@@ -121,12 +134,17 @@ impl FfmpegManager {
     }
 
     pub fn executable_path(&self) -> Option<String> {
-        self.ready_path()
-            .map(|path| path.to_string_lossy().into_owned())
+        self.ready_toolchain()
+            .map(|toolchain| toolchain.ffmpeg.to_string_lossy().into_owned())
+    }
+
+    pub fn probe_path(&self) -> Option<String> {
+        self.ready_toolchain()
+            .map(|toolchain| toolchain.ffprobe.to_string_lossy().into_owned())
     }
 
     pub fn ensure_installed(&mut self) -> Result<FfmpegStatus, RelayError> {
-        if self.ready_path().is_some() {
+        if self.ready_toolchain().is_some() {
             return Ok(self.status());
         }
         let already_installing = {
@@ -195,14 +213,14 @@ impl FfmpegManager {
         self.cancelled.store(true, Ordering::Release);
     }
 
-    fn ready_path(&self) -> Option<PathBuf> {
-        self.system_path
+    fn ready_toolchain(&self) -> Option<FfmpegToolchain> {
+        self.system
             .as_ref()
-            .filter(|path| path.is_file())
+            .filter(|toolchain| toolchain.ffmpeg.is_file() && toolchain.ffprobe.is_file())
             .cloned()
             .or_else(|| {
-                let path = managed_executable(&self.managed_root);
-                path.is_file().then_some(path)
+                let toolchain = managed_toolchain(&self.managed_root);
+                (toolchain.ffmpeg.is_file() && toolchain.ffprobe.is_file()).then_some(toolchain)
             })
     }
 }
@@ -221,9 +239,11 @@ fn install_release(
     fs::create_dir_all(managed_root)
         .map_err(|error| format!("Cannot create the FFmpeg directory: {error}"))?;
     let archive_path = managed_root.join("ffmpeg-release-essentials.zip.part");
-    let staged_path = managed_root.join("ffmpeg.exe.new");
+    let staged_ffmpeg = managed_root.join("ffmpeg.exe.new");
+    let staged_ffprobe = managed_root.join("ffprobe.exe.new");
     remove_if_present(&archive_path)?;
-    remove_if_present(&staged_path)?;
+    remove_if_present(&staged_ffmpeg)?;
+    remove_if_present(&staged_ffprobe)?;
 
     let result = (|| {
         let client = Client::builder()
@@ -295,8 +315,27 @@ fn install_release(
             );
         }
 
-        extract_ffmpeg(&archive_path, &staged_path, cancelled)?;
-        install_atomically(&staged_path, &managed_executable(managed_root))?;
+        extract_tool(
+            &archive_path,
+            &staged_ffmpeg,
+            "/bin/ffmpeg.exe",
+            "FFmpeg",
+            cancelled,
+        )?;
+        extract_tool(
+            &archive_path,
+            &staged_ffprobe,
+            "/bin/ffprobe.exe",
+            "FFprobe",
+            cancelled,
+        )?;
+        install_toolchain_atomically(
+            FfmpegToolchain {
+                ffmpeg: staged_ffmpeg.clone(),
+                ffprobe: staged_ffprobe.clone(),
+            },
+            managed_toolchain(managed_root),
+        )?;
         let metadata = InstallMetadata {
             version: version.clone(),
             sha256: actual_checksum,
@@ -310,7 +349,8 @@ fn install_release(
     })();
 
     let _ = remove_if_present(&archive_path);
-    let _ = remove_if_present(&staged_path);
+    let _ = remove_if_present(&staged_ffmpeg);
+    let _ = remove_if_present(&staged_ffprobe);
     result
 }
 
@@ -324,9 +364,11 @@ fn fetch_text(client: &Client, url: &str) -> Result<String, String> {
         .map_err(|error| format!("Cannot read FFmpeg release information: {error}"))
 }
 
-fn extract_ffmpeg(
+fn extract_tool(
     archive_path: &Path,
     target: &Path,
+    archive_suffix: &str,
+    display_name: &str,
     cancelled: &AtomicBool,
 ) -> Result<(), String> {
     let archive = File::open(archive_path)
@@ -341,19 +383,21 @@ fn extract_ffmpeg(
                         .name()
                         .replace('\\', "/")
                         .to_ascii_lowercase()
-                        .ends_with("/bin/ffmpeg.exe")
+                        .ends_with(archive_suffix)
                 })
                 .unwrap_or(false)
         })
-        .ok_or_else(|| "The FFmpeg archive does not contain bin/ffmpeg.exe".to_string())?;
+        .ok_or_else(|| format!("The FFmpeg archive does not contain {archive_suffix}"))?;
     let mut entry = zip
         .by_index(index)
-        .map_err(|error| format!("Cannot open FFmpeg in the archive: {error}"))?;
+        .map_err(|error| format!("Cannot open {display_name} in the archive: {error}"))?;
     if entry.size() > DOWNLOAD_LIMIT_BYTES {
-        return Err("The extracted FFmpeg file is larger than the safety limit".to_string());
+        return Err(format!(
+            "The extracted {display_name} file is larger than the safety limit"
+        ));
     }
     let mut output = File::create(target)
-        .map_err(|error| format!("Cannot create the managed FFmpeg executable: {error}"))?;
+        .map_err(|error| format!("Cannot create the managed {display_name} executable: {error}"))?;
     let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
     let mut extracted_bytes = 0_u64;
     loop {
@@ -366,43 +410,78 @@ fn extract_ffmpeg(
         }
         extracted_bytes = extracted_bytes.saturating_add(count as u64);
         if extracted_bytes > DOWNLOAD_LIMIT_BYTES {
-            return Err("The extracted FFmpeg file exceeded the safety limit".to_string());
+            return Err(format!(
+                "The extracted {display_name} file exceeded the safety limit"
+            ));
         }
-        output
-            .write_all(&buffer[..count])
-            .map_err(|error| format!("Cannot save the managed FFmpeg executable: {error}"))?;
+        output.write_all(&buffer[..count]).map_err(|error| {
+            format!("Cannot save the managed {display_name} executable: {error}")
+        })?;
     }
     output
         .sync_all()
-        .map_err(|error| format!("Cannot finish the managed FFmpeg executable: {error}"))?;
+        .map_err(|error| format!("Cannot finish the managed {display_name} executable: {error}"))?;
     let mut signature = [0_u8; 2];
     File::open(target)
         .and_then(|mut file| file.read_exact(&mut signature))
-        .map_err(|error| format!("Cannot validate the managed FFmpeg executable: {error}"))?;
+        .map_err(|error| {
+            format!("Cannot validate the managed {display_name} executable: {error}")
+        })?;
     if signature != *b"MZ" {
-        return Err("The extracted FFmpeg file is not a Windows executable".to_string());
+        return Err(format!(
+            "The extracted {display_name} file is not a Windows executable"
+        ));
     }
     Ok(())
 }
 
-fn install_atomically(staged: &Path, target: &Path) -> Result<(), String> {
-    let backup = target.with_extension("exe.old");
-    remove_if_present(&backup)?;
-    let had_existing = target.is_file();
-    if had_existing {
-        fs::rename(target, &backup)
-            .map_err(|error| format!("Cannot prepare the existing FFmpeg installation: {error}"))?;
-    }
-    if let Err(error) = fs::rename(staged, target) {
-        if had_existing {
-            let _ = fs::rename(&backup, target);
+fn install_toolchain_atomically(
+    staged: FfmpegToolchain,
+    target: FfmpegToolchain,
+) -> Result<(), String> {
+    let ffmpeg_backup = target.ffmpeg.with_extension("exe.old");
+    let ffprobe_backup = target.ffprobe.with_extension("exe.old");
+    remove_if_present(&ffmpeg_backup)?;
+    remove_if_present(&ffprobe_backup)?;
+    let had_ffmpeg = move_to_backup(&target.ffmpeg, &ffmpeg_backup)?;
+    let had_ffprobe = match move_to_backup(&target.ffprobe, &ffprobe_backup) {
+        Ok(value) => value,
+        Err(error) => {
+            restore_backup(&ffmpeg_backup, &target.ffmpeg, had_ffmpeg);
+            return Err(error);
         }
-        return Err(format!(
-            "Cannot activate the managed FFmpeg executable: {error}"
-        ));
+    };
+
+    if let Err(error) = fs::rename(&staged.ffprobe, &target.ffprobe) {
+        restore_backup(&ffmpeg_backup, &target.ffmpeg, had_ffmpeg);
+        restore_backup(&ffprobe_backup, &target.ffprobe, had_ffprobe);
+        return Err(format!("Cannot activate managed FFprobe: {error}"));
     }
-    let _ = remove_if_present(&backup);
+    if let Err(error) = fs::rename(&staged.ffmpeg, &target.ffmpeg) {
+        let _ = remove_if_present(&target.ffprobe);
+        restore_backup(&ffmpeg_backup, &target.ffmpeg, had_ffmpeg);
+        restore_backup(&ffprobe_backup, &target.ffprobe, had_ffprobe);
+        return Err(format!("Cannot activate managed FFmpeg: {error}"));
+    }
+
+    let _ = remove_if_present(&ffmpeg_backup);
+    let _ = remove_if_present(&ffprobe_backup);
     Ok(())
+}
+
+fn move_to_backup(target: &Path, backup: &Path) -> Result<bool, String> {
+    if !target.is_file() {
+        return Ok(false);
+    }
+    fs::rename(target, backup)
+        .map(|()| true)
+        .map_err(|error| format!("Cannot prepare the existing FFmpeg toolchain: {error}"))
+}
+
+fn restore_backup(backup: &Path, target: &Path, existed: bool) {
+    if existed {
+        let _ = fs::rename(backup, target);
+    }
 }
 
 fn normalized_version(value: &str) -> String {
@@ -446,8 +525,11 @@ fn managed_root() -> PathBuf {
         .join("ffmpeg")
 }
 
-fn managed_executable(root: &Path) -> PathBuf {
-    root.join("ffmpeg.exe")
+fn managed_toolchain(root: &Path) -> FfmpegToolchain {
+    FfmpegToolchain {
+        ffmpeg: root.join("ffmpeg.exe"),
+        ffprobe: root.join("ffprobe.exe"),
+    }
 }
 
 fn metadata_path(root: &Path) -> PathBuf {
@@ -459,7 +541,7 @@ fn read_metadata(root: &Path) -> Option<InstallMetadata> {
     serde_json::from_slice(&bytes).ok()
 }
 
-fn detect_system_ffmpeg() -> Option<PathBuf> {
+fn detect_system_toolchain() -> Option<FfmpegToolchain> {
     if env::var("VRC_BILI_RELAY_IGNORE_SYSTEM_FFMPEG").as_deref() == Ok("1") {
         return None;
     }
@@ -468,13 +550,31 @@ fn detect_system_ffmpeg() -> Option<PathBuf> {
     } else {
         &["ffmpeg"]
     };
-    env::var_os("PATH").and_then(|path| {
-        env::split_paths(&path)
-            .flat_map(|directory| {
-                executable_names
-                    .iter()
-                    .map(move |name| directory.join(name))
-            })
-            .find(|candidate| candidate.is_file())
-    })
+    let probe_names: &[&str] = if cfg!(windows) {
+        &["ffprobe.exe", "ffprobe"]
+    } else {
+        &["ffprobe"]
+    };
+    let directories: Vec<_> = env::var_os("PATH")
+        .map(|path| env::split_paths(&path).collect())
+        .unwrap_or_default();
+    let ffmpeg = directories
+        .iter()
+        .flat_map(|directory| {
+            executable_names
+                .iter()
+                .map(move |name| directory.join(name))
+        })
+        .find(|candidate| candidate.is_file())?;
+    let ffprobe = ffmpeg
+        .parent()
+        .into_iter()
+        .flat_map(|directory| probe_names.iter().map(move |name| directory.join(name)))
+        .chain(
+            directories
+                .iter()
+                .flat_map(|directory| probe_names.iter().map(move |name| directory.join(name))),
+        )
+        .find(|candidate| candidate.is_file())?;
+    Some(FfmpegToolchain { ffmpeg, ffprobe })
 }
