@@ -29,10 +29,17 @@ import {
   type SourceResolution,
 } from "./relay/protocol";
 import { RelayWorkerClient, RelayWorkerError } from "./relay/worker-client";
+import { setProductWindowClientHeight } from "./platform/window";
 
-export type Scene = "loading" | "error" | "ready-vod" | "settings" | "danmaku";
+export type Scene = "idle" | "loading" | "error" | "ready-vod" | "settings" | "danmaku";
 type DanmakuVisibility = "shown" | "hidden";
 type LoginMode = "guest" | "account";
+
+export function sceneWindowHeight(scene: Scene): number {
+  if (scene === "idle" || scene === "loading") return 205;
+  if (scene === "error") return 254;
+  return 478;
+}
 type DanmakuSize = "small" | "medium" | "large";
 type DanmakuArea = "quarter" | "half" | "full";
 type DanmakuSpeed = "slow" | "normal" | "fast";
@@ -451,7 +458,7 @@ function SourceField({
 }) {
   const paste = async () => {
     const clipboard = await readClipboard();
-    setSource(clipboard || SAMPLE_VIDEO);
+    if (clipboard) setSource(clipboard);
   };
 
   return (
@@ -2271,13 +2278,13 @@ export interface AppSurfaceProps {
 }
 
 export function AppSurface({
-  initialScene = "ready-vod",
+  initialScene = "idle",
   initialAppearance = "light",
   initialThemePreference,
 }: AppSurfaceProps) {
   const [scene, setScene] = useState<Scene>(initialScene);
   const [lastMainScene, setLastMainScene] = useState<Scene>(
-    initialScene === "settings" || initialScene === "danmaku" ? "ready-vod" : initialScene,
+    initialScene === "settings" || initialScene === "danmaku" ? "idle" : initialScene,
   );
   const [themePreference, setThemePreference] = useState<ThemePreference>(
     () => initialThemePreference ?? DEFAULT_SETTINGS.theme,
@@ -2288,7 +2295,7 @@ export function AppSurface({
   }));
   const [settingsReady, setSettingsReady] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
-  const [source, setSource] = useState(SAMPLE_VIDEO);
+  const [source, setSource] = useState(initialScene === "ready-vod" ? SAMPLE_VIDEO : "");
   const [part, setPart] = useState("2");
   const [playbackPosition, setPlaybackPosition] = useState(POSITION_BY_PART["2"] ?? 0);
   const [playbackUpdating, setPlaybackUpdating] = useState<PlaybackUpdate>(null);
@@ -2315,6 +2322,11 @@ export function AppSurface({
     themePreference === "system" ? initialAppearance : themePreference;
   const palette = PALETTES[resolvedAppearance];
   const mediaState = mediaComponentState(mediaStatus, mediaError);
+
+  useEffect(() => {
+    const resize = setTimeout(() => setProductWindowClientHeight(sceneWindowHeight(scene)), 0);
+    return () => clearTimeout(resize);
+  }, [scene]);
 
   const getRelayWorker = () => {
     relayWorker.current ??= new RelayWorkerClient();
@@ -2534,6 +2546,11 @@ export function AppSurface({
   }, [relayStatus?.session_id, relayStatus?.stage, seekInteractionActive, playbackUpdating]);
 
   const convert = async () => {
+    const normalizedSource = source.trim();
+    if (!normalizedSource) {
+      setScene("idle");
+      return;
+    }
     const epoch = ++conversionEpoch.current;
     playbackEpoch.current += 1;
     sceneBeforeConversion.current = scene;
@@ -2543,13 +2560,14 @@ export function AppSurface({
     setPlaybackMessage(null);
     setSeekInteractionActive(false);
     appliedPlaybackOptions.current = null;
+    setSource(normalizedSource);
     setScene("loading");
     try {
       if (relayStatus && (relayStatus.stage === "starting" || relayStatus.stage === "running")) {
         await getRelayWorker().stopRelay(relayStatus.session_id);
       }
       setRelayStatus(null);
-      const resolution = await getRelayWorker().resolveSource(source);
+      const resolution = await getRelayWorker().resolveSource(normalizedSource);
       if (conversionEpoch.current !== epoch) return;
       setSourceResolution(resolution);
       if (resolution.selected_part) setPart(String(resolution.selected_part));
@@ -2743,12 +2761,19 @@ export function AppSurface({
   const cancelConversion = () => {
     conversionEpoch.current += 1;
     const previous = sceneBeforeConversion.current;
-    setScene(previous === "loading" || previous === "settings" || previous === "danmaku" ? "ready-vod" : previous);
+    const fallback = sourceResolution ? "ready-vod" : "idle";
+    setScene(
+      previous === "loading" || previous === "settings" || previous === "danmaku"
+        ? fallback
+        : previous,
+    );
   };
 
   const showSubview = (next: "settings" | "danmaku") => {
     conversionEpoch.current += 1;
-    if (scene !== "settings" && scene !== "danmaku") setLastMainScene(scene);
+    if (scene !== "settings" && scene !== "danmaku") {
+      setLastMainScene(scene === "loading" ? (sourceResolution ? "ready-vod" : "idle") : scene);
+    }
     setScene(next);
     if (next === "settings") {
       if (!settingsReady || settingsError) void refreshProductSettings();
@@ -2759,7 +2784,9 @@ export function AppSurface({
 
   const leaveSubview = () => {
     const returnScene = lastMainScene === "settings" || lastMainScene === "danmaku"
-      ? "ready-vod"
+      ? sourceResolution
+        ? "ready-vod"
+        : "idle"
       : lastMainScene;
     const active = relayStatus?.stage === "starting" || relayStatus?.stage === "running";
     const options = configuredPlaybackOptions(danmaku, danmakuSettings);
@@ -2853,7 +2880,7 @@ export function AppSurface({
               icon="play"
               iconColor={palette.accentTeal}
               onClick={() => void convert()}
-              disabled={scene === "loading" || playbackUpdating !== null}
+              disabled={!source.trim() || scene === "loading" || playbackUpdating !== null}
               testId="convert-source"
             />
             {scene === "loading" ? <Loading palette={palette} /> : null}

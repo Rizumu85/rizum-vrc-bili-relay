@@ -1,10 +1,13 @@
 param(
     [string]$OutputPath = "artifacts\live-window.png",
+    [string]$ExecutablePath,
     [ValidateSet("light", "dark")]
     [string]$Theme = "light",
-    [ValidateSet("ready-vod", "settings", "danmaku")]
+    [ValidateSet("idle", "loading", "error", "ready-vod", "settings", "danmaku")]
     [string]$Scene = "ready-vod",
     [switch]$GenerateAddress,
+    [switch]$OpenSettings,
+    [switch]$ReturnFromSubview,
     [switch]$OpenLogin
 )
 
@@ -47,9 +50,15 @@ public static class GpuixWindowCapture
 "@
 
 $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-$bunShim = (Get-Command bun).Source
-$startInfo.FileName = Join-Path (Split-Path -Parent $bunShim) "node_modules\bun\bin\bun.exe"
-$startInfo.Arguments = "--hot src/main.tsx"
+if ($ExecutablePath) {
+    $startInfo.FileName = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot $ExecutablePath))
+    $startInfo.Arguments = ""
+}
+else {
+    $bunShim = (Get-Command bun).Source
+    $startInfo.FileName = Join-Path (Split-Path -Parent $bunShim) "node_modules\bun\bin\bun.exe"
+    $startInfo.Arguments = "--hot src/main.tsx"
+}
 $startInfo.WorkingDirectory = $repositoryRoot
 $startInfo.UseShellExecute = $false
 $startInfo.CreateNoWindow = $true
@@ -95,6 +104,16 @@ try {
         Start-Sleep -Seconds 7
     }
 
+    if ($OpenSettings) {
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Right - 42, $rectangle.Top + 78) | Out-Null
+        [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Seconds 2
+        [GpuixWindowCapture]::GetWindowRect($windowHandle, [ref]$rectangle) | Out-Null
+        $width = $rectangle.Right - $rectangle.Left
+        $height = $rectangle.Bottom - $rectangle.Top
+    }
+
     if ($OpenLogin) {
         # Open the account side of the settings segmented control and allow the
         # worker to request the QR payload before capture.
@@ -103,6 +122,17 @@ try {
         [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
         Start-Sleep -Seconds 4
     }
+
+    if ($ReturnFromSubview) {
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + 52, $rectangle.Top + 76) | Out-Null
+        [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Seconds 2
+    }
+
+    [GpuixWindowCapture]::GetWindowRect($windowHandle, [ref]$rectangle) | Out-Null
+    $width = $rectangle.Right - $rectangle.Left
+    $height = $rectangle.Bottom - $rectangle.Top
 
     $bitmap = New-Object System.Drawing.Bitmap $width, $height
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)

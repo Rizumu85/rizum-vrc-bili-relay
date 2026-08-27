@@ -227,11 +227,18 @@ closing the GPUIX host therefore does not intentionally leave a background
 worker running. Dropping the Rust session store also terminates every owned
 FFmpeg process.
 
+The production UI starts in an `idle` scene with no sample source or output.
+`src/platform/window.ts` owns the Windows-only shell adapter: it locates the
+visible window belonging to the current process, preserves its DPI-scaled
+non-client frame, and changes only client height as the scene moves between the
+compact input and full player/settings surfaces. Explicit `ready-vod` launch
+state remains available to captures and the render benchmark.
+
 ## Next product boundary
 
 The core media, FFmpeg, danmaku, settings, and authentication seams are now
 implemented. Further slices should start from a user-visible gap rather than
 adding another transport or persistence layer speculatively.
 
-The approved UI may keep reference data while a slice is under construction,
-but product actions must never manufacture a successful result in TypeScript.
+Reference data is confined to the explicit `ready-vod` design fixture. Product
+startup and product actions never manufacture a successful result in TypeScript.

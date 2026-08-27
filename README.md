@@ -16,8 +16,9 @@ relay-core (Rust) ──► FFmpeg
 
 ## Current slice
 
-The executable still opens in the detailed VOD-ready reference state for visual
-comparison. The first real Rust-backed vertical slice is now connected:
+The executable opens in a compact empty state. The detailed VOD-ready state is
+kept only as an explicit design and benchmark fixture. The real Rust-backed
+vertical slice is connected end to end:
 
 - the Rust core recognizes Bilibili video URLs/IDs, live-room URLs, and b23.tv links;
 - it expands b23.tv redirects and resolves public metadata through Bilibili APIs;
@@ -32,6 +33,7 @@ comparison. The first real Rust-backed vertical slice is now connected:
 - the TypeScript client owns worker startup, request correlation, timeout, shutdown,
   and packaged-executable discovery;
 - source conversion uses the Rust network resolution instead of a frontend regex and timer;
+- the Windows shell expands from the compact input state to the full player or settings surface, then contracts on return;
 - FFmpeg discovery runs in Rust and feeds the existing settings surface;
 - when no system FFmpeg is present, the settings page can install a managed copy without blocking the worker;
 - the managed installer verifies the publisher's SHA-256 value before activating `ffmpeg.exe` and `ffprobe.exe`;
@@ -82,8 +84,8 @@ they enter `settings.json`. Existing plaintext keys migrate on first read. A
 protected value copied from another user or machine remains recoverable as an
 explicit `unavailable` state until the user replaces or clears it. Bilibili
 credentials use a separate encrypted session file with independent recovery and
-logout semantics. The untouched startup screen remains the approved visual
-reference.
+logout semantics. The detailed ready state remains available as an approved
+visual reference without appearing as fake product output on startup.
 
 Direct playback is deliberately limited to a stable public URL that every
 VRChat viewer can reach. The app does not publish a `localhost` proxy URL:
@@ -161,6 +163,7 @@ Capture the real application window instead:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme light
+powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme light -Scene idle -OutputPath artifacts/idle-light.png
 powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme dark -OutputPath artifacts/live-window-dark.png
 powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme light -Scene settings -OutputPath artifacts/settings-light.png
 powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme light -Scene settings -OpenLogin -OutputPath artifacts/login-light.png

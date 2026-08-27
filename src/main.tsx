@@ -1,6 +1,7 @@
 import { render } from "@gpuix/react";
 
-import { AppSurface, type Scene } from "./app";
+import { AppSurface, sceneWindowHeight, type Scene } from "./app";
+import { PRODUCT_WINDOW_TITLE } from "./platform/window";
 import type { ThemePreference } from "./settings";
 import type { Appearance } from "./theme";
 
@@ -12,7 +13,13 @@ const initialThemePreference: ThemePreference | undefined =
     : undefined;
 const requestedScene = process.env.VRC_BILI_RELAY_SCENE;
 const initialScene: Scene =
-  requestedScene === "settings" || requestedScene === "danmaku" ? requestedScene : "ready-vod";
+  requestedScene === "loading"
+  || requestedScene === "error"
+  || requestedScene === "ready-vod"
+  || requestedScene === "settings"
+  || requestedScene === "danmaku"
+    ? requestedScene
+    : "idle";
 
 render(
   <AppSurface
@@ -21,11 +28,11 @@ render(
     initialScene={initialScene}
   />,
   {
-  title: "VRC Bili Relay — GPUIX",
+  title: PRODUCT_WINDOW_TITLE,
   width: 428,
-  height: 478,
+  height: sceneWindowHeight(initialScene),
   minWidth: 428,
-  minHeight: 478,
+  minHeight: 205,
   resizable: false,
   windowBackground: "blurred",
   },

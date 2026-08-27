@@ -32,7 +32,7 @@ remains a reference and fallback; it is not a runtime dependency of this reposit
 ## UI architecture
 
 - React components own UI structure and state.
-- Platform adapters own Windows-only clipboard. Rust worker process integration belongs only in `src/relay/worker-client.ts`.
+- Platform adapters own Windows-only clipboard and native window sizing. Rust worker process integration belongs only in `src/relay/worker-client.ts`.
 - Keep design tokens centralized in `src/theme.ts`; do not patch individual component instances with replacement colors or spacing.
 - Use native GPUIX inputs and headless controls where available.
 - All visible text must set an explicit color because GPUI does not inherit text color.
