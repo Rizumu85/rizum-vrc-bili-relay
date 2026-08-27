@@ -4,8 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun --hot src/main.tsx",
-    "build": "bun build --compile src/main.tsx --outfile dist/vrc-bili-relay-gpuix.exe",
+    "dev": "bun run tools/dev.ts",
+    "build": "bun run tools/build.ts",
+    "build:worker": "cargo build --release --bin relay-worker",
+    "build:ui": "bun build --compile src/main.tsx --outfile dist/vrc-bili-relay-gpuix.exe",
     "typecheck": "tsc --noEmit",
     "bench": "bun run benchmarks/render.bench.tsx"
   },

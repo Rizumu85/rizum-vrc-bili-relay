@@ -1,0 +1,9 @@
+[package]
+name = "relay-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+relay-core = { path = "../relay-core" }
+serde_json.workspace = true

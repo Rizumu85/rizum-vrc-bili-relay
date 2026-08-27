@@ -10,6 +10,5 @@
     "noEmit": true,
     "types": ["bun"]
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "benchmarks/**/*.ts", "benchmarks/**/*.tsx"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tools/**/*.ts", "benchmarks/**/*.ts", "benchmarks/**/*.tsx"]
 }
-

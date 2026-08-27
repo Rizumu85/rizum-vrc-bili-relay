@@ -51,8 +51,3 @@ export async function writeStoredSettings(settings: StoredSettings): Promise<voi
   mkdirSync(dirname(file), { recursive: true });
   await Bun.write(file, `${JSON.stringify(settings, null, 2)}\n`);
 }
-
-export function detectFfmpeg(): string | null {
-  return Bun.which("ffmpeg");
-}
-

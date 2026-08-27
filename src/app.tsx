@@ -15,13 +15,14 @@ import {
 } from "./theme";
 import {
   DEFAULT_SETTINGS,
-  detectFfmpeg,
   readStoredSettings,
   writeStoredSettings,
   type LoginMode,
   type StoredSettings,
   type ThemePreference,
 } from "./settings-store";
+import { type HealthReply, type SourceResolution } from "./relay/protocol";
+import { RelayWorkerClient, RelayWorkerError } from "./relay/worker-client";
 
 export type Scene = "loading" | "error" | "ready-vod" | "settings" | "danmaku";
 type DanmakuVisibility = "shown" | "hidden";
@@ -32,7 +33,13 @@ type DanmakuFont = "microsoft-yahei" | "noto-sans-sc" | "source-han-sans" | "sim
 type DanmakuWeight = "regular" | "bold";
 type DanmakuOutline = "heavy" | "outline" | "shadow";
 type DanmakuFilter = "rolling" | "fixed" | "colored" | "advanced";
-type MediaComponentState = "external" | "missing" | "downloading" | "managed";
+type MediaComponentState =
+  | "checking"
+  | "external"
+  | "missing"
+  | "downloading"
+  | "managed"
+  | "unavailable";
 
 interface DanmakuSettings {
   size: DanmakuSize;
@@ -48,12 +55,16 @@ interface DanmakuSettings {
 const SAMPLE_VIDEO = "https://www.bilibili.com/video/BV1UCVn66Eww?p=2";
 const VIDEO_TITLE = "VRChat 播放器入门：从链接到放映";
 const VIDEO_OUTPUT = "https://stream.vrcdn.live/play/BV1UCVn66Eww_p{part}.m3u8";
-const PARTS = [
-  { value: "1", label: "P1 · 开始之前" },
-  { value: "2", label: "P2 · 自动中继与播放器" },
-  { value: "3", label: "P3 · 常见问题" },
+interface PlaybackPart {
+  value: string;
+  label: string;
+  duration: number;
+}
+const REFERENCE_PARTS: PlaybackPart[] = [
+  { value: "1", label: "P1 · 开始之前", duration: 421 },
+  { value: "2", label: "P2 · 自动中继与播放器", duration: 754 },
+  { value: "3", label: "P3 · 常见问题", duration: 318 },
 ] as const;
-const DURATION_BY_PART: Record<string, number> = { "1": 421, "2": 754, "3": 318 };
 const POSITION_BY_PART: Record<string, number> = { "1": 0, "2": 204, "3": 0 };
 const TRACK_WIDTH = 376;
 const THEME_OPTIONS = [
@@ -441,10 +452,12 @@ function SourceField({
 function PartSelect({
   part,
   setPart,
+  parts,
   palette,
 }: {
   part: string;
   setPart: (value: string) => void;
+  parts: PlaybackPart[];
   palette: Palette;
 }) {
   return (
@@ -472,7 +485,7 @@ function PartSelect({
       >
         <Select.Value>
           <text style={{ color: palette.inkSoft, fontFamily: FONT_UI, fontSize: 11.5 }}>
-            {PARTS.find((entry) => entry.value === part)?.label ?? PARTS[0].label}
+            {parts.find((entry) => entry.value === part)?.label ?? parts[0]?.label ?? "P1"}
           </text>
         </Select.Value>
         <Icon name="chevron" size={11} color={palette.caption} />
@@ -497,7 +510,7 @@ function PartSelect({
           },
         }}
       >
-        {PARTS.map((entry) => (
+        {parts.map((entry) => (
           <Select.Item
             key={entry.value}
             value={entry.value}
@@ -529,16 +542,24 @@ function PartSelect({
 
 function SeekControl({
   part,
+  parts,
+  useReferencePosition,
   palette,
 }: {
   part: string;
+  parts: PlaybackPart[];
+  useReferencePosition: boolean;
   palette: Palette;
 }) {
-  const duration = DURATION_BY_PART[part] ?? 0;
-  const [position, setPosition] = useState(POSITION_BY_PART[part] ?? 0);
+  const duration = parts.find((entry) => entry.value === part)?.duration ?? 0;
+  const initialPosition = useReferencePosition ? POSITION_BY_PART[part] ?? 0 : 0;
+  const [position, setPosition] = useState(initialPosition);
   const [dragging, setDragging] = useState(false);
 
-  useEffect(() => setPosition(POSITION_BY_PART[part] ?? 0), [part]);
+  useEffect(
+    () => setPosition(useReferencePosition ? POSITION_BY_PART[part] ?? 0 : 0),
+    [part, useReferencePosition],
+  );
 
   const setFromPointer = (event: EventPayload) => {
     const localX = Math.max(0, Math.min(TRACK_WIDTH, (event.x ?? 26) - 26));
@@ -720,6 +741,7 @@ function Result({
   danmaku,
   setDanmaku,
   onOpenDanmaku,
+  sourceResolution,
 }: {
   palette: Palette;
   part: string;
@@ -727,11 +749,29 @@ function Result({
   danmaku: DanmakuVisibility;
   setDanmaku: (value: DanmakuVisibility) => void;
   onOpenDanmaku: () => void;
+  sourceResolution: SourceResolution | null;
 }) {
   const [copied, setCopied] = useState(false);
-  const output = VIDEO_OUTPUT.replace("{part}", part);
+  const isReference = sourceResolution === null;
+  const output = isReference ? VIDEO_OUTPUT.replace("{part}", part) : "播放地址将在媒体路由接通后生成";
+  const parts: PlaybackPart[] = sourceResolution?.kind === "video" && sourceResolution.parts?.length
+    ? sourceResolution.parts.map((entry) => ({
+        value: String(entry.page),
+        label: `P${entry.page} · ${entry.title}`,
+        duration: entry.duration_seconds,
+      }))
+    : REFERENCE_PARTS;
+  const isLive = sourceResolution?.kind === "live";
+  const sourceKindLabel = !isLive
+    ? "视频"
+    : sourceResolution?.live_status === "live"
+      ? "直播"
+      : sourceResolution?.live_status === "replay"
+        ? "轮播"
+        : "未开播";
 
   const copy = async () => {
+    if (!isReference) return;
     await writeClipboard(output);
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
@@ -753,9 +793,11 @@ function Result({
           VRChat 播放地址
         </text>
         <div style={{ flexGrow: 1 }} />
-        <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 9.5 }}>视频</text>
+        <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 9.5 }}>
+          {sourceKindLabel}
+        </text>
         <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 9.5 }}>
-          · 中继运行中 · 请保持开启
+          {isReference ? "· 中继运行中 · 请保持开启" : "· 来源已解析 · 等待媒体路由"}
         </text>
       </div>
 
@@ -769,49 +811,51 @@ function Result({
           lineHeight: 20,
         }}
       >
-        {VIDEO_TITLE}
+        {sourceResolution?.title ?? VIDEO_TITLE}
       </text>
 
-      <div style={{ marginTop: 9, display: "flex", flexDirection: "row", alignItems: "center", gap: 10 }}>
-        <text style={{ width: 42, color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 11 }}>
-          分 P
-        </text>
-        <PartSelect part={part} setPart={setPart} palette={palette} />
-      </div>
+      {!isLive ? (
+        <>
+          <div style={{ marginTop: 9, display: "flex", flexDirection: "row", alignItems: "center", gap: 10 }}>
+            <text style={{ width: 42, color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 11 }}>
+              分 P
+            </text>
+            <PartSelect part={part} setPart={setPart} parts={parts} palette={palette} />
+          </div>
 
-      <div style={{ marginTop: 5, paddingLeft: 2, paddingRight: 2 }}>
-        <SeekControl part={part} palette={palette} />
-      </div>
+          <div style={{ marginTop: 5, paddingLeft: 2, paddingRight: 2 }}>
+            <SeekControl part={part} parts={parts} useReferencePosition={isReference} palette={palette} />
+          </div>
+        </>
+      ) : null}
 
-      <div
-        style={{
-          position: "relative",
-          minHeight: 30,
-          marginTop: 15,
-          display: "flex",
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 7,
-        }}
-      >
-        <div style={{ flexGrow: 1, display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <StatusDot color={danmaku === "shown" ? palette.accentTeal : palette.surfaceLine} />
-          <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 11.5 }}>弹幕</text>
+      {isReference ? (
+        <div
+          style={{
+            position: "relative",
+            minHeight: 30,
+            marginTop: 15,
+            display: "flex",
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 7,
+          }}
+        >
+          <div style={{ flexGrow: 1, display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <StatusDot color={danmaku === "shown" ? palette.accentTeal : palette.surfaceLine} />
+            <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 11.5 }}>弹幕</text>
+          </div>
+          <Segmented
+            value={danmaku}
+            onChange={setDanmaku}
+            options={VISIBILITY_OPTIONS}
+            width={92}
+            height={24}
+            palette={palette}
+          />
+          <Button label="样式" palette={palette} onClick={onOpenDanmaku} />
         </div>
-        <Segmented
-          value={danmaku}
-          onChange={setDanmaku}
-          options={VISIBILITY_OPTIONS}
-          width={92}
-          height={24}
-          palette={palette}
-        />
-        <Button
-          label="样式"
-          palette={palette}
-          onClick={onOpenDanmaku}
-        />
-      </div>
+      ) : null}
 
       <div
         style={{
@@ -843,13 +887,15 @@ function Result({
         >
           {output}
         </text>
-        <IconButton
-          name={copied ? "check" : "copy"}
-          palette={palette}
-          color={copied ? palette.accentTeal : palette.inkMuted}
-          label="copy-output"
-          onClick={() => void copy()}
-        />
+        {isReference ? (
+          <IconButton
+            name={copied ? "check" : "copy"}
+            palette={palette}
+            color={copied ? palette.accentTeal : palette.inkMuted}
+            label="copy-output"
+            onClick={() => void copy()}
+          />
+        ) : null}
       </div>
     </div>
   );
@@ -1444,16 +1490,17 @@ function SettingsView({
   palette,
   themePreference,
   setThemePreference,
+  mediaState,
 }: {
   palette: Palette;
   themePreference: ThemePreference;
   setThemePreference: (value: ThemePreference) => void;
+  mediaState: MediaComponentState;
 }) {
   const initial = useMemo(readStoredSettings, []);
   const [settings, setSettings] = useState<StoredSettings>({ ...initial, theme: themePreference });
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [mediaState] = useState<MediaComponentState>(() => (detectFfmpeg() ? "external" : "missing"));
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(
@@ -1574,11 +1621,11 @@ function SettingsView({
           <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 7 }}>
             <StatusDot color={mediaState === "external" || mediaState === "managed" ? palette.accentTeal : palette.accentViolet} />
             <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 10.5, whiteSpace: "nowrap" }}>
-              {mediaState === "external" ? "已找到电脑上的 FFmpeg" : "电脑上没有可用的 FFmpeg"}
+              {mediaStateLabel(mediaState)}
             </text>
           </div>
           <text style={{ marginLeft: 12, color: palette.caption, fontFamily: FONT_UI, fontSize: 10 }}>
-            {mediaState === "external" ? "可以直接使用，不需要下载" : "下载到软件目录，约 106 MB"}
+            {mediaStateCaption(mediaState)}
           </text>
         </div>
         {mediaState === "missing" ? (
@@ -1659,32 +1706,68 @@ export function AppSurface({
   const [part, setPart] = useState("2");
   const [danmaku, setDanmaku] = useState<DanmakuVisibility>("shown");
   const [danmakuSettings, setDanmakuSettings] = useState<DanmakuSettings>(DEFAULT_DANMAKU_SETTINGS);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [sourceResolution, setSourceResolution] = useState<SourceResolution | null>(null);
+  const [conversionError, setConversionError] = useState("链接无法识别，检查后再试。");
+  const [mediaState, setMediaState] = useState<MediaComponentState>("checking");
+  const relayWorker = useRef<RelayWorkerClient | null>(null);
+  const conversionEpoch = useRef(0);
+  const sceneBeforeConversion = useRef<Scene>(initialScene);
   const resolvedAppearance: Appearance =
     themePreference === "system" ? initialAppearance : themePreference;
   const palette = PALETTES[resolvedAppearance];
 
-  useEffect(
-    () => () => {
-      if (timer.current) clearTimeout(timer.current);
-    },
-    [],
-  );
+  const getRelayWorker = () => {
+    relayWorker.current ??= new RelayWorkerClient();
+    return relayWorker.current;
+  };
 
-  const convert = () => {
-    if (timer.current) clearTimeout(timer.current);
-    if (!source.trim() || !/(bilibili\.com|b23\.tv)/i.test(source)) {
-      setScene("error");
-      return;
+  const refreshMediaState = async () => {
+    setMediaState("checking");
+    try {
+      const health: HealthReply = await getRelayWorker().health();
+      setMediaState(health.ffmpeg.availability === "system" ? "external" : "missing");
+    } catch {
+      setMediaState("unavailable");
     }
+  };
+
+  useEffect(() => {
+    if (initialScene === "settings") void refreshMediaState();
+    return () => {
+      conversionEpoch.current += 1;
+      if (relayWorker.current) void relayWorker.current.close();
+    };
+  }, []);
+
+  const convert = async () => {
+    const epoch = ++conversionEpoch.current;
+    sceneBeforeConversion.current = scene;
+    setConversionError("链接无法识别，检查后再试。");
     setScene("loading");
-    timer.current = setTimeout(() => setScene("ready-vod"), 650);
+    try {
+      const resolution = await getRelayWorker().resolveSource(source);
+      if (conversionEpoch.current !== epoch) return;
+      setSourceResolution(resolution);
+      if (resolution.selected_part) setPart(String(resolution.selected_part));
+      setScene("ready-vod");
+    } catch (error) {
+      if (conversionEpoch.current !== epoch) return;
+      setConversionError(relayErrorMessage(error));
+      setScene("error");
+    }
+  };
+
+  const cancelConversion = () => {
+    conversionEpoch.current += 1;
+    const previous = sceneBeforeConversion.current;
+    setScene(previous === "loading" || previous === "settings" || previous === "danmaku" ? "ready-vod" : previous);
   };
 
   const showSubview = (next: "settings" | "danmaku") => {
-    if (timer.current) clearTimeout(timer.current);
+    conversionEpoch.current += 1;
     if (scene !== "settings" && scene !== "danmaku") setLastMainScene(scene);
     setScene(next);
+    if (next === "settings") void refreshMediaState();
   };
 
   const leaveSubview = () => {
@@ -1732,6 +1815,7 @@ export function AppSurface({
           palette={palette}
           themePreference={themePreference}
           setThemePreference={setThemePreference}
+          mediaState={mediaState}
         />
       ) : scene === "danmaku" ? (
         <DanmakuView
@@ -1755,14 +1839,14 @@ export function AppSurface({
               palette={palette}
               icon="play"
               iconColor={palette.accentTeal}
-              onClick={convert}
+              onClick={() => void convert()}
               disabled={scene === "loading"}
               testId="convert-source"
             />
             {scene === "loading" ? <Loading palette={palette} /> : null}
             {scene === "loading" ? (
               <div style={{ flexGrow: 1, display: "flex", justifyContent: "flex-end" }}>
-                <Button label="取消" palette={palette} quiet onClick={() => setScene("ready-vod")} />
+                <Button label="取消" palette={palette} quiet onClick={cancelConversion} />
               </div>
             ) : null}
           </div>
@@ -1784,10 +1868,10 @@ export function AppSurface({
             >
               <StatusDot color={palette.accentRose} />
               <text style={{ color: palette.inkSoft, fontFamily: FONT_UI, fontSize: 11 }}>
-                链接无法识别，检查后再试。
+                {conversionError}
               </text>
               <div style={{ flexGrow: 1 }} />
-              <Button label="重试" palette={palette} quiet onClick={convert} />
+              <Button label="重试" palette={palette} quiet onClick={() => void convert()} />
             </div>
           ) : null}
 
@@ -1799,10 +1883,69 @@ export function AppSurface({
               danmaku={danmaku}
               setDanmaku={setDanmaku}
               onOpenDanmaku={() => showSubview("danmaku")}
+              sourceResolution={sourceResolution}
             />
           ) : null}
         </div>
       )}
     </div>
   );
+}
+
+function relayErrorMessage(error: unknown): string {
+  if (!(error instanceof RelayWorkerError)) return "暂时无法读取链接，请稍后再试。";
+  switch (error.code) {
+    case "empty_source":
+    case "invalid_source":
+    case "invalid_live_room":
+    case "unsupported_source":
+    case "short_link_not_resolved":
+      return "链接无法识别，检查后再试。";
+    case "video_not_found":
+    case "live_room_not_found":
+      return "这个内容不存在，或暂时无法访问。";
+    case "login_required":
+      return "这个内容需要登录后才能读取。";
+    case "worker_unavailable":
+    case "worker_exited":
+      return "视频处理服务没有启动，请重新打开软件。";
+    case "protocol_mismatch":
+      return "软件组件版本不一致，请重新安装。";
+    default:
+      return "暂时无法读取链接，请稍后再试。";
+  }
+}
+
+function mediaStateLabel(state: MediaComponentState): string {
+  switch (state) {
+    case "checking":
+      return "正在检查 FFmpeg";
+    case "external":
+      return "已找到电脑上的 FFmpeg";
+    case "managed":
+      return "正在使用软件内置的 FFmpeg";
+    case "downloading":
+      return "正在下载 FFmpeg";
+    case "unavailable":
+      return "视频处理服务暂时不可用";
+    case "missing":
+      return "电脑上没有可用的 FFmpeg";
+  }
+}
+
+function mediaStateCaption(state: MediaComponentState): string {
+  switch (state) {
+    case "checking":
+      return "由 Rust 视频处理服务检测";
+    case "external":
+      return "可以直接使用，不需要下载";
+    case "managed":
+      return "由软件统一管理";
+    case "downloading":
+      return "完成后会自动启用";
+    case "unavailable":
+      return "重新打开软件后再试";
+    case "missing":
+      return "下载到软件目录，约 106 MB";
+  }
 }

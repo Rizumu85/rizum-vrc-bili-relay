@@ -3,7 +3,8 @@ param(
     [ValidateSet("light", "dark")]
     [string]$Theme = "light",
     [ValidateSet("ready-vod", "settings", "danmaku")]
-    [string]$Scene = "ready-vod"
+    [string]$Scene = "ready-vod",
+    [switch]$GenerateAddress
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,6 +33,12 @@ public static class GpuixWindowCapture
 
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool SetCursorPos(int x, int y);
+
+    [DllImport("user32.dll")]
+    public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
 }
 "@
 
@@ -71,6 +78,15 @@ try {
     $height = $rectangle.Bottom - $rectangle.Top
     if ($width -le 0 -or $height -le 0) {
         throw "The GPUIX window reported an invalid size."
+    }
+
+    if ($GenerateAddress) {
+        # The capture window is fixed-size. Click the centre of the Generate button,
+        # then allow the Rust worker and Bilibili request to complete before capture.
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + 93, $rectangle.Top + 226) | Out-Null
+        [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Seconds 7
     }
 
     $bitmap = New-Object System.Drawing.Bitmap $width, $height
