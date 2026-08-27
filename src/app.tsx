@@ -1130,6 +1130,7 @@ function Result({
             relayError,
             playbackUpdating,
             playbackMessage,
+            danmaku,
           )}
         </text>
       </div>
@@ -1271,6 +1272,7 @@ function resultStatusLabel(
   relayError: string | null,
   playbackUpdating: PlaybackUpdate,
   playbackMessage: string | null,
+  danmaku: DanmakuVisibility,
 ): string {
   if (isReference) return "· 中继运行中 · 请保持开启";
   if (source?.routing.kind === "unavailable") return "· 当前无法生成地址";
@@ -1280,6 +1282,12 @@ function resultStatusLabel(
   if (playbackUpdating === "danmaku") return "· 正在更新弹幕";
   if (playbackMessage) return `· ${playbackMessage}`;
   if (relayError && !relay) return "· 需要完成设置";
+  if (
+    source?.kind === "video"
+    && danmaku === "shown"
+    && relay?.stage === "running"
+    && relay.danmaku_events === undefined
+  ) return "· 暂无可用弹幕 · 原画中继";
   switch (relay?.stage) {
     case "starting":
       return "· 正在连接 VRCDN";
