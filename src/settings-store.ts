@@ -2,13 +2,11 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export type ThemePreference = "system" | "light" | "dark";
-export type LoginMode = "guest" | "account";
 
 export interface StoredSettings {
   host: string;
   key: string;
   playbackUrl: string;
-  login: LoginMode;
   theme: ThemePreference;
 }
 
@@ -16,7 +14,6 @@ export const DEFAULT_SETTINGS: StoredSettings = {
   host: "vrcdn.live",
   key: "",
   playbackUrl: "",
-  login: "guest",
   theme: "system",
 };
 
@@ -40,7 +37,6 @@ export function readStoredSettings(): StoredSettings {
       key: typeof parsed.key === "string" ? parsed.key : DEFAULT_SETTINGS.key,
       playbackUrl:
         typeof parsed.playbackUrl === "string" ? parsed.playbackUrl : legacyPlayback,
-      login: parsed.login === "account" ? "account" : "guest",
       theme:
         parsed.theme === "light" || parsed.theme === "dark" || parsed.theme === "system"
           ? parsed.theme

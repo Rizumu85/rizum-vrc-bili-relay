@@ -7,7 +7,7 @@ use std::process;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use reqwest::blocking::Client;
-use reqwest::header::{ACCEPT, REFERER};
+use reqwest::header::{ACCEPT, COOKIE, REFERER};
 
 use crate::live_danmaku::{LiveDanmakuOverlay, LiveDanmakuService, LiveDanmakuSource};
 use crate::{
@@ -34,6 +34,7 @@ pub(crate) struct VideoDanmakuSource {
     pub cid: u64,
     pub duration_seconds: u64,
     pub referer: String,
+    pub cookie: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -228,18 +229,20 @@ impl DanmakuService {
                 "https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid={}&segment_index={segment}",
                 source.cid
             );
-            let response = self
+            let mut request = self
                 .http
                 .get(endpoint)
                 .header(ACCEPT, "application/octet-stream")
-                .header(REFERER, &source.referer)
-                .send()
-                .map_err(|error| {
-                    RelayError::new(
-                        "danmaku_fetch_failed",
-                        format!("Danmaku segment {segment} could not be downloaded: {error}"),
-                    )
-                })?;
+                .header(REFERER, &source.referer);
+            if let Some(cookie) = source.cookie.as_deref() {
+                request = request.header(COOKIE, cookie);
+            }
+            let response = request.send().map_err(|error| {
+                RelayError::new(
+                    "danmaku_fetch_failed",
+                    format!("Danmaku segment {segment} could not be downloaded: {error}"),
+                )
+            })?;
             if !response.status().is_success() {
                 return Err(RelayError::new(
                     "danmaku_fetch_failed",

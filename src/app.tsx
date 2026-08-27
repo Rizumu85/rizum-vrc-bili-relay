@@ -17,11 +17,12 @@ import {
   DEFAULT_SETTINGS,
   readStoredSettings,
   writeStoredSettings,
-  type LoginMode,
   type StoredSettings,
   type ThemePreference,
 } from "./settings-store";
 import {
+  type BilibiliAuthStatus,
+  type BilibiliLoginQr,
   type FfmpegStatus,
   type HealthReply,
   type PlaybackOptions,
@@ -33,6 +34,7 @@ import { RelayWorkerClient, RelayWorkerError } from "./relay/worker-client";
 
 export type Scene = "loading" | "error" | "ready-vod" | "settings" | "danmaku";
 type DanmakuVisibility = "shown" | "hidden";
+type LoginMode = "guest" | "account";
 type DanmakuSize = "small" | "medium" | "large";
 type DanmakuArea = "quarter" | "half" | "full";
 type DanmakuSpeed = "slow" | "normal" | "fast";
@@ -825,6 +827,197 @@ function Segmented<T extends string>({
         );
       })}
     </div>
+  );
+}
+
+interface QrRectangle {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+function qrRectangles(qr: BilibiliLoginQr): QrRectangle[] {
+  const modules = Array.from({ length: qr.size }, () => Array<boolean>(qr.size).fill(false));
+  const pattern = /M(\d+) (\d+)h1v1h-1z/g;
+  for (const match of qr.path.matchAll(pattern)) {
+    const x = Number.parseInt(match[1] ?? "-1", 10);
+    const y = Number.parseInt(match[2] ?? "-1", 10);
+    if (x >= 0 && x < qr.size && y >= 0 && y < qr.size) modules[y]![x] = true;
+  }
+
+  const rectangles: QrRectangle[] = [];
+  let active = new Map<string, QrRectangle>();
+  for (let y = 0; y < qr.size; y += 1) {
+    const row = modules[y]!;
+    const next = new Map<string, QrRectangle>();
+    let x = 0;
+    while (x < row.length) {
+      if (!row[x]) {
+        x += 1;
+        continue;
+      }
+      const start = x;
+      while (x < row.length && row[x]) x += 1;
+      const width = x - start;
+      const key = `${start}:${width}`;
+      const previous = active.get(key);
+      next.set(
+        key,
+        previous
+          ? { ...previous, height: previous.height + 1 }
+          : { x: start, y, width, height: 1 },
+      );
+    }
+    for (const [key, rectangle] of active) {
+      if (!next.has(key)) rectangles.push(rectangle);
+    }
+    active = next;
+  }
+  rectangles.push(...active.values());
+  return rectangles;
+}
+
+function BilibiliQrCode({ qr }: { qr: BilibiliLoginQr }) {
+  const quietZone = 4;
+  const moduleSize = Math.max(2, Math.floor(132 / (qr.size + quietZone * 2)));
+  const side = (qr.size + quietZone * 2) * moduleSize;
+  const rectangles = useMemo(() => qrRectangles(qr), [qr.path, qr.size]);
+  return (
+    <div
+      style={{
+        width: side,
+        height: side,
+        flexShrink: 0,
+        position: "relative",
+        backgroundColor: "#FFFFFF",
+      }}
+    >
+      {rectangles.map((rectangle, index) => (
+        <div
+          key={`${rectangle.x}:${rectangle.y}:${index}`}
+          style={{
+            position: "absolute",
+            left: (rectangle.x + quietZone) * moduleSize,
+            top: (rectangle.y + quietZone) * moduleSize,
+            width: rectangle.width * moduleSize,
+            height: rectangle.height * moduleSize,
+            backgroundColor: "#18181B",
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function BilibiliLoginPopover({
+  auth,
+  error,
+  busy,
+  palette,
+  onBegin,
+  onDismiss,
+}: {
+  auth: BilibiliAuthStatus | null;
+  error: string | null;
+  busy: boolean;
+  palette: Palette;
+  onBegin: () => void;
+  onDismiss: () => void;
+}) {
+  const statusText = error
+    ? error
+    : auth?.stage === "scanned"
+      ? "已扫码，请在手机上确认"
+      : auth?.stage === "expired"
+        ? "二维码已失效"
+        : auth?.qr
+          ? "请使用哔哩哔哩 App 扫码"
+          : "正在生成二维码";
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, top: 96 }}
+      animate={{ opacity: 1, top: 100 }}
+      transition={{ duration: 0.18, ease: [0.23, 1, 0.32, 1] }}
+      onMouseDownOutside={onDismiss}
+      style={{
+        width: 210,
+        position: "absolute",
+        right: 24,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 9,
+        padding: 12,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: palette.panelEdge,
+        backgroundColor: palette.nestedStrong,
+        boxShadow: {
+          offsetX: 0,
+          offsetY: 16,
+          blurRadius: 36,
+          spreadRadius: 0,
+          color: palette.panelShadow,
+        },
+      }}
+    >
+      <text
+        style={{
+          alignSelf: "flex-start",
+          color: palette.ink,
+          fontFamily: FONT_SERIF,
+          fontSize: 11.5,
+          fontWeight: 600,
+        }}
+      >
+        用哔哩哔哩 App 扫码
+      </text>
+      {auth?.qr ? (
+        <div
+          style={{
+            width: 140,
+            height: 140,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: 9,
+            backgroundColor: "#FFFFFF",
+          }}
+        >
+          <BilibiliQrCode qr={auth.qr} />
+        </div>
+      ) : (
+        <div
+          style={{
+            width: 140,
+            height: 76,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: 9,
+            backgroundColor: palette.surfaceMuted,
+          }}
+        >
+          <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 10.5 }}>
+            {busy ? "正在生成" : "二维码不可用"}
+          </text>
+        </div>
+      )}
+      <div style={{ minHeight: 17, display: "flex", flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <StatusDot color={error || auth?.stage === "expired" ? palette.accentRose : palette.accentTeal} />
+        <text style={{ color: error ? palette.inkMuted : palette.caption, fontFamily: FONT_UI, fontSize: 10.5 }}>
+          {statusText}
+        </text>
+      </div>
+      {error || auth?.stage === "expired" ? (
+        <Button label="重新生成" palette={palette} disabled={busy} onClick={onBegin} />
+      ) : null}
+      <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 9.5 }}>
+        登录信息只在本次运行中使用
+      </text>
+    </motion.div>
   );
 }
 
@@ -1722,6 +1915,11 @@ function SettingsView({
   palette,
   themePreference,
   setThemePreference,
+  bilibiliAuth,
+  bilibiliAuthError,
+  bilibiliAuthBusy,
+  onBeginBilibiliLogin,
+  onLogoutBilibili,
   mediaState,
   mediaStatus,
   onInstallFfmpeg,
@@ -1729,6 +1927,11 @@ function SettingsView({
   palette: Palette;
   themePreference: ThemePreference;
   setThemePreference: (value: ThemePreference) => void;
+  bilibiliAuth: BilibiliAuthStatus | null;
+  bilibiliAuthError: string | null;
+  bilibiliAuthBusy: boolean;
+  onBeginBilibiliLogin: () => void;
+  onLogoutBilibili: () => void;
   mediaState: MediaComponentState;
   mediaStatus: FfmpegStatus | null;
   onInstallFfmpeg: () => void;
@@ -1737,7 +1940,11 @@ function SettingsView({
   const [settings, setSettings] = useState<StoredSettings>({ ...initial, theme: themePreference });
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [accountPopoverOpen, setAccountPopoverOpen] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const accountAuthenticated = bilibiliAuth?.stage === "authenticated";
+  const accountPending = bilibiliAuth?.stage === "waiting" || bilibiliAuth?.stage === "scanned";
+  const loginMode: LoginMode = accountAuthenticated || accountPending ? "account" : "guest";
 
   useEffect(
     () => () => {
@@ -1746,12 +1953,25 @@ function SettingsView({
     [],
   );
 
+  useEffect(() => {
+    if (accountAuthenticated) setAccountPopoverOpen(false);
+  }, [accountAuthenticated]);
+
   const update = (key: "host" | "key" | "playbackUrl", value: string) =>
     setSettings((current) => ({ ...current, [key]: value }));
-  const updateLogin = (login: LoginMode) => setSettings((current) => ({ ...current, login }));
   const updateTheme = (theme: ThemePreference) => {
     setSettings((current) => ({ ...current, theme }));
     setThemePreference(theme);
+  };
+  const updateLogin = (next: LoginMode) => {
+    if (next === "guest") {
+      setAccountPopoverOpen(false);
+      if (bilibiliAuth && bilibiliAuth.stage !== "guest") onLogoutBilibili();
+      return;
+    }
+    if (accountAuthenticated) return;
+    setAccountPopoverOpen(true);
+    if (!accountPending) onBeginBilibiliLogin();
   };
   const reset = () => {
     setSettings({ ...DEFAULT_SETTINGS });
@@ -1825,13 +2045,29 @@ function SettingsView({
           style={{
             width: 140,
             flexShrink: 0,
+            position: "relative",
             paddingLeft: 14,
             borderLeftWidth: 1,
             borderColor: palette.surfaceLine,
           }}
         >
-          <SectionHeading title="B 站账号" subtitle="公开内容可直接使用访客模式" compact palette={palette} />
-          <Segmented value={settings.login} onChange={updateLogin} options={LOGIN_OPTIONS} width={126} palette={palette} />
+          <SectionHeading
+            title="B 站账号"
+            subtitle={
+              bilibiliAuth?.stage === "authenticated"
+                ? `已登录 · ${bilibiliAuth.display_name ?? "Bilibili 用户"}`
+                : "公开内容可直接使用访客模式"
+            }
+            compact
+            palette={palette}
+          />
+          <Segmented
+            value={loginMode}
+            onChange={updateLogin}
+            options={LOGIN_OPTIONS}
+            width={126}
+            palette={palette}
+          />
           <div style={{ height: 1, marginTop: 16, marginRight: 8, marginBottom: 16, marginLeft: 8, backgroundColor: palette.surfaceLine, opacity: 0.5 }} />
           <SectionHeading title="外观" subtitle="跟随系统会自动切换明暗" compact palette={palette} />
           <Segmented value={themePreference} onChange={updateTheme} options={THEME_OPTIONS} width={126} palette={palette} />
@@ -1907,6 +2143,16 @@ function SettingsView({
         <div style={{ flexGrow: 1 }} />
         <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 10.5 }}>配置只保存在本机</text>
       </div>
+      {accountPopoverOpen ? (
+        <BilibiliLoginPopover
+          auth={bilibiliAuth}
+          error={bilibiliAuthError}
+          busy={bilibiliAuthBusy}
+          palette={palette}
+          onBegin={onBeginBilibiliLogin}
+          onDismiss={() => setAccountPopoverOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1966,6 +2212,9 @@ export function AppSurface({
   const [conversionError, setConversionError] = useState("链接无法识别，检查后再试。");
   const [mediaStatus, setMediaStatus] = useState<FfmpegStatus | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
+  const [bilibiliAuth, setBilibiliAuth] = useState<BilibiliAuthStatus | null>(null);
+  const [bilibiliAuthError, setBilibiliAuthError] = useState<string | null>(null);
+  const [bilibiliAuthBusy, setBilibiliAuthBusy] = useState(false);
   const relayWorker = useRef<RelayWorkerClient | null>(null);
   const conversionEpoch = useRef(0);
   const playbackEpoch = useRef(0);
@@ -1992,6 +2241,49 @@ export function AppSurface({
     }
   };
 
+  const applyBilibiliAuth = (next: BilibiliAuthStatus) => {
+    setBilibiliAuth((current) => {
+      if (next.qr || current?.login_id !== next.login_id) return next;
+      const qr = current?.qr;
+      return qr ? { ...next, qr } : next;
+    });
+  };
+
+  const refreshBilibiliAuth = async () => {
+    setBilibiliAuthError(null);
+    try {
+      applyBilibiliAuth(await getRelayWorker().bilibiliAuthStatus());
+    } catch (error) {
+      setBilibiliAuthError(relayErrorMessage(error));
+    }
+  };
+
+  const beginBilibiliLogin = async () => {
+    if (bilibiliAuthBusy) return;
+    setBilibiliAuthBusy(true);
+    setBilibiliAuthError(null);
+    try {
+      applyBilibiliAuth(await getRelayWorker().beginBilibiliLogin());
+    } catch (error) {
+      setBilibiliAuthError(relayErrorMessage(error));
+    } finally {
+      setBilibiliAuthBusy(false);
+    }
+  };
+
+  const logoutBilibili = async () => {
+    if (bilibiliAuthBusy) return;
+    setBilibiliAuthBusy(true);
+    setBilibiliAuthError(null);
+    try {
+      applyBilibiliAuth(await getRelayWorker().logoutBilibili());
+    } catch (error) {
+      setBilibiliAuthError(relayErrorMessage(error));
+    } finally {
+      setBilibiliAuthBusy(false);
+    }
+  };
+
   const installFfmpeg = async () => {
     setMediaError(null);
     try {
@@ -2003,13 +2295,55 @@ export function AppSurface({
   };
 
   useEffect(() => {
-    if (initialScene === "settings") void refreshMediaState();
+    if (initialScene === "settings") {
+      void refreshMediaState();
+      void refreshBilibiliAuth();
+    }
     return () => {
       conversionEpoch.current += 1;
       playbackEpoch.current += 1;
       if (relayWorker.current) void relayWorker.current.close();
     };
   }, []);
+
+  useEffect(() => {
+    if (
+      !bilibiliAuth?.login_id ||
+      (bilibiliAuth.stage !== "waiting" && bilibiliAuth.stage !== "scanned")
+    ) {
+      return;
+    }
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const loginId = bilibiliAuth.login_id;
+    const poll = async () => {
+      try {
+        const next = await getRelayWorker().pollBilibiliLogin(loginId);
+        if (cancelled) return;
+        setBilibiliAuthError(null);
+        applyBilibiliAuth(next);
+        if (next.stage === "waiting" || next.stage === "scanned") {
+          timer = setTimeout(poll, 1400);
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setBilibiliAuthError(relayErrorMessage(error));
+        if (
+          error instanceof RelayWorkerError &&
+          error.code === "bilibili_login_session_not_found"
+        ) {
+          applyBilibiliAuth({ stage: "expired" });
+          return;
+        }
+        timer = setTimeout(poll, 2500);
+      }
+    };
+    timer = setTimeout(poll, 1200);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [bilibiliAuth?.login_id, bilibiliAuth?.stage]);
 
   useEffect(() => {
     if (mediaStatus?.availability !== "installing") return;
@@ -2280,7 +2614,10 @@ export function AppSurface({
     conversionEpoch.current += 1;
     if (scene !== "settings" && scene !== "danmaku") setLastMainScene(scene);
     setScene(next);
-    if (next === "settings") void refreshMediaState();
+    if (next === "settings") {
+      void refreshMediaState();
+      void refreshBilibiliAuth();
+    }
   };
 
   const leaveSubview = () => {
@@ -2344,6 +2681,11 @@ export function AppSurface({
           palette={palette}
           themePreference={themePreference}
           setThemePreference={setThemePreference}
+          bilibiliAuth={bilibiliAuth}
+          bilibiliAuthError={bilibiliAuthError}
+          bilibiliAuthBusy={bilibiliAuthBusy}
+          onBeginBilibiliLogin={() => void beginBilibiliLogin()}
+          onLogoutBilibili={() => void logoutBilibili()}
           mediaState={mediaState}
           mediaStatus={mediaStatus}
           onInstallFfmpeg={() => void installFfmpeg()}
@@ -2463,6 +2805,12 @@ function relayErrorMessage(error: unknown): string {
       return "媒体链接暂时无法读取，或服务器拒绝了连接。";
     case "login_required":
       return "这个内容需要登录后才能读取。";
+    case "bilibili_login_unavailable":
+      return "暂时无法连接 B 站登录服务，请稍后重试。";
+    case "bilibili_login_failed":
+      return "登录没有完成，请重新生成二维码。";
+    case "bilibili_login_session_not_found":
+      return "二维码已经失效，请重新生成。";
     case "ffmpeg_missing":
       return "电脑上没有可用的 FFmpeg，请先在设置中下载。";
     case "invalid_ingest_server":

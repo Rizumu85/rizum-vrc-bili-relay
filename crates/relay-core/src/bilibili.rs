@@ -1,13 +1,14 @@
 use std::time::Duration;
 
 use reqwest::blocking::{Client, Response};
-use reqwest::header::{ACCEPT, REFERER, USER_AGENT};
+use reqwest::header::{ACCEPT, COOKIE, REFERER, USER_AGENT};
 use serde_json::Value;
 use url::Url;
 
+use crate::bilibili_auth::BilibiliAuthService;
 use crate::{
-    LiveStatus, MediaFormat, MediaInput, RelayError, ResolvedSource, RouteDecision, RouteKind,
-    RouteReason, SourceKind, SourceResolution, VideoPart, inspect_source,
+    BilibiliAuthStatus, LiveStatus, MediaFormat, MediaInput, RelayError, ResolvedSource,
+    RouteDecision, RouteKind, RouteReason, SourceKind, SourceResolution, VideoPart, inspect_source,
 };
 
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
@@ -15,6 +16,7 @@ const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Appl
 
 pub struct BilibiliClient {
     http: Client,
+    auth: BilibiliAuthService,
 }
 
 impl BilibiliClient {
@@ -25,7 +27,26 @@ impl BilibiliClient {
             .redirect(reqwest::redirect::Policy::limited(8))
             .build()
             .unwrap_or_else(|_| Client::new());
-        Self { http }
+        Self {
+            auth: BilibiliAuthService::new(http.clone()),
+            http,
+        }
+    }
+
+    pub fn auth_status(&self) -> BilibiliAuthStatus {
+        self.auth.status()
+    }
+
+    pub fn begin_login(&mut self) -> Result<BilibiliAuthStatus, RelayError> {
+        self.auth.begin()
+    }
+
+    pub fn poll_login(&mut self, login_id: u64) -> Result<BilibiliAuthStatus, RelayError> {
+        self.auth.poll(login_id)
+    }
+
+    pub fn logout(&mut self) -> BilibiliAuthStatus {
+        self.auth.logout()
     }
 
     pub fn resolve(
@@ -291,6 +312,7 @@ impl BilibiliClient {
                         cid,
                         duration_seconds: duration_seconds.max(1),
                         referer: referer.to_string(),
+                        cookie: self.auth.cookie().map(str::to_owned),
                     },
                 )),
             },
@@ -354,6 +376,7 @@ impl BilibiliClient {
                     crate::live_danmaku::LiveDanmakuSource {
                         room_id: room_id.to_string(),
                         referer: referer.to_string(),
+                        cookie: self.auth.cookie().map(str::to_owned),
                     },
                 )),
             },
@@ -361,16 +384,18 @@ impl BilibiliClient {
     }
 
     fn get_json(&self, endpoint: &str, referer: &str) -> Result<Value, RelayError> {
-        let response = self
+        let mut request = self
             .http
             .get(endpoint)
             .header(USER_AGENT, BROWSER_USER_AGENT)
             .header(ACCEPT, "application/json")
-            .header(REFERER, referer)
-            .send()
-            .map_err(|error| {
-                network_error("bilibili_unavailable", "Bilibili API is unavailable", error)
-            })?;
+            .header(REFERER, referer);
+        if let Some(cookie) = self.auth.cookie() {
+            request = request.header(COOKIE, cookie);
+        }
+        let response = request.send().map_err(|error| {
+            network_error("bilibili_unavailable", "Bilibili API is unavailable", error)
+        })?;
         ensure_http_success(&response)?;
         response.json::<Value>().map_err(|error| {
             network_error(
@@ -540,7 +565,7 @@ fn api_data<'a>(
         .unwrap_or(fallback);
     let error_code = match code {
         -404 => not_found_code,
-        -10403 => "login_required",
+        -101 | -10403 => "login_required",
         _ => "bilibili_api_error",
     };
     Err(RelayError::new(error_code, message))

@@ -3,6 +3,8 @@ import { dirname, join, resolve } from "node:path";
 
 import {
   RELAY_PROTOCOL_VERSION,
+  type BilibiliAuthStateReply,
+  type BilibiliAuthStatus,
   type FfmpegStateReply,
   type FfmpegStatus,
   type HealthReply,
@@ -142,6 +144,25 @@ export class RelayWorkerClient {
     return (reply as FfmpegStateReply).ffmpeg;
   }
 
+  async bilibiliAuthStatus(): Promise<BilibiliAuthStatus> {
+    return this.bilibiliAuthRequest({ type: "bilibili_auth_status" });
+  }
+
+  async beginBilibiliLogin(): Promise<BilibiliAuthStatus> {
+    return this.bilibiliAuthRequest({ type: "begin_bilibili_login" }, 30_000);
+  }
+
+  async pollBilibiliLogin(loginId: number): Promise<BilibiliAuthStatus> {
+    return this.bilibiliAuthRequest(
+      { type: "poll_bilibili_login", login_id: loginId },
+      30_000,
+    );
+  }
+
+  async logoutBilibili(): Promise<BilibiliAuthStatus> {
+    return this.bilibiliAuthRequest({ type: "logout_bilibili" });
+  }
+
   async close(): Promise<void> {
     if (this.closing) return;
     this.closing = true;
@@ -172,6 +193,21 @@ export class RelayWorkerClient {
       );
     }
     return (reply as RelayStateReply).relay;
+  }
+
+  private async bilibiliAuthRequest(
+    command: Record<string, unknown>,
+    timeoutMs = 15_000,
+  ): Promise<BilibiliAuthStatus> {
+    await this.health();
+    const reply = await this.request(command, timeoutMs);
+    if (reply.type !== "bilibili_auth_state") {
+      throw new RelayWorkerError(
+        "protocol_mismatch",
+        `Expected Bilibili auth state, received ${reply.type}`,
+      );
+    }
+    return (reply as BilibiliAuthStateReply).auth;
   }
 
   private async request(

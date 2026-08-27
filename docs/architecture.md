@@ -34,6 +34,10 @@ Current commands:
 - `relay_status`
 - `stop_relay`
 - `ensure_ffmpeg`
+- `bilibili_auth_status`
+- `begin_bilibili_login`
+- `poll_bilibili_login`
+- `logout_bilibili`
 - `shutdown`
 
 The first source inspection classifies video, live-room, short, and generic
@@ -83,6 +87,15 @@ messages merely received from the websocket. The selected FFmpeg executable is
 preflighted once per path for `drawtext` and `zmq` support. Cancellation closes
 the active TCP connection before joining both threads, keeping relay shutdown
 bounded.
+
+`bilibili_auth` owns the QR login lifecycle and authenticated browser cookies.
+React receives only an opaque login id, display state, account name after
+success, and the QR module path needed for the visible code. The QR session key
+and authenticated cookies remain inside Rust. Successful credentials are
+validated against Bilibili's navigation endpoint, then attached to metadata and
+danmaku requests. Logout clears both pending and authenticated state. This slice
+is intentionally memory-only; it does not write credentials to the TypeScript
+settings file.
 
 Temporary upstream URLs never cross into React. The stream key is supplied by
 the settings UI only in the `start_relay` command and is never returned or
@@ -146,6 +159,15 @@ When FFmpeg is missing, installation starts through the same protocol:
 The immediate reply reports `installing`; subsequent `health` replies report
 downloaded and total bytes until availability becomes `managed` or `failed`.
 
+Bilibili QR login uses a short-lived opaque session. The UI starts a session,
+polls only that id, and can clear it without ever receiving the cookie:
+
+```json
+{"id":6,"type":"begin_bilibili_login"}
+{"id":7,"type":"poll_bilibili_login","login_id":1}
+{"id":8,"type":"logout_bilibili"}
+```
+
 Success and failure are explicit:
 
 ```json
@@ -178,8 +200,9 @@ FFmpeg process.
 
 Implement future behaviour in this order so every slice crosses the same seam:
 
-1. Add Bilibili QR login and authenticated source resolution.
-2. Move persisted product settings and credentials behind the Rust interface.
+1. Move persisted product settings behind the Rust interface.
+2. Add encrypted Windows credential persistence only after its lifecycle and
+   failure states are represented explicitly at the same boundary.
 
 The approved UI may keep reference data while a slice is under construction,
 but product actions must never manufacture a successful result in TypeScript.

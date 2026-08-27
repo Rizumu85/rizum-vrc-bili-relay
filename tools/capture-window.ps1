@@ -4,7 +4,8 @@ param(
     [string]$Theme = "light",
     [ValidateSet("ready-vod", "settings", "danmaku")]
     [string]$Scene = "ready-vod",
-    [switch]$GenerateAddress
+    [switch]$GenerateAddress,
+    [switch]$OpenLogin
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,6 +34,9 @@ public static class GpuixWindowCapture
 
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
 
     [DllImport("user32.dll")]
     public static extern bool SetCursorPos(int x, int y);
@@ -71,6 +75,8 @@ try {
 
     [GpuixWindowCapture]::ShowWindow($windowHandle, 1) | Out-Null
     [GpuixWindowCapture]::SetForegroundWindow($windowHandle) | Out-Null
+    # Keep the product surface unobscured while CopyFromScreen reads its pixels.
+    [GpuixWindowCapture]::SetWindowPos($windowHandle, [IntPtr](-1), 0, 0, 0, 0, 0x0013) | Out-Null
     Start-Sleep -Seconds 1
     $rectangle = New-Object GpuixWindowCapture+RECT
     [GpuixWindowCapture]::GetWindowRect($windowHandle, [ref]$rectangle) | Out-Null
@@ -87,6 +93,15 @@ try {
         [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
         [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
         Start-Sleep -Seconds 7
+    }
+
+    if ($OpenLogin) {
+        # Open the account side of the settings segmented control and allow the
+        # worker to request the QR payload before capture.
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int]($width * 0.86), $rectangle.Top + [int]($height * 0.35)) | Out-Null
+        [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Seconds 4
     }
 
     $bitmap = New-Object System.Drawing.Bitmap $width, $height

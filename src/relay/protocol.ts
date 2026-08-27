@@ -1,4 +1,4 @@
-export const RELAY_PROTOCOL_VERSION = 9;
+export const RELAY_PROTOCOL_VERSION = 10;
 
 export type SourceKind = "video" | "live" | "media" | "short_link";
 export type RelayNextStep =
@@ -108,6 +108,27 @@ export interface FfmpegStatus {
   diagnostic?: string;
 }
 
+export type BilibiliAuthStage =
+  | "guest"
+  | "waiting"
+  | "scanned"
+  | "authenticated"
+  | "expired";
+
+export interface BilibiliLoginQr {
+  size: number;
+  path: string;
+}
+
+export interface BilibiliAuthStatus {
+  stage: BilibiliAuthStage;
+  login_id?: number;
+  display_name?: string;
+  user_id?: number;
+  expires_in_seconds?: number;
+  qr?: BilibiliLoginQr;
+}
+
 export interface HealthReply {
   type: "health";
   protocol_version: number;
@@ -141,6 +162,11 @@ export interface FfmpegStateReply {
   ffmpeg: FfmpegStatus;
 }
 
+export interface BilibiliAuthStateReply {
+  type: "bilibili_auth_state";
+  auth: BilibiliAuthStatus;
+}
+
 export interface ShutdownAcceptedReply {
   type: "shutdown_accepted";
 }
@@ -152,6 +178,7 @@ export type RelayReply =
   | RelayStateReply
   | PlaybackStateReply
   | FfmpegStateReply
+  | BilibiliAuthStateReply
   | ShutdownAcceptedReply;
 
 export interface RelayFailure {

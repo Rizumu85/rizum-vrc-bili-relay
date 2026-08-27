@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 mod bilibili;
+mod bilibili_auth;
 mod danmaku;
 mod ffmpeg;
 mod ffmpeg_manager;
@@ -14,7 +15,7 @@ use danmaku::{DanmakuOverlay, DanmakuService};
 use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -56,6 +57,12 @@ pub enum Command {
         session_id: String,
     },
     EnsureFfmpeg,
+    BilibiliAuthStatus,
+    BeginBilibiliLogin,
+    PollBilibiliLogin {
+        login_id: u64,
+    },
+    LogoutBilibili,
     Shutdown,
 }
 
@@ -108,6 +115,9 @@ pub enum Reply {
     },
     FfmpegState {
         ffmpeg: FfmpegStatus,
+    },
+    BilibiliAuthState {
+        auth: BilibiliAuthStatus,
     },
     ShutdownAccepted,
 }
@@ -207,6 +217,37 @@ pub struct RelayTarget {
 #[serde(default)]
 pub struct PlaybackOptions {
     pub danmaku: DanmakuSettings,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BilibiliAuthStatus {
+    pub stage: BilibiliAuthStage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_in_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qr: Option<BilibiliLoginQr>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BilibiliAuthStage {
+    Guest,
+    Waiting,
+    Scanned,
+    Authenticated,
+    Expired,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BilibiliLoginQr {
+    pub size: usize,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -575,6 +616,18 @@ impl RelayCore {
             }),
             Command::EnsureFfmpeg => Ok(Reply::FfmpegState {
                 ffmpeg: self.ffmpeg.ensure_installed()?,
+            }),
+            Command::BilibiliAuthStatus => Ok(Reply::BilibiliAuthState {
+                auth: self.bilibili.auth_status(),
+            }),
+            Command::BeginBilibiliLogin => Ok(Reply::BilibiliAuthState {
+                auth: self.bilibili.begin_login()?,
+            }),
+            Command::PollBilibiliLogin { login_id } => Ok(Reply::BilibiliAuthState {
+                auth: self.bilibili.poll_login(login_id)?,
+            }),
+            Command::LogoutBilibili => Ok(Reply::BilibiliAuthState {
+                auth: self.bilibili.logout(),
             }),
             Command::Shutdown => {
                 self.ffmpeg.shutdown();

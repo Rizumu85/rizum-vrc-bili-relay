@@ -49,6 +49,7 @@ const MIXIN_KEY_ORDER: [usize; 64] = [
 pub(crate) struct LiveDanmakuSource {
     pub room_id: String,
     pub referer: String,
+    pub cookie: Option<String>,
 }
 
 #[derive(Clone)]
@@ -87,9 +88,30 @@ impl LiveDanmakuService {
         source: &LiveDanmakuSource,
         settings: &DanmakuSettings,
     ) -> Result<LiveDanmakuOverlay, RelayError> {
-        let identity = self.guest_identity()?;
+        let identity = self.identity(source.cookie.as_deref())?;
         let endpoint = self.live_endpoint(source, &identity)?;
         LiveDanmakuOverlay::new(endpoint, settings.clone())
+    }
+
+    fn identity(&mut self, supplied_cookie: Option<&str>) -> Result<GuestIdentity, RelayError> {
+        if let Some(cookie) = supplied_cookie.filter(|value| !value.trim().is_empty())
+            && let Some(buvid3) = read_cookie(cookie, "buvid3")
+        {
+            return Ok(GuestIdentity {
+                buvid3,
+                cookie: cookie.to_string(),
+                expires_at: Instant::now() + Duration::from_secs(12 * 60 * 60),
+            });
+        }
+        let mut identity = self.guest_identity()?;
+        if let Some(cookie) = supplied_cookie.filter(|value| !value.trim().is_empty()) {
+            identity.cookie = format!(
+                "{}; {}",
+                cookie.trim().trim_end_matches(';'),
+                identity.cookie
+            );
+        }
+        Ok(identity)
     }
 
     fn guest_identity(&mut self) -> Result<GuestIdentity, RelayError> {
@@ -970,6 +992,16 @@ fn url_file_stem(value: &str) -> Option<String> {
     let url = url::Url::parse(value).ok()?;
     let file = url.path_segments()?.next_back()?;
     file.rsplit_once('.').map(|(stem, _)| stem.to_string())
+}
+
+fn read_cookie(cookie: &str, name: &str) -> Option<String> {
+    cookie.split(';').find_map(|part| {
+        let (candidate, value) = part.trim().split_once('=')?;
+        candidate
+            .eq_ignore_ascii_case(name)
+            .then(|| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
 }
 
 fn sanitize_wbi(value: &str) -> String {
