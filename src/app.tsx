@@ -181,7 +181,7 @@ async function writeClipboard(value: string): Promise<void> {
 }
 
 function relaySettingsReady(settings: ProductSettings): boolean {
-  return settings.streamKeyConfigured && Boolean(settings.playbackUrl.trim());
+  return settings.streamKeyStatus === "available" && Boolean(settings.playbackUrl.trim());
 }
 
 function configuredPlaybackOptions(
@@ -1955,6 +1955,7 @@ function SettingsView({
   const accountAuthenticated = bilibiliAuth?.stage === "authenticated";
   const accountPending = bilibiliAuth?.stage === "waiting" || bilibiliAuth?.stage === "scanned";
   const loginMode: LoginMode = accountAuthenticated || accountPending ? "account" : "guest";
+  const streamKeyUnavailable = storedSettings.streamKeyStatus === "unavailable" && !keyDirty;
 
   useEffect(
     () => () => {
@@ -1979,6 +1980,7 @@ function SettingsView({
   }, [
     storedSettings.host,
     storedSettings.playbackUrl,
+    storedSettings.streamKeyStatus,
     storedSettings.theme,
   ]);
 
@@ -2071,7 +2073,13 @@ function SettingsView({
                     update("key", value);
                     setKeyDirty(true);
                   }}
-                  placeholder={storedSettings.streamKeyConfigured && !keyDirty ? "已保存" : "未设置"}
+                  placeholder={
+                    !keyDirty && storedSettings.streamKeyStatus === "available"
+                      ? "已保存"
+                      : streamKeyUnavailable
+                        ? "无法读取，请重新填写"
+                        : "未设置"
+                  }
                   palette={palette}
                 />
               </Field>
@@ -2089,8 +2097,16 @@ function SettingsView({
             </Field>
           </div>
           <div style={{ height: 18, marginTop: 7, display: "flex", flexDirection: "row", alignItems: "center", gap: 7 }}>
-            <StatusDot color={palette.accentTeal} />
-            <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 10.5 }}>服务可用</text>
+            <StatusDot color={streamKeyUnavailable ? palette.accentRose : palette.accentTeal} />
+            <text
+              style={{
+                color: streamKeyUnavailable ? palette.accentRose : palette.inkMuted,
+                fontFamily: FONT_UI,
+                fontSize: 10.5,
+              }}
+            >
+              {streamKeyUnavailable ? "密钥无法读取，请重新填写" : "服务可用"}
+            </text>
             <div style={{ flexGrow: 1 }} />
             <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 10.5 }}>本机保存</text>
           </div>
@@ -2939,6 +2955,12 @@ function relayErrorMessage(error: unknown): string {
       return "本机设置内容有误，请恢复默认后保存。";
     case "settings_too_large":
       return "设置内容过长，检查后再保存。";
+    case "settings_secret_unavailable":
+      return "已保存的推流密钥无法读取，请重新填写。";
+    case "settings_encryption_unavailable":
+      return "当前系统无法安全保存推流密钥。";
+    case "settings_encryption_failed":
+      return "推流密钥没有保存，请稍后重试。";
     case "ffmpeg_missing":
       return "电脑上没有可用的 FFmpeg，请先在设置中下载。";
     case "invalid_ingest_server":

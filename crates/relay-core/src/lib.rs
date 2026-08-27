@@ -10,6 +10,7 @@ mod live_danmaku;
 mod media_session;
 mod media_source;
 mod settings;
+mod windows_secret;
 
 use bilibili::BilibiliClient;
 use danmaku::{DanmakuOverlay, DanmakuService};
@@ -17,7 +18,7 @@ use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 use settings::SettingsStore;
 
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -266,7 +267,7 @@ pub struct ProductSettings {
     pub host: String,
     pub playback_url: String,
     pub theme: ThemePreference,
-    pub stream_key_configured: bool,
+    pub stream_key_status: StreamKeyStatus,
 }
 
 impl Default for ProductSettings {
@@ -275,9 +276,18 @@ impl Default for ProductSettings {
             host: "vrcdn.live".to_string(),
             playback_url: String::new(),
             theme: ThemePreference::System,
-            stream_key_configured: false,
+            stream_key_status: StreamKeyStatus::Missing,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StreamKeyStatus {
+    #[default]
+    Missing,
+    Available,
+    Unavailable,
 }
 
 #[derive(Debug, Deserialize)]

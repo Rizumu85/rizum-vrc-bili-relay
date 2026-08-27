@@ -103,15 +103,17 @@ is intentionally memory-only; it does not enter the product settings file.
 loads the existing `%LOCALAPPDATA%\VRC Bili Relay\settings.json` shape, accepts
 legacy playback-prefix data, validates bounded fields, writes through a synced
 temporary file, and keeps a recoverable backup during replacement. React gets
-host, playback URL, theme, and `streamKeyConfigured`; it never reads the file or
-receives the stored key. The file remains plaintext for legacy compatibility in
-this slice, so user-scoped Windows encryption is the next security boundary.
+host, playback URL, theme, and a `streamKeyStatus`; it never reads the file or
+receives the stored key or protected value. `windows_secret` wraps DPAPI without
+machine scope, so the protected key is bound to the current Windows user. A v1
+plaintext key is protected and atomically rewritten as v2 on first read.
 
 Temporary upstream URLs never cross into React. The stream key is supplied by
 the settings UI only when it changes, is persisted by Rust, and is represented
-in replies only by `streamKeyConfigured`. Relay commands load it inside Rust;
-they never carry or return it. FFmpeg is launched without a shell or console
-window. Its bounded
+in replies only as `missing`, `available`, or `unavailable`. Unreadable DPAPI
+data is preserved when unrelated settings change, and can be replaced or
+cleared explicitly. Relay commands load the plaintext inside Rust; they never
+carry or return it. FFmpeg is launched without a shell or console window. Its bounded
 diagnostic tail is scrubbed of the output URL and stream key before it can be
 returned. Replacing, stopping, or dropping a session kills and waits for its
 child process.
@@ -216,14 +218,11 @@ closing the GPUIX host therefore does not intentionally leave a background
 worker running. Dropping the Rust session store also terminates every owned
 FFmpeg process.
 
-## Next Rust slices
+## Next Rust slice
 
-Implement future behaviour in this order so every slice crosses the same seam:
-
-1. Encrypt the persisted VRCDN stream key with a Windows user-scoped facility
-   while preserving migration and explicit recovery states.
-2. Decide separately whether Bilibili sessions should remain ephemeral or gain
-   an opt-in encrypted persistence lifecycle.
+Decide whether Bilibili sessions should remain ephemeral or gain an opt-in
+encrypted persistence lifecycle. This decision stays separate from VRCDN key
+storage because a Bilibili session has different revocation and expiry rules.
 
 The approved UI may keep reference data while a slice is under construction,
 but product actions must never manufacture a successful result in TypeScript.

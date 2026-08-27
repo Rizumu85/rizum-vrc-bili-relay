@@ -53,7 +53,8 @@ comparison. The first real Rust-backed vertical slice is now connected:
 - the settings page can start Bilibili's QR login, show waiting/scanned/expired states, and return to guest mode;
 - authenticated API and danmaku requests reuse the Rust-owned session while cookies never cross into React or local settings;
 - VRCDN values and appearance are loaded and saved by Rust with legacy `settings.json` migration and transactional replacement;
-- settings replies expose only whether a stream key exists; the key itself stays inside Rust and relay commands no longer carry it;
+- legacy plaintext stream keys migrate to Windows current-user encryption, while replies expose only `missing`, `available`, or `unavailable` state;
+- the stream key and its protected value stay inside Rust, and relay commands no longer carry either one;
 - the ready view now follows the real starting/running/completed/stopped/failed lifecycle;
 - release builds put `vrc-bili-relay-gpuix.exe` and `relay-worker.exe` together in `dist/`.
 
@@ -75,10 +76,12 @@ ingest server, stream key, and complete playback URL from VRCDN; a playback URL
 cannot be derived safely from the key. FFmpeg processes are stopped when the
 user stops a relay, starts a replacement, or closes the app.
 
-Encrypted Windows storage for the VRCDN stream key remains the next core slice;
-the current Rust store intentionally keeps the legacy plaintext file compatible
-during migration. Bilibili credentials remain session-only. The untouched
-startup screen remains the approved visual reference.
+VRCDN stream keys are protected with Windows DPAPI for the current user before
+they enter `settings.json`. Existing plaintext keys migrate on first read. A
+protected value copied from another user or machine remains recoverable as an
+explicit `unavailable` state until the user replaces or clears it. Bilibili
+credentials remain session-only. The untouched startup screen remains the
+approved visual reference.
 
 Direct playback is deliberately limited to a stable public URL that every
 VRChat viewer can reach. The app does not publish a `localhost` proxy URL:

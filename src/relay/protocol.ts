@@ -1,4 +1,4 @@
-export const RELAY_PROTOCOL_VERSION = 11;
+export const RELAY_PROTOCOL_VERSION = 12;
 
 export type SourceKind = "video" | "live" | "media" | "short_link";
 export type RelayNextStep =
@@ -102,12 +102,13 @@ export interface FfmpegStatus {
 }
 
 export type ThemePreference = "system" | "light" | "dark";
+export type StreamKeyStatus = "missing" | "available" | "unavailable";
 
 export interface ProductSettings {
   host: string;
   playbackUrl: string;
   theme: ThemePreference;
-  streamKeyConfigured: boolean;
+  streamKeyStatus: StreamKeyStatus;
 }
 
 export interface SettingsUpdate {
