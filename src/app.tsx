@@ -21,7 +21,12 @@ import {
   type StoredSettings,
   type ThemePreference,
 } from "./settings-store";
-import { type HealthReply, type RelayStatus, type SourceResolution } from "./relay/protocol";
+import {
+  type FfmpegStatus,
+  type HealthReply,
+  type RelayStatus,
+  type SourceResolution,
+} from "./relay/protocol";
 import { RelayWorkerClient, RelayWorkerError } from "./relay/worker-client";
 
 export type Scene = "loading" | "error" | "ready-vod" | "settings" | "danmaku";
@@ -39,6 +44,7 @@ type MediaComponentState =
   | "missing"
   | "downloading"
   | "managed"
+  | "failed"
   | "unavailable";
 
 interface DanmakuSettings {
@@ -1578,11 +1584,15 @@ function SettingsView({
   themePreference,
   setThemePreference,
   mediaState,
+  mediaStatus,
+  onInstallFfmpeg,
 }: {
   palette: Palette;
   themePreference: ThemePreference;
   setThemePreference: (value: ThemePreference) => void;
   mediaState: MediaComponentState;
+  mediaStatus: FfmpegStatus | null;
+  onInstallFfmpeg: () => void;
 }) {
   const initial = useMemo(readStoredSettings, []);
   const [settings, setSettings] = useState<StoredSettings>({ ...initial, theme: themePreference });
@@ -1712,17 +1722,24 @@ function SettingsView({
         </div>
         <div style={{ minWidth: 0, flexGrow: 1, display: "flex", flexDirection: "column", gap: 3 }}>
           <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 7 }}>
-            <StatusDot color={mediaState === "external" || mediaState === "managed" ? palette.accentTeal : palette.accentViolet} />
+            <StatusDot color={mediaStateDotColor(mediaState, palette)} />
             <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 10.5, whiteSpace: "nowrap" }}>
               {mediaStateLabel(mediaState)}
             </text>
           </div>
           <text style={{ marginLeft: 12, color: palette.caption, fontFamily: FONT_UI, fontSize: 10 }}>
-            {mediaStateCaption(mediaState)}
+            {mediaStateCaption(mediaState, mediaStatus)}
           </text>
         </div>
-        {mediaState === "missing" ? (
-          <Button label="下载 FFmpeg" icon="download" palette={palette} disabled />
+        {mediaState === "missing" || mediaState === "failed" ? (
+          <Button
+            label={mediaState === "failed" ? "重试下载" : "下载 FFmpeg"}
+            icon="download"
+            palette={palette}
+            onClick={onInstallFfmpeg}
+          />
+        ) : mediaState === "downloading" ? (
+          <Button label="下载中" icon="download" palette={palette} disabled />
         ) : null}
       </div>
 
@@ -1804,13 +1821,15 @@ export function AppSurface({
   const [relayError, setRelayError] = useState<string | null>(null);
   const [relayStopping, setRelayStopping] = useState(false);
   const [conversionError, setConversionError] = useState("链接无法识别，检查后再试。");
-  const [mediaState, setMediaState] = useState<MediaComponentState>("checking");
+  const [mediaStatus, setMediaStatus] = useState<FfmpegStatus | null>(null);
+  const [mediaError, setMediaError] = useState<string | null>(null);
   const relayWorker = useRef<RelayWorkerClient | null>(null);
   const conversionEpoch = useRef(0);
   const sceneBeforeConversion = useRef<Scene>(initialScene);
   const resolvedAppearance: Appearance =
     themePreference === "system" ? initialAppearance : themePreference;
   const palette = PALETTES[resolvedAppearance];
+  const mediaState = mediaComponentState(mediaStatus, mediaError);
 
   const getRelayWorker = () => {
     relayWorker.current ??= new RelayWorkerClient();
@@ -1818,12 +1837,23 @@ export function AppSurface({
   };
 
   const refreshMediaState = async () => {
-    setMediaState("checking");
+    setMediaStatus(null);
+    setMediaError(null);
     try {
       const health: HealthReply = await getRelayWorker().health();
-      setMediaState(health.ffmpeg.availability === "system" ? "external" : "missing");
-    } catch {
-      setMediaState("unavailable");
+      setMediaStatus(health.ffmpeg);
+    } catch (error) {
+      setMediaError(relayErrorMessage(error));
+    }
+  };
+
+  const installFfmpeg = async () => {
+    setMediaError(null);
+    try {
+      const status = await getRelayWorker().ensureFfmpeg();
+      setMediaStatus(status);
+    } catch (error) {
+      setMediaError(relayErrorMessage(error));
     }
   };
 
@@ -1834,6 +1864,33 @@ export function AppSurface({
       if (relayWorker.current) void relayWorker.current.close();
     };
   }, []);
+
+  useEffect(() => {
+    if (mediaStatus?.availability !== "installing") return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      try {
+        const health = await getRelayWorker().health();
+        if (!cancelled) {
+          setMediaStatus(health.ffmpeg);
+          if (health.ffmpeg.availability === "installing") {
+            timer = setTimeout(poll, 500);
+          }
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setMediaStatus(null);
+          setMediaError(relayErrorMessage(error));
+        }
+      }
+    };
+    timer = setTimeout(poll, 500);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [mediaStatus?.availability]);
 
   useEffect(() => {
     if (!relayStatus || (relayStatus.stage !== "starting" && relayStatus.stage !== "running")) return;
@@ -1977,6 +2034,8 @@ export function AppSurface({
           themePreference={themePreference}
           setThemePreference={setThemePreference}
           mediaState={mediaState}
+          mediaStatus={mediaStatus}
+          onInstallFfmpeg={() => void installFfmpeg()}
         />
       ) : scene === "danmaku" ? (
         <DanmakuView
@@ -2090,6 +2149,8 @@ function relayErrorMessage(error: unknown): string {
     case "ffmpeg_start_failed":
     case "ffmpeg_status_failed":
       return "FFmpeg 无法启动，请检查视频处理设置。";
+    case "ffmpeg_install_failed":
+      return "FFmpeg 下载服务暂时不可用，请稍后重试。";
     case "worker_unavailable":
     case "worker_exited":
       return "视频处理服务没有启动，请重新打开软件。";
@@ -2100,6 +2161,25 @@ function relayErrorMessage(error: unknown): string {
   }
 }
 
+function mediaComponentState(
+  status: FfmpegStatus | null,
+  error: string | null,
+): MediaComponentState {
+  if (!status) return error ? "unavailable" : "checking";
+  switch (status.availability) {
+    case "system":
+      return "external";
+    case "managed":
+      return "managed";
+    case "missing":
+      return "missing";
+    case "installing":
+      return "downloading";
+    case "failed":
+      return "failed";
+  }
+}
+
 function mediaStateLabel(state: MediaComponentState): string {
   switch (state) {
     case "checking":
@@ -2107,9 +2187,11 @@ function mediaStateLabel(state: MediaComponentState): string {
     case "external":
       return "已找到电脑上的 FFmpeg";
     case "managed":
-      return "正在使用软件内置的 FFmpeg";
+      return "正在使用软件管理的 FFmpeg";
     case "downloading":
       return "正在下载 FFmpeg";
+    case "failed":
+      return "FFmpeg 下载失败";
     case "unavailable":
       return "视频处理服务暂时不可用";
     case "missing":
@@ -2117,19 +2199,49 @@ function mediaStateLabel(state: MediaComponentState): string {
   }
 }
 
-function mediaStateCaption(state: MediaComponentState): string {
+function mediaStateCaption(state: MediaComponentState, status: FfmpegStatus | null): string {
   switch (state) {
     case "checking":
       return "由 Rust 视频处理服务检测";
     case "external":
       return "可以直接使用，不需要下载";
     case "managed":
-      return "由软件统一管理";
+      return status?.version ? `软件管理 · FFmpeg ${status.version}` : "由软件统一管理";
     case "downloading":
-      return "完成后会自动启用";
+      return downloadProgressCaption(status);
+    case "failed":
+      return managedFfmpegErrorCaption(status?.diagnostic);
     case "unavailable":
       return "重新打开软件后再试";
     case "missing":
-      return "下载到软件目录，约 106 MB";
+      return "下载到软件目录，约 100 MB";
   }
+}
+
+function managedFfmpegErrorCaption(diagnostic?: string): string {
+  if (diagnostic?.includes("SHA-256")) return "文件校验失败，已丢弃下载内容";
+  if (diagnostic?.includes("safety limit")) return "下载文件大小异常，未安装";
+  if (diagnostic?.includes("cancelled")) return "下载已取消，可以重新下载";
+  return "下载没有完成，可以重新下载";
+}
+
+function downloadProgressCaption(status: FfmpegStatus | null): string {
+  const downloaded = status?.downloaded_bytes ?? 0;
+  const total = status?.total_bytes;
+  if (total && total > 0) {
+    const percent = Math.min(100, Math.round((downloaded / total) * 100));
+    return `${formatMegabytes(downloaded)} / ${formatMegabytes(total)} MB · ${percent}%`;
+  }
+  if (downloaded > 0) return `已下载 ${formatMegabytes(downloaded)} MB`;
+  return "正在读取发行信息";
+}
+
+function formatMegabytes(bytes: number): string {
+  return (bytes / (1024 * 1024)).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1);
+}
+
+function mediaStateDotColor(state: MediaComponentState, palette: Palette): string {
+  if (state === "external" || state === "managed") return palette.accentTeal;
+  if (state === "failed" || state === "unavailable") return palette.accentRose;
+  return palette.accentViolet;
 }

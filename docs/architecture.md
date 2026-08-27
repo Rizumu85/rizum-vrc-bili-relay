@@ -32,6 +32,7 @@ Current commands:
 - `start_relay`
 - `relay_status`
 - `stop_relay`
+- `ensure_ffmpeg`
 - `shutdown`
 
 The first source inspection classifies video, live-room, and short links and
@@ -54,6 +55,21 @@ logged. FFmpeg is launched without a shell or console window. Its bounded
 diagnostic tail is scrubbed of the output URL and stream key before it can be
 returned. Replacing, stopping, or dropping a session kills and waits for its
 child process.
+
+`ffmpeg_manager` is the single Rust module responsible for executable
+selection and managed installation. Its external interface is deliberately
+small: report status, ensure availability, return the selected executable path,
+and cancel on shutdown. System-path detection, data-directory selection,
+background HTTP transfer, byte progress, size limits, SHA-256 verification,
+safe ZIP extraction, install metadata, and atomic replacement remain inside the
+module.
+
+Installation follows `missing → installing → managed | failed`. Because the
+download runs on its own Rust thread, the stdio worker remains responsive to
+health and shutdown commands. `health` carries current byte progress; React
+polls that existing command rather than gaining a second download-status
+interface. A stale partial file is never considered installed and is replaced
+on the next attempt.
 
 ## Wire protocol
 
@@ -78,6 +94,15 @@ Resolved media can then be published through its opaque session:
 
 The playback URL is an independent value copied from VRCDN. It is never
 constructed from the secret stream key.
+
+When FFmpeg is missing, installation starts through the same protocol:
+
+```json
+{"id":4,"type":"ensure_ffmpeg"}
+```
+
+The immediate reply reports `installing`; subsequent `health` replies report
+downloaded and total bytes until availability becomes `managed` or `failed`.
 
 Success and failure are explicit:
 
@@ -112,9 +137,9 @@ FFmpeg process.
 Implement future behaviour in this order so every slice crosses the same seam:
 
 1. Add local direct/proxy playback for sources that do not require VRCDN.
-2. Download, verify, select, and launch a managed FFmpeg when the system copy is missing.
-3. Fetch danmaku and render ASS filters through FFmpeg.
-4. Restart a VOD relay at a changed part or playback position.
+2. Fetch danmaku and render ASS filters through FFmpeg.
+3. Restart a VOD relay at a changed part or playback position.
+4. Add Bilibili QR login and authenticated source resolution.
 5. Move persisted product settings and credentials behind the Rust interface.
 
 The approved UI may keep reference data while a slice is under construction,

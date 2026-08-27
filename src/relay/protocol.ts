@@ -1,4 +1,4 @@
-export const RELAY_PROTOCOL_VERSION = 4;
+export const RELAY_PROTOCOL_VERSION = 5;
 
 export type SourceKind = "video" | "live" | "short_link";
 export type RelayNextStep =
@@ -66,8 +66,12 @@ export interface RouteDecision {
 }
 
 export interface FfmpegStatus {
-  availability: "system" | "missing";
+  availability: "system" | "managed" | "missing" | "installing" | "failed";
   path?: string;
+  version?: string;
+  downloaded_bytes?: number;
+  total_bytes?: number;
+  diagnostic?: string;
 }
 
 export interface HealthReply {
@@ -92,6 +96,11 @@ export interface RelayStateReply {
   relay: RelayStatus;
 }
 
+export interface FfmpegStateReply {
+  type: "ffmpeg_state";
+  ffmpeg: FfmpegStatus;
+}
+
 export interface ShutdownAcceptedReply {
   type: "shutdown_accepted";
 }
@@ -101,6 +110,7 @@ export type RelayReply =
   | SourceInspectionReply
   | SourceResolutionReply
   | RelayStateReply
+  | FfmpegStateReply
   | ShutdownAcceptedReply;
 
 export interface RelayFailure {

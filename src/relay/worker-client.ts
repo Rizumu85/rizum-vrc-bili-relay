@@ -3,6 +3,8 @@ import { dirname, join, resolve } from "node:path";
 
 import {
   RELAY_PROTOCOL_VERSION,
+  type FfmpegStateReply,
+  type FfmpegStatus,
   type HealthReply,
   type RelayReply,
   type RelayResponse,
@@ -88,6 +90,18 @@ export class RelayWorkerClient {
 
   async stopRelay(sessionId: string): Promise<RelayStatus> {
     return this.relayRequest({ type: "stop_relay", session_id: sessionId });
+  }
+
+  async ensureFfmpeg(): Promise<FfmpegStatus> {
+    await this.health();
+    const reply = await this.request({ type: "ensure_ffmpeg" });
+    if (reply.type !== "ffmpeg_state") {
+      throw new RelayWorkerError(
+        "protocol_mismatch",
+        `Expected FFmpeg state, received ${reply.type}`,
+      );
+    }
+    return (reply as FfmpegStateReply).ffmpeg;
   }
 
   async close(): Promise<void> {

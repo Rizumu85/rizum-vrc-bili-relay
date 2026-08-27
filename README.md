@@ -30,6 +30,8 @@ comparison. The first real Rust-backed vertical slice is now connected:
   and packaged-executable discovery;
 - source conversion uses the Rust network resolution instead of a frontend regex and timer;
 - FFmpeg discovery runs in Rust and feeds the existing settings surface;
+- when no system FFmpeg is present, the settings page can install a managed copy without blocking the worker;
+- the managed installer verifies the publisher's SHA-256 value before activating `ffmpeg.exe`;
 - resolved media is held in short-lived Rust sessions instead of exposing temporary Bilibili URLs to React;
 - Rust starts, observes, stops, and cleans up FFmpeg relay processes;
 - a relay is reported as running only after FFmpeg has produced media output;
@@ -51,9 +53,29 @@ ingest server, stream key, and complete playback URL from VRCDN; a playback URL
 cannot be derived safely from the key. FFmpeg processes are stopped when the
 user stops a relay, starts a replacement, or closes the app.
 
-Managed FFmpeg download, account login, local direct/proxy playback, danmaku
-rendering, and richer playback controls remain future Rust core slices. The
-untouched startup screen remains the approved visual reference.
+Account login, local direct/proxy playback, danmaku rendering, and richer
+playback controls remain future Rust core slices. The untouched startup screen
+remains the approved visual reference.
+
+## Managed FFmpeg
+
+If `ffmpeg.exe` is already available on `PATH`, the app uses it and does not
+offer a redundant download. Otherwise, the settings page can download the
+Windows release-essentials ZIP published by [gyan.dev](https://www.gyan.dev/ffmpeg/builds/),
+one of the Windows build providers linked by the official
+[FFmpeg download page](https://ffmpeg.org/download.html).
+
+Rust downloads the ZIP in the background, obtains the matching publisher
+SHA-256 value, rejects oversized or mismatched files, extracts only
+`bin/ffmpeg.exe`, checks its Windows executable signature, and activates it with
+an atomic replacement. The managed executable and its source metadata live at:
+
+```text
+%LOCALAPPDATA%\VRC Bili Relay\media\ffmpeg\
+```
+
+The upstream Essentials build is GPLv3 software downloaded separately at the
+user's request; it is not embedded in this repository or the application EXE.
 
 ## Run
 

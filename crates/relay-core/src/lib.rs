@@ -1,16 +1,16 @@
-use std::env;
-
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 mod bilibili;
 mod ffmpeg;
+mod ffmpeg_manager;
 mod media_session;
 
 use bilibili::BilibiliClient;
+use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -41,6 +41,7 @@ pub enum Command {
     StopRelay {
         session_id: String,
     },
+    EnsureFfmpeg,
     Shutdown,
 }
 
@@ -84,6 +85,9 @@ pub enum Reply {
     RelayState {
         relay: RelayStatus,
     },
+    FfmpegState {
+        ffmpeg: FfmpegStatus,
+    },
     ShutdownAccepted,
 }
 
@@ -113,13 +117,24 @@ pub struct FfmpegStatus {
     pub availability: FfmpegAvailability,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub downloaded_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FfmpegAvailability {
     System,
+    Managed,
     Missing,
+    Installing,
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -271,7 +286,7 @@ pub enum NextStep {
 }
 
 pub struct RelayCore {
-    ffmpeg: FfmpegStatus,
+    ffmpeg: FfmpegManager,
     bilibili: BilibiliClient,
     sessions: MediaSessionStore,
 }
@@ -285,7 +300,7 @@ impl Default for RelayCore {
 impl RelayCore {
     pub fn new() -> Self {
         Self {
-            ffmpeg: detect_ffmpeg(),
+            ffmpeg: FfmpegManager::new(),
             bilibili: BilibiliClient::new(),
             sessions: MediaSessionStore::new(),
         }
@@ -296,7 +311,7 @@ impl RelayCore {
             Command::Health => Ok(Reply::Health {
                 protocol_version: PROTOCOL_VERSION,
                 backend_version: env!("CARGO_PKG_VERSION"),
-                ffmpeg: self.ffmpeg.clone(),
+                ffmpeg: self.ffmpeg.status(),
             }),
             Command::InspectSource { source } => Ok(Reply::SourceInspection {
                 inspection: inspect_source(&source)?,
@@ -310,18 +325,25 @@ impl RelayCore {
                     resolution: self.sessions.prepare(resolved),
                 })
             }
-            Command::StartRelay { session_id, target } => Ok(Reply::RelayState {
-                relay: self
-                    .sessions
-                    .start(&session_id, target, self.ffmpeg.path.as_deref())?,
-            }),
+            Command::StartRelay { session_id, target } => {
+                let ffmpeg_path = self.ffmpeg.executable_path();
+                Ok(Reply::RelayState {
+                    relay: self
+                        .sessions
+                        .start(&session_id, target, ffmpeg_path.as_deref())?,
+                })
+            }
             Command::RelayStatus { session_id } => Ok(Reply::RelayState {
                 relay: self.sessions.status(&session_id)?,
             }),
             Command::StopRelay { session_id } => Ok(Reply::RelayState {
                 relay: self.sessions.stop(&session_id)?,
             }),
+            Command::EnsureFfmpeg => Ok(Reply::FfmpegState {
+                ffmpeg: self.ffmpeg.ensure_installed()?,
+            }),
             Command::Shutdown => {
+                self.ffmpeg.shutdown();
                 self.sessions.shutdown();
                 Ok(Reply::ShutdownAccepted)
             }
@@ -434,33 +456,4 @@ fn is_video_id(value: &str) -> bool {
             .is_some_and(|value| value.eq_ignore_ascii_case(&b'v'))
         && bytes[2..].iter().all(u8::is_ascii_digit);
     is_bv || is_av
-}
-
-fn detect_ffmpeg() -> FfmpegStatus {
-    let executable_names: &[&str] = if cfg!(windows) {
-        &["ffmpeg.exe", "ffmpeg"]
-    } else {
-        &["ffmpeg"]
-    };
-
-    let path = env::var_os("PATH").and_then(|path| {
-        env::split_paths(&path)
-            .flat_map(|directory| {
-                executable_names
-                    .iter()
-                    .map(move |name| directory.join(name))
-            })
-            .find(|candidate| candidate.is_file())
-    });
-
-    match path {
-        Some(path) => FfmpegStatus {
-            availability: FfmpegAvailability::System,
-            path: Some(path.to_string_lossy().into_owned()),
-        },
-        None => FfmpegStatus {
-            availability: FfmpegAvailability::Missing,
-            path: None,
-        },
-    }
 }
