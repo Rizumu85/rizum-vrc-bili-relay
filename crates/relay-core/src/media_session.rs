@@ -3,7 +3,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use url::Url;
 
-use crate::danmaku::{DanmakuOverlay, VideoDanmakuSource};
+use crate::danmaku::{DanmakuOverlay, DanmakuSource};
 use crate::ffmpeg::{FfmpegProcess, ProcessPoll};
 use crate::{
     MediaInput, RelayError, RelayStage, RelayStatus, RelayTarget, ResolvedSource, SourceResolution,
@@ -21,7 +21,6 @@ struct MediaSession {
     expires_at: Instant,
     process: Option<FfmpegProcess>,
     overlay: Option<DanmakuOverlay>,
-    danmaku_events: Option<u64>,
     stage: RelayStage,
     playback_url: Option<String>,
     position_seconds: Option<f64>,
@@ -60,7 +59,6 @@ impl MediaSessionStore {
                     expires_at: Instant::now() + SESSION_TTL,
                     process: None,
                     overlay: None,
-                    danmaku_events: None,
                     stage: RelayStage::Stopped,
                     playback_url: None,
                     position_seconds,
@@ -102,20 +100,18 @@ impl MediaSessionStore {
             process.stop();
         }
         session.overlay = None;
-        session.danmaku_events = None;
         let process = FfmpegProcess::spawn(
             ffmpeg_path,
             &session.input,
             &ingest_url,
             &target.stream_key,
             start_seconds,
-            overlay.as_ref().map(DanmakuOverlay::path),
+            overlay.as_ref(),
         )
         .inspect_err(|error| {
             session.stage = RelayStage::Failed;
             session.diagnostic = Some(error.message.clone());
         })?;
-        session.danmaku_events = overlay.as_ref().map(DanmakuOverlay::event_count);
         session.overlay = overlay;
         session.process = Some(process);
         session.stage = RelayStage::Starting;
@@ -130,7 +126,7 @@ impl MediaSessionStore {
         &mut self,
         session_id: &str,
         requested_start: f64,
-    ) -> Result<(Option<VideoDanmakuSource>, f64), RelayError> {
+    ) -> Result<(Option<DanmakuSource>, f64), RelayError> {
         self.cleanup_expired();
         let session = self.sessions.get(session_id).ok_or_else(|| {
             RelayError::new(
@@ -185,7 +181,6 @@ impl MediaSessionStore {
             process.stop();
         }
         session.overlay = None;
-        session.danmaku_events = None;
         session.stage = RelayStage::Stopped;
         session.diagnostic = None;
         session.expires_at = Instant::now() + SESSION_TTL;
@@ -225,15 +220,31 @@ impl Drop for MediaSessionStore {
 }
 
 fn refresh(session: &mut MediaSession) -> Result<(), RelayError> {
-    let Some(process) = session.process.as_mut() else {
-        return Ok(());
+    let poll = {
+        let Some(process) = session.process.as_mut() else {
+            return Ok(());
+        };
+        let poll = process.poll()?;
+        if let Some(position) = process.position_seconds() {
+            session.position_seconds = Some(clamp_position(position, session.duration_seconds));
+        }
+        poll
     };
-    let poll = process.poll()?;
-    if let Some(position) = process.position_seconds() {
-        session.position_seconds = Some(clamp_position(position, session.duration_seconds));
-    }
     match poll {
         ProcessPoll::Alive { stable } => {
+            if stable
+                && let Some(overlay) = session.overlay.as_mut()
+                && let Err(error) = overlay.start()
+            {
+                if let Some(mut process) = session.process.take() {
+                    process.stop();
+                }
+                session.overlay = None;
+                session.stage = RelayStage::Failed;
+                session.diagnostic = Some(error.message);
+                session.expires_at = Instant::now() + SESSION_TTL;
+                return Ok(());
+            }
             session.stage = if stable {
                 RelayStage::Running
             } else {
@@ -252,7 +263,6 @@ fn refresh(session: &mut MediaSession) -> Result<(), RelayError> {
             session.diagnostic = (!diagnostic.is_empty()).then_some(diagnostic);
             session.process = None;
             session.overlay = None;
-            session.danmaku_events = None;
             session.expires_at = Instant::now() + SESSION_TTL;
         }
     }
@@ -265,7 +275,7 @@ fn status_for(session_id: &str, session: &MediaSession) -> RelayStatus {
         stage: session.stage.clone(),
         playback_url: session.playback_url.clone(),
         position_seconds: session.position_seconds,
-        danmaku_events: session.danmaku_events,
+        danmaku_events: session.overlay.as_ref().map(DanmakuOverlay::event_count),
         diagnostic: session.diagnostic.clone(),
     }
 }

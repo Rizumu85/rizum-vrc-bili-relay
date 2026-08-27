@@ -5,6 +5,7 @@ mod bilibili;
 mod danmaku;
 mod ffmpeg;
 mod ffmpeg_manager;
+mod live_danmaku;
 mod media_session;
 mod media_source;
 
@@ -13,7 +14,7 @@ use danmaku::{DanmakuOverlay, DanmakuService};
 use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -377,7 +378,7 @@ pub(crate) struct MediaInput {
     pub referer: String,
     pub is_live: bool,
     pub requires_bilibili_headers: bool,
-    pub danmaku_source: Option<danmaku::VideoDanmakuSource>,
+    pub danmaku_source: Option<danmaku::DanmakuSource>,
 }
 
 pub(crate) struct ResolvedSource {
@@ -593,7 +594,12 @@ impl RelayCore {
             .sessions
             .playback_context(session_id, requested_start)?;
         let overlay = match source {
-            Some(source) => self.danmaku.prepare(&source, settings, normalized_start)?,
+            Some(source) => {
+                if settings.enabled && source.is_live() {
+                    self.ffmpeg.ensure_live_danmaku_support()?;
+                }
+                self.danmaku.prepare(&source, settings, normalized_start)?
+            }
             None => None,
         };
         Ok((overlay, normalized_start))

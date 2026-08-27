@@ -884,7 +884,9 @@ function Result({
     : REFERENCE_PARTS;
   const isLive = sourceResolution?.kind === "live";
   const showPlaybackControls = isReference || sourceResolution?.kind === "video";
-  const showDanmakuControls = isReference || sourceResolution?.kind === "video";
+  const showDanmakuControls = isReference
+    || sourceResolution?.kind === "video"
+    || sourceResolution?.kind === "live";
   const playbackDuration = parts.find((entry) => entry.value === part)?.duration ?? 0;
   const sourceKindLabel = sourceResolution?.kind === "media"
     ? "媒体"
@@ -2121,7 +2123,13 @@ export function AppSurface({
     options = configuredPlaybackOptions(danmaku, danmakuSettings),
   ) => {
     const previousResolution = sourceResolution;
-    if (!previousResolution || previousResolution.kind !== "video" || playbackUpdating !== null) return;
+    const canRetarget = previousResolution?.kind === "video"
+      || (previousResolution?.kind === "live" && update === "danmaku");
+    if (!previousResolution || !canRetarget || playbackUpdating !== null) return;
+
+    const isLiveDanmakuUpdate = previousResolution.kind === "live";
+    const effectivePart = isLiveDanmakuUpdate ? 1 : requestedPart;
+    const effectiveStart = isLiveDanmakuUpdate ? 0 : startSeconds;
 
     const epoch = ++playbackEpoch.current;
     const previousPart = part;
@@ -2132,11 +2140,11 @@ export function AppSurface({
     setPlaybackUpdating(update);
     setPlaybackMessage(null);
     setRelayError(null);
-    setPart(String(requestedPart));
-    setPlaybackPosition(startSeconds);
+    setPart(String(effectivePart));
+    setPlaybackPosition(effectiveStart);
 
     try {
-      const target = configuredRelayTarget(startSeconds);
+      const target = configuredRelayTarget(effectiveStart);
       if (!target) {
         if (previousWasActive) {
           setPart(previousPart);
@@ -2146,11 +2154,11 @@ export function AppSurface({
         }
         const resolution = await getRelayWorker().resolveSource(
           previousResolution.canonical_url,
-          requestedPart,
+          effectivePart,
         );
         if (playbackEpoch.current !== epoch) return;
         setSourceResolution(resolution);
-        setPart(String(resolution.selected_part ?? requestedPart));
+        setPart(String(resolution.selected_part ?? effectivePart));
         setRelayStatus(null);
         setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
         return;
@@ -2159,7 +2167,7 @@ export function AppSurface({
       const playback = await getRelayWorker().retargetRelay(
         previousWasActive ? previousRelay?.session_id : undefined,
         previousResolution.canonical_url,
-        requestedPart,
+        effectivePart,
         target,
         options,
       );
@@ -2169,8 +2177,8 @@ export function AppSurface({
       }
 
       setSourceResolution(playback.resolution);
-      setPart(String(playback.resolution.selected_part ?? requestedPart));
-      setPlaybackPosition(playback.relay.position_seconds ?? startSeconds);
+      setPart(String(playback.resolution.selected_part ?? effectivePart));
+      setPlaybackPosition(playback.relay.position_seconds ?? effectiveStart);
       setRelayStatus(playback.relay);
       setRelayError(null);
       setPlaybackMessage(null);
@@ -2233,11 +2241,15 @@ export function AppSurface({
     if (next === danmaku || playbackUpdating !== null) return;
     setDanmaku(next);
     const active = relayStatus?.stage === "starting" || relayStatus?.stage === "running";
-    if (!active || sourceResolution?.kind !== "video") return;
-    const requestedPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
+    const supportsDanmaku = sourceResolution?.kind === "video" || sourceResolution?.kind === "live";
+    if (!active || !supportsDanmaku || !sourceResolution) return;
+    const isLive = sourceResolution.kind === "live";
+    const requestedPart = isLive
+      ? 1
+      : sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
     void retargetPlayback(
       requestedPart,
-      playbackPosition,
+      isLive ? 0 : playbackPosition,
       "danmaku",
       configuredPlaybackOptions(next, danmakuSettings),
     );
@@ -2279,12 +2291,15 @@ export function AppSurface({
     const options = configuredPlaybackOptions(danmaku, danmakuSettings);
     const shouldApplyDanmaku = scene === "danmaku"
       && active
-      && sourceResolution?.kind === "video"
+      && (sourceResolution?.kind === "video" || sourceResolution?.kind === "live")
       && appliedPlaybackOptions.current !== playbackOptionsSignature(options);
     setScene(returnScene);
-    if (shouldApplyDanmaku && sourceResolution?.kind === "video") {
-      const requestedPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
-      void retargetPlayback(requestedPart, playbackPosition, "danmaku", options);
+    if (shouldApplyDanmaku && sourceResolution) {
+      const isLive = sourceResolution.kind === "live";
+      const requestedPart = isLive
+        ? 1
+        : sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
+      void retargetPlayback(requestedPart, isLive ? 0 : playbackPosition, "danmaku", options);
     }
   };
 
@@ -2473,6 +2488,12 @@ function relayErrorMessage(error: unknown): string {
       return "这段视频的弹幕太多，暂时无法处理。";
     case "danmaku_storage_failed":
       return "弹幕临时文件无法保存，请检查磁盘空间。";
+    case "live_danmaku_unavailable":
+      return "直播弹幕暂时无法连接，请稍后再试。";
+    case "live_danmaku_start_failed":
+      return "直播弹幕处理没有启动，请重新生成地址。";
+    case "ffmpeg_live_danmaku_unsupported":
+      return "当前 FFmpeg 缺少直播弹幕所需滤镜，请更换完整版本。";
     case "ffmpeg_start_failed":
     case "ffmpeg_status_failed":
       return "FFmpeg 无法启动，请检查视频处理设置。";

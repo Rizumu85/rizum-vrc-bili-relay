@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::danmaku::{
-    AUDIO_BITRATE_KBPS, OUTPUT_FPS, OUTPUT_HEIGHT, OUTPUT_WIDTH, VIDEO_BITRATE_KBPS,
+    AUDIO_BITRATE_KBPS, DanmakuOverlay, OUTPUT_FPS, OUTPUT_HEIGHT, OUTPUT_WIDTH, VIDEO_BITRATE_KBPS,
 };
 use crate::{MediaInput, RelayError};
 
@@ -39,7 +39,7 @@ impl FfmpegProcess {
         ingest_url: &str,
         stream_key: &str,
         start_seconds: f64,
-        overlay_path: Option<&Path>,
+        overlay: Option<&DanmakuOverlay>,
     ) -> Result<Self, RelayError> {
         let mut command = Command::new(executable);
         command
@@ -65,8 +65,8 @@ impl FfmpegProcess {
         } else {
             command.args(["-map", "0:v:0", "-map", "0:a:0?"]);
         }
-        if let Some(overlay_path) = overlay_path {
-            add_danmaku_transcode(&mut command, overlay_path);
+        if let Some(overlay) = overlay {
+            add_danmaku_transcode(&mut command, overlay);
         } else {
             command.args(["-c:v", "copy", "-c:a", "copy"]);
         }
@@ -168,13 +168,20 @@ impl FfmpegProcess {
     }
 }
 
-fn add_danmaku_transcode(command: &mut Command, overlay_path: &Path) {
-    let filter = format!(
-        "scale=w={OUTPUT_WIDTH}:h={OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,\
+fn add_danmaku_transcode(command: &mut Command, overlay: &DanmakuOverlay) {
+    let mut filter = format!(
+        "setpts=PTS-STARTPTS,\
+         scale=w={OUTPUT_WIDTH}:h={OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,\
          pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2,\
-         fps={OUTPUT_FPS},ass=filename='{}'",
-        escape_filter_path(overlay_path)
+         fps={OUTPUT_FPS}"
     );
+    if let Some(path) = overlay.ass_path() {
+        filter.push_str(&format!(",ass=filename='{}'", escape_filter_path(path)));
+    }
+    if let Some(live_filter) = overlay.live_filter_graph() {
+        filter.push(',');
+        filter.push_str(live_filter);
+    }
     let video_bitrate = format!("{VIDEO_BITRATE_KBPS}k");
     let video_buffer = format!("{}k", VIDEO_BITRATE_KBPS * 2);
     let keyframe_interval = OUTPUT_FPS.to_string();

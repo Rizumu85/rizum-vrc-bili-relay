@@ -72,6 +72,18 @@ ASS timeline at the normalized source position. The media session owns the ASS
 file, so replacement, completion, failure, stop, expiry, and shutdown all clean
 it up. No upstream media URL or danmaku payload crosses into React.
 
+For a live room, Rust obtains an anonymous Bilibili identity and danmaku server
+configuration, then reads Bilibili's binary websocket protocol on a dedicated
+thread. Plain, zlib, and Brotli envelopes are decoded with nesting and size
+limits; only supported `DANMU_MSG` events enter a bounded queue. FFmpeg exposes
+24 named `drawtext` slots behind a loopback-only ZMQ filter. A second Rust
+thread assigns lanes and slots, sends reinitialization commands, and clears
+expired fixed text. Relay status counts commands accepted by FFmpeg rather than
+messages merely received from the websocket. The selected FFmpeg executable is
+preflighted once per path for `drawtext` and `zmq` support. Cancellation closes
+the active TCP connection before joining both threads, keeping relay shutdown
+bounded.
+
 Temporary upstream URLs never cross into React. The stream key is supplied by
 the settings UI only in the `start_relay` command and is never returned or
 logged. FFmpeg is launched without a shell or console window. Its bounded
@@ -166,9 +178,8 @@ FFmpeg process.
 
 Implement future behaviour in this order so every slice crosses the same seam:
 
-1. Add the live-room danmaku websocket and a bounded live overlay path.
-2. Add Bilibili QR login and authenticated source resolution.
-3. Move persisted product settings and credentials behind the Rust interface.
+1. Add Bilibili QR login and authenticated source resolution.
+2. Move persisted product settings and credentials behind the Rust interface.
 
 The approved UI may keep reference data while a slice is under construction,
 but product actions must never manufacture a successful result in TypeScript.

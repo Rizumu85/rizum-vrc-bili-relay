@@ -46,6 +46,10 @@ comparison. The first real Rust-backed vertical slice is now connected:
 - danmaku visibility, size, area, speed, opacity, font, weight, outline, and type filters cross the versioned Rust protocol;
 - changing danmaku settings, switching parts, or seeking regenerates the overlay for the new source position;
 - temporary ASS files stay owned by their Rust media session and are removed on replacement, stop, failure, and shutdown;
+- live-room danmaku connects as a guest over Bilibili's websocket protocol and handles plain, zlib, and Brotli packets;
+- a bounded Rust queue drives named FFmpeg `drawtext` filters through a loopback-only ZMQ socket;
+- live danmaku is counted only after FFmpeg accepts the render command, and the websocket is interrupted during shutdown;
+- FFmpeg builds without both `drawtext` and `zmq` are rejected before a live-danmaku relay starts;
 - the ready view now follows the real starting/running/completed/stopped/failed lifecycle;
 - release builds put `vrc-bili-relay-gpuix.exe` and `relay-worker.exe` together in `dist/`.
 
@@ -59,16 +63,16 @@ The following UI interactions also remain live:
 - edit local VRCDN values and choose system/light/dark appearance.
 
 The current relay path remuxes the selected Bilibili H.264 video and audio when
-no picture processing is needed. With VOD danmaku enabled it transcodes to
-1280×720 at 30 FPS, burns the ASS overlay, and publishes H.264/AAC FLV to the
-configured RTMP/RTMPS ingest. The user must copy the
+no picture processing is needed. With danmaku enabled it transcodes to
+1280×720 at 30 FPS and publishes H.264/AAC FLV to the configured RTMP/RTMPS
+ingest. VOD uses a temporary ASS overlay; live rooms update bounded `drawtext`
+slots without restarting FFmpeg. The user must copy the
 ingest server, stream key, and complete playback URL from VRCDN; a playback URL
 cannot be derived safely from the key. FFmpeg processes are stopped when the
 user stops a relay, starts a replacement, or closes the app.
 
-Live-room danmaku, account login, and persisted Rust-owned settings remain
-future core slices. The untouched startup screen remains the approved visual
-reference.
+Account login and persisted Rust-owned settings remain future core slices. The
+untouched startup screen remains the approved visual reference.
 
 Direct playback is deliberately limited to a stable public URL that every
 VRChat viewer can reach. The app does not publish a `localhost` proxy URL:

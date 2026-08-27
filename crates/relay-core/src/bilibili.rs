@@ -286,11 +286,13 @@ impl BilibiliClient {
                 referer: referer.to_string(),
                 is_live: false,
                 requires_bilibili_headers: true,
-                danmaku_source: Some(crate::danmaku::VideoDanmakuSource {
-                    cid,
-                    duration_seconds: duration_seconds.max(1),
-                    referer: referer.to_string(),
-                }),
+                danmaku_source: Some(crate::danmaku::DanmakuSource::Video(
+                    crate::danmaku::VideoDanmakuSource {
+                        cid,
+                        duration_seconds: duration_seconds.max(1),
+                        referer: referer.to_string(),
+                    },
+                )),
             },
         ))
     }
@@ -348,7 +350,12 @@ impl BilibiliClient {
                 referer: referer.to_string(),
                 is_live: true,
                 requires_bilibili_headers: true,
-                danmaku_source: None,
+                danmaku_source: Some(crate::danmaku::DanmakuSource::Live(
+                    crate::live_danmaku::LiveDanmakuSource {
+                        room_id: room_id.to_string(),
+                        referer: referer.to_string(),
+                    },
+                )),
             },
         ))
     }

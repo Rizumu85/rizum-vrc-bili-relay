@@ -1,4 +1,4 @@
-export const RELAY_PROTOCOL_VERSION = 8;
+export const RELAY_PROTOCOL_VERSION = 9;
 
 export type SourceKind = "video" | "live" | "media" | "short_link";
 export type RelayNextStep =

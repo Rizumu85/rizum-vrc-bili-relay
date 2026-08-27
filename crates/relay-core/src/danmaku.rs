@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, REFERER};
 
+use crate::live_danmaku::{LiveDanmakuOverlay, LiveDanmakuService, LiveDanmakuSource};
 use crate::{
     DanmakuArea, DanmakuFilter, DanmakuFont, DanmakuOutline, DanmakuSettings, DanmakuSize,
     DanmakuSpeed, DanmakuWeight, RelayError,
@@ -35,29 +36,74 @@ pub(crate) struct VideoDanmakuSource {
     pub referer: String,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum DanmakuSource {
+    Video(VideoDanmakuSource),
+    Live(LiveDanmakuSource),
+}
+
+impl DanmakuSource {
+    pub fn is_live(&self) -> bool {
+        matches!(self, Self::Live(_))
+    }
+}
+
 pub(crate) struct DanmakuOverlay {
-    path: PathBuf,
-    event_count: u64,
+    kind: DanmakuOverlayKind,
+}
+
+enum DanmakuOverlayKind {
+    Video { path: PathBuf, event_count: u64 },
+    Live(LiveDanmakuOverlay),
 }
 
 impl DanmakuOverlay {
-    pub fn path(&self) -> &Path {
-        &self.path
+    fn video(path: PathBuf, event_count: u64) -> Self {
+        Self {
+            kind: DanmakuOverlayKind::Video { path, event_count },
+        }
+    }
+
+    pub fn ass_path(&self) -> Option<&Path> {
+        match &self.kind {
+            DanmakuOverlayKind::Video { path, .. } => Some(path),
+            DanmakuOverlayKind::Live(_) => None,
+        }
+    }
+
+    pub fn live_filter_graph(&self) -> Option<&str> {
+        match &self.kind {
+            DanmakuOverlayKind::Video { .. } => None,
+            DanmakuOverlayKind::Live(overlay) => Some(overlay.filter_graph()),
+        }
+    }
+
+    pub fn start(&mut self) -> Result<(), RelayError> {
+        match &mut self.kind {
+            DanmakuOverlayKind::Video { .. } => Ok(()),
+            DanmakuOverlayKind::Live(overlay) => overlay.start(),
+        }
     }
 
     pub fn event_count(&self) -> u64 {
-        self.event_count
+        match &self.kind {
+            DanmakuOverlayKind::Video { event_count, .. } => *event_count,
+            DanmakuOverlayKind::Live(overlay) => overlay.rendered_count(),
+        }
     }
 }
 
 impl Drop for DanmakuOverlay {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        if let DanmakuOverlayKind::Video { path, .. } = &self.kind {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 
 pub(crate) struct DanmakuService {
     http: Client,
+    live: LiveDanmakuService,
     runtime_root: PathBuf,
     next_id: u64,
 }
@@ -70,6 +116,7 @@ impl DanmakuService {
             .build()
             .unwrap_or_else(|_| Client::new());
         Self {
+            live: LiveDanmakuService::new(http.clone()),
             http,
             runtime_root: runtime_root(),
             next_id: 1,
@@ -78,13 +125,29 @@ impl DanmakuService {
 
     pub fn prepare(
         &mut self,
-        source: &VideoDanmakuSource,
+        source: &DanmakuSource,
         settings: &DanmakuSettings,
         start_seconds: f64,
     ) -> Result<Option<DanmakuOverlay>, RelayError> {
         if !settings.enabled {
             return Ok(None);
         }
+        match source {
+            DanmakuSource::Video(source) => self.prepare_video(source, settings, start_seconds),
+            DanmakuSource::Live(source) => self.live.prepare(source, settings).map(|overlay| {
+                Some(DanmakuOverlay {
+                    kind: DanmakuOverlayKind::Live(overlay),
+                })
+            }),
+        }
+    }
+
+    fn prepare_video(
+        &mut self,
+        source: &VideoDanmakuSource,
+        settings: &DanmakuSettings,
+        start_seconds: f64,
+    ) -> Result<Option<DanmakuOverlay>, RelayError> {
         let events = self.fetch(source, start_seconds)?;
         if events.is_empty() {
             return Ok(None);
@@ -144,7 +207,7 @@ impl DanmakuService {
             let _ = fs::remove_file(&path);
         }
         result?;
-        Ok(Some(DanmakuOverlay { path, event_count }))
+        Ok(Some(DanmakuOverlay::video(path, event_count)))
     }
 
     fn fetch(
@@ -233,7 +296,7 @@ impl DanmakuService {
 }
 
 #[derive(Clone, Copy)]
-enum DanmakuKind {
+pub(crate) enum DanmakuKind {
     Rolling,
     Bottom,
     Top,
@@ -241,12 +304,12 @@ enum DanmakuKind {
     Advanced,
 }
 
-struct DanmakuEvent {
-    id: u64,
-    offset_seconds: f64,
-    kind: DanmakuKind,
-    color: u32,
-    text: String,
+pub(crate) struct DanmakuEvent {
+    pub id: u64,
+    pub offset_seconds: f64,
+    pub kind: DanmakuKind,
+    pub color: u32,
+    pub text: String,
 }
 
 fn parse_segment(payload: &[u8]) -> Result<Vec<DanmakuEvent>, RelayError> {
@@ -498,7 +561,7 @@ fn append_header(output: &mut String, settings: &DanmakuSettings, font_size: i32
     );
 }
 
-fn should_hide(event: &DanmakuEvent, settings: &DanmakuSettings) -> bool {
+pub(crate) fn should_hide(event: &DanmakuEvent, settings: &DanmakuSettings) -> bool {
     if event.color != 0xFF_FFFF && settings.hidden_types.contains(&DanmakuFilter::Colored) {
         return true;
     }
@@ -511,7 +574,7 @@ fn should_hide(event: &DanmakuEvent, settings: &DanmakuSettings) -> bool {
     }
 }
 
-fn acquire_lane(lanes: &mut [f64], start: f64, end: f64) -> Option<usize> {
+pub(crate) fn acquire_lane(lanes: &mut [f64], start: f64, end: f64) -> Option<usize> {
     for (index, available_at) in lanes.iter_mut().enumerate() {
         if *available_at > start {
             continue;

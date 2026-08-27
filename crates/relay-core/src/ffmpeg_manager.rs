@@ -2,6 +2,7 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -25,6 +26,7 @@ const COPY_BUFFER_BYTES: usize = 128 * 1024;
 pub(crate) struct FfmpegManager {
     system: Option<FfmpegToolchain>,
     managed_root: PathBuf,
+    live_danmaku_capability: Option<(PathBuf, bool)>,
     state: Arc<Mutex<InstallState>>,
     cancelled: Arc<AtomicBool>,
 }
@@ -66,6 +68,7 @@ impl FfmpegManager {
         Self {
             system: detect_system_toolchain(),
             managed_root,
+            live_danmaku_capability: None,
             state: Arc::new(Mutex::new(InstallState {
                 version: metadata.map(|metadata| metadata.version),
                 ..InstallState::default()
@@ -141,6 +144,42 @@ impl FfmpegManager {
     pub fn probe_path(&self) -> Option<String> {
         self.ready_toolchain()
             .map(|toolchain| toolchain.ffprobe.to_string_lossy().into_owned())
+    }
+
+    pub fn ensure_live_danmaku_support(&mut self) -> Result<(), RelayError> {
+        let toolchain = self.ready_toolchain().ok_or_else(|| {
+            RelayError::new("ffmpeg_missing", "No usable FFmpeg executable was found")
+        })?;
+        if let Some((_, supported)) = self
+            .live_danmaku_capability
+            .as_ref()
+            .filter(|(path, _)| path == &toolchain.ffmpeg)
+        {
+            return if *supported {
+                Ok(())
+            } else {
+                Err(live_danmaku_unsupported())
+            };
+        }
+
+        let mut command = Command::new(&toolchain.ffmpeg);
+        command.args(["-hide_banner", "-filters"]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let supported = command.output().is_ok_and(|output| {
+            output.status.success()
+                && filter_list_contains(&output.stdout, "drawtext")
+                && filter_list_contains(&output.stdout, "zmq")
+        });
+        self.live_danmaku_capability = Some((toolchain.ffmpeg, supported));
+        if supported {
+            Ok(())
+        } else {
+            Err(live_danmaku_unsupported())
+        }
     }
 
     pub fn ensure_installed(&mut self) -> Result<FfmpegStatus, RelayError> {
@@ -223,6 +262,19 @@ impl FfmpegManager {
                 (toolchain.ffmpeg.is_file() && toolchain.ffprobe.is_file()).then_some(toolchain)
             })
     }
+}
+
+fn filter_list_contains(output: &[u8], filter: &str) -> bool {
+    String::from_utf8_lossy(output)
+        .lines()
+        .any(|line| line.split_ascii_whitespace().any(|word| word == filter))
+}
+
+fn live_danmaku_unsupported() -> RelayError {
+    RelayError::new(
+        "ffmpeg_live_danmaku_unsupported",
+        "This FFmpeg build does not include the drawtext and zmq filters required for live danmaku",
+    )
 }
 
 impl Drop for FfmpegManager {
