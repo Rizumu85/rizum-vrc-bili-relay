@@ -1,6 +1,7 @@
 param(
     [string]$OutputPath = "artifacts\live-window.png",
     [string]$ExecutablePath,
+    [string]$Source,
     [ValidateSet("light", "dark")]
     [string]$Theme = "light",
     [ValidateSet("idle", "loading", "error", "ready-vod", "settings", "danmaku")]
@@ -64,6 +65,9 @@ $startInfo.UseShellExecute = $false
 $startInfo.CreateNoWindow = $true
 $startInfo.EnvironmentVariables["VRC_BILI_RELAY_THEME"] = $Theme
 $startInfo.EnvironmentVariables["VRC_BILI_RELAY_SCENE"] = $Scene
+if ($Source) {
+    $startInfo.EnvironmentVariables["VRC_BILI_RELAY_SOURCE"] = $Source
+}
 
 $process = [System.Diagnostics.Process]::Start($startInfo)
 try {

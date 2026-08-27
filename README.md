@@ -34,6 +34,7 @@ vertical slice is connected end to end:
   and packaged-executable discovery;
 - source conversion uses the Rust network resolution instead of a frontend regex and timer;
 - the Windows shell expands from the compact input state to the full player or settings surface, then contracts on return;
+- a resolved relay that needs setup is retained while the user opens settings, then resumes from the same media session after valid settings are saved and the user returns;
 - FFmpeg discovery runs in Rust and feeds the existing settings surface;
 - when no system FFmpeg is present, the settings page can install a managed copy without blocking the worker;
 - the managed installer verifies the publisher's SHA-256 value before activating `ffmpeg.exe` and `ffprobe.exe`;
@@ -164,6 +165,7 @@ Capture the real application window instead:
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme light
 powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme light -Scene idle -OutputPath artifacts/idle-light.png
+powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme light -Scene idle -Source "https://www.bilibili.com/video/BV1UCVn66Eww" -GenerateAddress -OutputPath artifacts/real-resolution.png
 powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme dark -OutputPath artifacts/live-window-dark.png
 powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme light -Scene settings -OutputPath artifacts/settings-light.png
 powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme light -Scene settings -OpenLogin -OutputPath artifacts/login-light.png

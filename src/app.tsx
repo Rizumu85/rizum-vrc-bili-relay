@@ -2275,12 +2275,14 @@ export interface AppSurfaceProps {
   initialScene?: Scene;
   initialAppearance?: Appearance;
   initialThemePreference?: ThemePreference;
+  initialSource?: string;
 }
 
 export function AppSurface({
   initialScene = "idle",
   initialAppearance = "light",
   initialThemePreference,
+  initialSource,
 }: AppSurfaceProps) {
   const [scene, setScene] = useState<Scene>(initialScene);
   const [lastMainScene, setLastMainScene] = useState<Scene>(
@@ -2295,7 +2297,9 @@ export function AppSurface({
   }));
   const [settingsReady, setSettingsReady] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
-  const [source, setSource] = useState(initialScene === "ready-vod" ? SAMPLE_VIDEO : "");
+  const [source, setSource] = useState(
+    initialSource ?? (initialScene === "ready-vod" ? SAMPLE_VIDEO : ""),
+  );
   const [part, setPart] = useState("2");
   const [playbackPosition, setPlaybackPosition] = useState(POSITION_BY_PART["2"] ?? 0);
   const [playbackUpdating, setPlaybackUpdating] = useState<PlaybackUpdate>(null);
@@ -2306,6 +2310,7 @@ export function AppSurface({
   const [sourceResolution, setSourceResolution] = useState<SourceResolution | null>(null);
   const [relayStatus, setRelayStatus] = useState<RelayStatus | null>(null);
   const [relayError, setRelayError] = useState<string | null>(null);
+  const [resumeRelayAfterSettings, setResumeRelayAfterSettings] = useState(false);
   const [relayStopping, setRelayStopping] = useState(false);
   const [conversionError, setConversionError] = useState("链接无法识别，检查后再试。");
   const [mediaStatus, setMediaStatus] = useState<FfmpegStatus | null>(null);
@@ -2556,6 +2561,7 @@ export function AppSurface({
     sceneBeforeConversion.current = scene;
     setConversionError("链接无法识别，检查后再试。");
     setRelayError(null);
+    setResumeRelayAfterSettings(false);
     setPlaybackUpdating(null);
     setPlaybackMessage(null);
     setSeekInteractionActive(false);
@@ -2769,6 +2775,31 @@ export function AppSurface({
     );
   };
 
+  const resumePreparedRelay = async () => {
+    const resolution = sourceResolution;
+    if (!resolution?.session_id) return;
+    const epoch = ++conversionEpoch.current;
+    const options = configuredPlaybackOptions(danmaku, danmakuSettings);
+    setRelayStatus(null);
+    setRelayError(null);
+    setPlaybackMessage("正在继续生成地址");
+    try {
+      const started = await getRelayWorker().startRelay(
+        resolution.session_id,
+        options,
+        playbackPosition,
+      );
+      if (conversionEpoch.current !== epoch) return;
+      appliedPlaybackOptions.current = playbackOptionsSignature(options);
+      setRelayStatus(started);
+      if (started.position_seconds !== undefined) setPlaybackPosition(started.position_seconds);
+    } catch (error) {
+      if (conversionEpoch.current === epoch) setRelayError(relayErrorMessage(error));
+    } finally {
+      if (conversionEpoch.current === epoch) setPlaybackMessage(null);
+    }
+  };
+
   const showSubview = (next: "settings" | "danmaku") => {
     conversionEpoch.current += 1;
     if (scene !== "settings" && scene !== "danmaku") {
@@ -2776,6 +2807,8 @@ export function AppSurface({
     }
     setScene(next);
     if (next === "settings") {
+      const active = relayStatus?.stage === "starting" || relayStatus?.stage === "running";
+      setResumeRelayAfterSettings(Boolean(relayError && sourceResolution?.session_id && !active));
       if (!settingsReady || settingsError) void refreshProductSettings();
       void refreshMediaState();
       void refreshBilibiliAuth();
@@ -2788,13 +2821,22 @@ export function AppSurface({
         ? "ready-vod"
         : "idle"
       : lastMainScene;
+    const shouldResumeRelay = scene === "settings"
+      && resumeRelayAfterSettings
+      && relaySettingsReady(productSettings)
+      && Boolean(sourceResolution?.session_id);
     const active = relayStatus?.stage === "starting" || relayStatus?.stage === "running";
     const options = configuredPlaybackOptions(danmaku, danmakuSettings);
     const shouldApplyDanmaku = scene === "danmaku"
       && active
       && (sourceResolution?.kind === "video" || sourceResolution?.kind === "live")
       && appliedPlaybackOptions.current !== playbackOptionsSignature(options);
-    setScene(returnScene);
+    setResumeRelayAfterSettings(false);
+    setScene(shouldResumeRelay ? "ready-vod" : returnScene);
+    if (shouldResumeRelay) {
+      void resumePreparedRelay();
+      return;
+    }
     if (shouldApplyDanmaku && sourceResolution) {
       const isLive = sourceResolution.kind === "live";
       const requestedPart = isLive

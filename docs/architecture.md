@@ -234,6 +234,14 @@ non-client frame, and changes only client height as the scene moves between the
 compact input and full player/settings surfaces. Explicit `ready-vod` launch
 state remains available to captures and the render benchmark.
 
+When Rust has already resolved a relay-backed source but public settings are not
+ready, React keeps that opaque session id and marks the settings detour as
+resumable. Returning from settings starts the same Rust session only when the
+new public state reports an available stream key and non-empty playback URL.
+Leaving without valid settings cancels the pending resume and preserves the
+existing explanation; it never manufactures an output URL or repeats source
+resolution.
+
 ## Next product boundary
 
 The core media, FFmpeg, danmaku, settings, and authentication seams are now

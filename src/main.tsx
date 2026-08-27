@@ -26,6 +26,7 @@ render(
     initialAppearance={initialAppearance}
     initialThemePreference={initialThemePreference}
     initialScene={initialScene}
+    initialSource={process.env.VRC_BILI_RELAY_SOURCE}
   />,
   {
   title: PRODUCT_WINDOW_TITLE,
