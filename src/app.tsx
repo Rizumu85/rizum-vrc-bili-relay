@@ -892,7 +892,7 @@ function PlaybackEndButton({
         <Icon
           name={value === "repeat" ? "repeatOne" : "repeat"}
           size={13}
-          color={active ? palette.accentTeal : palette.caption}
+          color={active ? palette.accentDanmaku : palette.caption}
         />
       </MotionFade>
     </div>
