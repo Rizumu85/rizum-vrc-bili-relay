@@ -1,4 +1,4 @@
-export const RELAY_PROTOCOL_VERSION = 14;
+export const RELAY_PROTOCOL_VERSION = 15;
 
 export type SourceKind = "video" | "live" | "media" | "short_link";
 export type RelayNextStep =
@@ -70,6 +70,7 @@ export interface RelayStatus {
   stage: "starting" | "running" | "completed" | "stopped" | "failed";
   playback_url?: string;
   position_seconds?: number;
+  paused: boolean;
   danmaku_events?: number;
   diagnostic?: string;
 }

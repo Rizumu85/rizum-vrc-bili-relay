@@ -31,6 +31,7 @@ Current commands:
 - `start_relay`
 - `retarget_relay`
 - `relay_status`
+- `set_relay_paused`
 - `stop_relay`
 - `ensure_ffmpeg`
 - `bilibili_auth_status`
@@ -59,7 +60,24 @@ Rust-owned VRCDN target, then starts FFmpeg from that private session.
 `relay_status` reports
 starting, running, completed, stopped, or failed; running requires observed
 FFmpeg media progress, not merely a live operating-system process. VOD status
-also includes the current source position parsed from FFmpeg's progress stream.
+also includes the current source position parsed from FFmpeg's progress stream
+and an explicit paused flag.
+
+Relay-backed playback uses two FFmpeg layers joined by a loopback-only MPEG-TS
+bridge. The outer publisher owns one RTMP connection for the complete session
+and remuxes a normalized H.264/AAC stream. The replaceable inner producer reads
+the upstream media, applies scaling and danmaku, and advances the source clock.
+Startup first feeds a generated still frame and silence into the publisher;
+only after RTMP output is observed does Rust start the real source, preventing
+probe and connection setup from consuming the beginning of a video.
+
+`set_relay_paused` replaces only the inner producer. While paused, a low-cost
+still frame and silence continue across the existing RTMP connection, while
+the reported VOD position remains frozen. Resume starts a fresh inner producer
+at that frozen or user-selected position with monotonically continued bridge
+timestamps. A two-hour paused session is closed on the next backend status
+refresh; normal application polling enforces that cutoff while the app remains
+open. `stop_relay` still closes the outer publisher explicitly.
 
 `retarget_relay` owns the complete part/position replacement workflow. It
 loads the target and resolves fresh Bilibili media before suspending the
@@ -124,10 +142,11 @@ cleared explicitly. Relay commands load the plaintext inside Rust; they never
 carry or return it. FFmpeg is launched without a shell or console window. Its bounded
 diagnostic tail is scrubbed of the output URL and stream key before it can be
 returned. Replacing, stopping, or dropping a session shuts down and waits for its
-child process. Normal replacement first sends FFmpeg its `q` command and waits
-for a clean RTMP shutdown, allowing the ingest service to release the stream
-key before a seek, part switch, or resume starts the next publisher. A bounded
-timeout falls back to terminating the child when FFmpeg is unresponsive.
+child processes. Normal replacement first sends FFmpeg its `q` command and
+waits for a clean shutdown, allowing the ingest service to release the stream
+key before a seek or part switch starts the next publisher. Pause and resume
+do not replace that publisher: only the loopback media producer changes. A
+bounded timeout falls back to terminating a child when FFmpeg is unresponsive.
 On Windows, the worker also assigns each FFmpeg child to its own unnamed Job
 Object with `KILL_ON_JOB_CLOSE`. Normal cleanup still uses the explicit stop and
 wait path, while abrupt worker termination delegates final process recovery to
@@ -169,11 +188,19 @@ Resolved media can then be published through its opaque session:
 {"id":3,"type":"start_relay","session_id":"19c0-1","start_seconds":0,"options":{"danmaku":{"enabled":true}}}
 ```
 
+A VOD pause keeps that publisher connected; resume may use the position shown
+by the UI after the user adjusts the seek bar:
+
+```json
+{"id":4,"type":"set_relay_paused","session_id":"19c0-1","paused":true,"start_seconds":15,"options":{"danmaku":{"enabled":true}}}
+{"id":5,"type":"set_relay_paused","session_id":"19c0-1","paused":false,"start_seconds":15,"options":{"danmaku":{"enabled":true}}}
+```
+
 A running Bilibili VOD can be replaced without exposing its temporary media
 URLs or duplicating the stop/start workflow in React:
 
 ```json
-{"id":4,"type":"retarget_relay","current_session_id":"19c0-1","source":"https://www.bilibili.com/video/BV1PGNQesEkG","requested_part":2,"start_seconds":15,"options":{"danmaku":{"enabled":true}}}
+{"id":6,"type":"retarget_relay","current_session_id":"19c0-1","source":"https://www.bilibili.com/video/BV1PGNQesEkG","requested_part":2,"start_seconds":15,"options":{"danmaku":{"enabled":true}}}
 ```
 
 The playback URL is an independent value copied from VRCDN. It is never
@@ -183,14 +210,14 @@ Settings use a separate read/update interface. Omitting `streamKey` preserves
 the stored value; an empty value explicitly clears it. Replies never echo it:
 
 ```json
-{"id":5,"type":"get_settings"}
-{"id":6,"type":"save_settings","settings":{"host":"vrcdn.live","playbackUrl":"rtspt://stream.vrcdn.live/live/<id>","theme":"system","streamKey":"<secret>"}}
+{"id":7,"type":"get_settings"}
+{"id":8,"type":"save_settings","settings":{"host":"vrcdn.live","playbackUrl":"rtspt://stream.vrcdn.live/live/<id>","theme":"system","streamKey":"<secret>"}}
 ```
 
 When FFmpeg is missing, installation starts through the same protocol:
 
 ```json
-{"id":7,"type":"ensure_ffmpeg"}
+{"id":9,"type":"ensure_ffmpeg"}
 ```
 
 The immediate reply reports `installing`; subsequent `health` replies report
@@ -200,9 +227,9 @@ Bilibili QR login uses a short-lived opaque session. The UI starts a session,
 polls only that id, and can clear it without ever receiving the cookie:
 
 ```json
-{"id":8,"type":"begin_bilibili_login"}
-{"id":9,"type":"poll_bilibili_login","login_id":1}
-{"id":10,"type":"logout_bilibili"}
+{"id":10,"type":"begin_bilibili_login"}
+{"id":11,"type":"poll_bilibili_login","login_id":1}
+{"id":12,"type":"logout_bilibili"}
 ```
 
 Success and failure are explicit:

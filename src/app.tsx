@@ -3345,6 +3345,7 @@ export function AppSurface({
         const latest = await getRelayWorker().relayStatus(relayStatus.session_id);
         if (!cancelled) {
           setRelayStatus(latest);
+          setPlaybackPaused(latest.paused);
           if (latest.position_seconds !== undefined && !seekInteractionActive && playbackUpdating === null) {
             setPlaybackPosition(latest.position_seconds);
           }
@@ -3623,10 +3624,18 @@ export function AppSurface({
     try {
       const active = relayStatus?.stage === "starting" || relayStatus?.stage === "running";
       if (active && relayStatus) {
-        const stopped = await getRelayWorker().stopRelay(relayStatus.session_id);
-        setRelayStatus(stopped);
-        if (stopped.position_seconds !== undefined) setPlaybackPosition(stopped.position_seconds);
-        setPlaybackPaused(true);
+        const nextPaused = !relayStatus.paused;
+        const options = configuredPlaybackOptions(danmaku, danmakuSettings);
+        const updated = await getRelayWorker().setRelayPaused(
+          relayStatus.session_id,
+          nextPaused,
+          options,
+          playbackPosition,
+        );
+        if (!nextPaused) appliedPlaybackOptions.current = playbackOptionsSignature(options);
+        setRelayStatus(updated);
+        if (updated.position_seconds !== undefined) setPlaybackPosition(updated.position_seconds);
+        setPlaybackPaused(updated.paused);
         return;
       }
       if (!playbackPaused || !sourceResolution.session_id) return;

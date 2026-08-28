@@ -81,7 +81,7 @@
         "sectionMarkers": "The ready surface follows one stable top-to-bottom marker sequence: source uses teal, media routing uses amber (#F59E0B in light appearance, #FBBF24 in dark appearance), danmaku uses violet, and runtime output uses rose. The Generate action icon matches the source marker. These colors identify content regions rather than transient health states; errors continue to be expressed by their local copy and action state.",
         "seekVisualTrack": 2,
         "seekHitTarget": 28,
-        "playbackTransport": "A compact 22px play/pause action shares the time row beneath the full-width 416px seek track. It pauses and resumes the active relay session at its reported media position; direct URLs remain under VRChat player control.",
+        "playbackTransport": "A compact 22px play/pause action shares the time row beneath the full-width 416px seek track. It pauses the source clock while a generated still frame and silence keep the active relay publisher connected, then resumes at the reported or user-selected media position; direct URLs remain under VRChat player control.",
         "partSelect": "Render the full row only when the resolved video exposes at least two parts. A single-part video omits the label and selector, moves the seek control into the released space, and shortens the content-sized window. When shown, it uses the same 33px trigger, open-state border, chevron change, 220ms floating menu, row geometry, and selected check as the danmaku font selector. Trigger and menu labels own a bounded clipping region with ellipsis so long Bilibili titles cannot crowd the trailing chevron or panel edge."
       },
       "states": [

@@ -131,6 +131,24 @@ export class RelayWorkerClient {
     return this.relayRequest({ type: "relay_status", session_id: sessionId });
   }
 
+  async setRelayPaused(
+    sessionId: string,
+    paused: boolean,
+    options: PlaybackOptions,
+    startSeconds: number,
+  ): Promise<RelayStatus> {
+    return this.relayRequest(
+      {
+        type: "set_relay_paused",
+        session_id: sessionId,
+        paused,
+        start_seconds: startSeconds,
+        options,
+      },
+      30_000,
+    );
+  }
+
   async stopRelay(sessionId: string): Promise<RelayStatus> {
     return this.relayRequest({ type: "stop_relay", session_id: sessionId });
   }
