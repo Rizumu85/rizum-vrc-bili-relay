@@ -1,8 +1,9 @@
 # Repository Rules
 
-This repository is the isolated GPUIX + Rust architecture experiment for VRC Bili Relay.
-The UI feasibility gate was accepted on 2026-08-27. The existing WinUI/C# solution
-remains a reference and fallback; it is not a runtime dependency of this repository.
+This repository is the released GPUIX + Rust implementation of VRC Bili Relay.
+The architecture began as an isolated experiment, and its UI feasibility gate was
+accepted on 2026-08-27. The existing WinUI/C# solution remains a reference and
+fallback; it is not a runtime dependency of this repository.
 
 ## Verification policy
 
