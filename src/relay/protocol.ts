@@ -1,4 +1,4 @@
-export const RELAY_PROTOCOL_VERSION = 16;
+export const RELAY_PROTOCOL_VERSION = 17;
 
 export type SourceKind = "video" | "live" | "media" | "short_link";
 export type RelayNextStep =
@@ -67,7 +67,7 @@ export interface PlaybackOptions {
 
 export interface RelayStatus {
   session_id: string;
-  stage: "starting" | "running" | "completed" | "stopped" | "failed";
+  stage: "starting" | "running" | "draining" | "completed" | "stopped" | "failed";
   playback_url?: string;
   position_seconds?: number;
   paused: boolean;

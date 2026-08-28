@@ -19,7 +19,7 @@ use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 use settings::SettingsStore;
 
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -450,6 +450,7 @@ pub struct RelayStatus {
 pub enum RelayStage {
     Starting,
     Running,
+    Draining,
     Completed,
     Stopped,
     Failed,

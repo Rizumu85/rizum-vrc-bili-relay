@@ -406,7 +406,7 @@ impl MediaSessionStore {
     fn cleanup_expired(&mut self) {
         let now = Instant::now();
         self.sessions.retain(|_, session| {
-            let active = matches!(session.stage, RelayStage::Starting | RelayStage::Running);
+            let active = session.process.is_some();
             active || session.expires_at > now
         });
     }
@@ -460,6 +460,16 @@ fn refresh(session: &mut MediaSession) -> Result<(), RelayError> {
                 RelayStage::Starting
             };
         }
+        ProcessPoll::Draining => {
+            session.stage = RelayStage::Draining;
+            if let Some(duration_seconds) = session.duration_seconds {
+                session.position_seconds = Some(duration_seconds);
+            }
+            session.overlay = None;
+            session.paused = false;
+            session.diagnostic = None;
+            session.expires_at = Instant::now() + SESSION_TTL;
+        }
         ProcessPoll::Exited {
             success,
             diagnostic,
@@ -482,6 +492,14 @@ fn refresh(session: &mut MediaSession) -> Result<(), RelayError> {
             // Preserve the transport intent so the UI can restart playback at
             // the frozen position after the one-hour safety cutoff.
             session.paused = true;
+            session.diagnostic = None;
+            session.expires_at = Instant::now() + SESSION_TTL;
+        }
+        ProcessPoll::CompletionExpired => {
+            session.stage = RelayStage::Completed;
+            session.process = None;
+            session.overlay = None;
+            session.paused = false;
             session.diagnostic = None;
             session.expires_at = Instant::now() + SESSION_TTL;
         }

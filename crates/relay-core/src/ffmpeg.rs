@@ -30,6 +30,7 @@ const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Appl
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const GRACEFUL_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const PAUSE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+const COMPLETION_HOLD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const STREAM_SWITCH_GAP_SECONDS: f64 = 0.050;
 const LOG_LINE_LIMIT: usize = 24;
 
@@ -47,14 +48,18 @@ pub(crate) struct FfmpegProcess {
     content_start_seconds: f64,
     paused_position_seconds: Option<f64>,
     paused_at: Option<Instant>,
+    completed_position_seconds: Option<f64>,
+    completion_hold_started_at: Option<Instant>,
     awaiting_content_start: bool,
     is_live: bool,
 }
 
 pub(crate) enum ProcessPoll {
     Alive { stable: bool },
+    Draining,
     Exited { success: bool, diagnostic: String },
     PauseExpired,
+    CompletionExpired,
 }
 
 struct ManagedChild {
@@ -119,6 +124,8 @@ impl FfmpegProcess {
             content_start_seconds: start_seconds,
             paused_position_seconds: start_paused.then_some(start_seconds),
             paused_at: start_paused.then(Instant::now),
+            completed_position_seconds: None,
+            completion_hold_started_at: None,
             awaiting_content_start: !start_paused,
             is_live: input.is_live,
         })
@@ -135,6 +142,13 @@ impl FfmpegProcess {
         {
             self.stop();
             return Ok(ProcessPoll::PauseExpired);
+        }
+        if self
+            .completion_hold_started_at
+            .is_some_and(|started_at| started_at.elapsed() >= COMPLETION_HOLD_TIMEOUT)
+        {
+            self.stop();
+            return Ok(ProcessPoll::CompletionExpired);
         }
 
         let publisher_stable = match self.publisher.poll(true)? {
@@ -178,6 +192,25 @@ impl FfmpegProcess {
         };
         let producer_stable = match producer_poll {
             ChildPoll::Exited { status, diagnostic } => {
+                if status.success()
+                    && !self.is_live
+                    && !self.is_paused()
+                    && self.completion_hold_started_at.is_none()
+                {
+                    let completed_position = self
+                        .position_seconds()
+                        .unwrap_or(self.content_start_seconds);
+                    if let Err(error) = self.replace_producer_with_hold() {
+                        self.stop();
+                        return Ok(ProcessPoll::Exited {
+                            success: false,
+                            diagnostic: error.message,
+                        });
+                    }
+                    self.completed_position_seconds = Some(completed_position);
+                    self.completion_hold_started_at = Some(Instant::now());
+                    return Ok(ProcessPoll::Draining);
+                }
                 // Keep packets flowing while the publisher is asked to close.
                 // A blocking UDP read can otherwise force an abrupt teardown.
                 let _ = self.replace_producer_with_hold();
@@ -191,9 +224,15 @@ impl FfmpegProcess {
         };
 
         match self.publisher.poll(true)? {
-            ChildPoll::Alive { stable } => Ok(ProcessPoll::Alive {
-                stable: stable && (self.is_paused() || producer_stable),
-            }),
+            ChildPoll::Alive { stable } => {
+                if self.completion_hold_started_at.is_some() {
+                    Ok(ProcessPoll::Draining)
+                } else {
+                    Ok(ProcessPoll::Alive {
+                        stable: stable && (self.is_paused() || producer_stable),
+                    })
+                }
+            }
             ChildPoll::Exited { status, diagnostic } => Ok(ProcessPoll::Exited {
                 success: status.success(),
                 diagnostic,
@@ -266,6 +305,7 @@ impl FfmpegProcess {
         requested_start_seconds: f64,
         overlay: Option<&DanmakuOverlay>,
     ) -> Result<(), RelayError> {
+        self.clear_completion_hold();
         self.stop_producer_and_advance_timeline();
         self.content_start_seconds = requested_start_seconds;
         self.paused_position_seconds = Some(requested_start_seconds);
@@ -311,6 +351,7 @@ impl FfmpegProcess {
                 "The relay must be paused before changing paused content",
             ));
         }
+        self.clear_completion_hold();
         self.content_start_seconds = requested_start_seconds;
         self.paused_position_seconds = Some(requested_start_seconds);
         self.awaiting_content_start = false;
@@ -331,6 +372,9 @@ impl FfmpegProcess {
     pub fn position_seconds(&self) -> Option<f64> {
         if self.is_live {
             return None;
+        }
+        if let Some(position) = self.completed_position_seconds {
+            return Some(position);
         }
         if let Some(position) = self.paused_position_seconds {
             return Some(position);
@@ -391,6 +435,11 @@ impl FfmpegProcess {
     fn replace_producer_with_hold(&mut self) -> Result<(), RelayError> {
         self.stop_producer_and_advance_timeline();
         self.spawn_hold_producer()
+    }
+
+    fn clear_completion_hold(&mut self) {
+        self.completed_position_seconds = None;
+        self.completion_hold_started_at = None;
     }
 
     fn wait_for_producer_output(&mut self) -> Result<(), RelayError> {
