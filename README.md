@@ -1,211 +1,83 @@
-# VRC Bili Relay
+<p align="center">
+  <img src="./assets/VRCBiliRelay.svg" width="88" alt="VRC Bili Relay 图标">
+</p>
 
-A portable Windows utility that combines a thin React/GPUIX UI with a Rust
-product core. It converts supported Bilibili pages and media URLs into playback
-routes suitable for VRChat video players. The application has no installer and
-no C# runtime dependency.
+<h1 align="center">VRC Bili Relay</h1>
 
-```text
-React + TypeScript UI
-        │ JSON Lines over stdio
-        ▼
-relay-worker.exe
-        │
-        ▼
-relay-core (Rust) ──► FFmpeg
-```
+<p align="center">
+  把 B 站视频、直播和常见媒体链接转换成可以放进 VRChat 播放器的地址。需要中继时，配合 <a href="https://vrcdn.live/">VRCDN</a> 或同类推流服务使用。
+</p>
 
-## Current slice
+<p align="center">
+  <a href="https://github.com/Rizumu85/rizum-vrc-bili-relay/releases/latest"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/Rizumu85/rizum-vrc-bili-relay?style=flat-square&color=fb7299"></a>
+  <img alt="Windows x64" src="https://img.shields.io/badge/Windows-x64-71717a?style=flat-square">
+  <a href="./LICENSE"><img alt="Apache 2.0 License" src="https://img.shields.io/badge/license-Apache--2.0-71717a?style=flat-square"></a>
+</p>
 
-The executable opens in a compact empty state. The detailed VOD-ready state is
-kept only as an explicit design and benchmark fixture. The real Rust-backed
-vertical slice is connected end to end:
+<p align="center">
+  <a href="https://github.com/Rizumu85/rizum-vrc-bili-relay/releases/latest"><strong>下载 Windows x64 便携版</strong></a>
+</p>
 
-- the Rust core recognizes Bilibili video URLs/IDs, live-room URLs, and b23.tv links;
-- it expands b23.tv redirects and resolves public metadata through Bilibili APIs;
-- videos return their real title, parts, CIDs, durations, and selected part;
-- live rooms return their canonical room id, title, and live/replay/offline state;
-- Rust selects public H.264 DASH tracks for VOD and H.264 FLV/MPEG-TS candidates for live rooms;
-- public MP4, HLS, MPEG-TS, and FLV media URLs are inspected with FFprobe;
-- stable public H.264/AAC MP4, HLS, and MPEG-TS URLs are returned directly without using VRCDN;
-- expiring, header-bound, Bilibili-media, and FLV URLs are retained in a Rust relay session instead;
-- temporary Bilibili media URLs remain private to Rust while the UI receives only a route decision;
-- the worker exposes a versioned request/reply protocol over stdio;
-- the TypeScript client owns worker startup, request correlation, timeout, shutdown,
-  and packaged-executable discovery;
-- source conversion uses the Rust network resolution instead of a frontend regex and timer;
-- the Windows shell expands from the compact input state to the full player or settings surface, then contracts on return;
-- the fixed-size Windows utility uses one edge-to-edge Glass surface with a shared 42px title-bar band, no visible product logo, and native drag/minimize/close operations behind its translated caption controls;
-- a resolved relay that needs setup is retained while the user opens settings, then resumes from the same media session after valid settings are saved and the user returns;
-- FFmpeg discovery runs in Rust and feeds the existing settings surface;
-- when no system FFmpeg is present, the settings page can install a managed copy without blocking the worker;
-- the managed installer verifies the publisher's SHA-256 value before activating `ffmpeg.exe` and `ffprobe.exe`;
-- resolved media is held in short-lived Rust sessions instead of exposing temporary Bilibili URLs to React;
-- Rust starts, observes, stops, and cleans up FFmpeg relay processes;
-- on Windows, every FFmpeg process belongs to a kill-on-close Job Object so a
-  crashed or forcibly terminated worker cannot leave media running in the background;
-- a relay is reported as running only after FFmpeg has produced media output;
-- FFmpeg playback progress is reported back to the seek control;
-- changing a Bilibili part resolves fresh media and replaces the relay through one Rust workflow;
-- seeking commits when the pointer is released, then restarts from the selected second;
-- public VOD danmaku is fetched as Bilibili's segmented protobuf data and rendered into ASS;
-- enabling danmaku switches the relay to a 1280×720 H.264/AAC transcode and burns the selected style into the picture;
-- danmaku visibility, size, area, speed, opacity, font, weight, outline, and type filters cross the versioned Rust protocol;
-- changing danmaku settings, switching parts, or seeking regenerates the overlay for the new source position;
-- temporary ASS files stay owned by their Rust media session and are removed on replacement, stop, failure, and shutdown;
-- live-room danmaku connects as a guest over Bilibili's websocket protocol and handles plain, zlib, and Brotli packets;
-- a bounded Rust queue drives named FFmpeg `drawtext` filters through a loopback-only ZMQ socket;
-- live danmaku is counted only after FFmpeg accepts the render command, and the websocket is interrupted during shutdown;
-- FFmpeg builds without both `drawtext` and `zmq` are rejected before a live-danmaku relay starts;
-- the settings page can start Bilibili's QR login, show waiting/scanned/expired states, and return to guest mode;
-- authenticated API and danmaku requests reuse the Rust-owned session while cookies never cross into React or plaintext storage;
-- a successful QR login is encrypted for the current Windows user and restored on restart; returning to guest mode removes it;
-- VRCDN values and appearance are loaded and saved by Rust with legacy `settings.json` migration and transactional replacement;
-- legacy plaintext stream keys migrate to Windows current-user encryption, while routine settings replies expose only `missing`, `available`, or `unavailable` state;
-- the masked settings field requests the decrypted stream key only after the user clicks its reveal icon, clears that temporary UI value when hidden or closed, and keeps relay commands free of the key;
-- the ready view now follows the real starting/running/completed/stopped/failed lifecycle;
-- release builds put `vrc-bili-relay-gpuix.exe` and `relay-worker.exe` together in `dist/`;
-- a packaged UI prefers its sibling worker over repository build artifacts, while
-  the explicit worker override remains available for development diagnostics.
+<p align="center">
+  <img src="./assets/readme/app-ready-light.png" width="549" alt="VRC Bili Relay 已生成 VRChat 播放地址的主界面">
+</p>
 
-The following UI interactions also remain live:
+## 它是什么
 
-- edit or paste a Bilibili page or supported media URL;
-- generate a ready, loading, or error state;
-- switch a real video part and seek across the full-width playback control;
-- show or hide danmaku and edit its advanced settings;
-- copy the generated VRChat URL;
-- edit local VRCDN values, choose system/light/dark appearance, and sign in to Bilibili by QR code.
+VRC Bili Relay 是一个免安装的 Windows 小工具。粘贴链接以后，软件会判断媒体能否直接交给 VRChat 播放；不能直接播放时，再通过 FFmpeg 处理并推送到外部中继服务。
 
-The current relay path remuxes the selected Bilibili H.264 video and audio when
-no picture processing is needed. With danmaku enabled it transcodes to
-1280×720 at 30 FPS and publishes H.264/AAC FLV to the configured RTMP/RTMPS
-ingest. VOD uses a temporary ASS overlay; live rooms update bounded `drawtext`
-slots without restarting FFmpeg. The user must copy the
-ingest server, stream key, and complete playback URL from VRCDN; a playback URL
-cannot be derived safely from the key. FFmpeg processes are stopped when the
-user stops a relay, starts a replacement, or closes the app.
+这个软件负责解析、转码和推流，不提供云端带宽。需要中继的时候，仍然要准备一个可用的 [VRCDN](https://vrcdn.live/) 配置，或者提供同类能力的推流服务。
 
-VRCDN stream keys are protected with Windows DPAPI for the current user before
-they enter `settings.json`. Existing plaintext keys migrate on first read. A
-protected value copied from another user or machine remains recoverable as an
-explicit `unavailable` state until the user replaces or clears it. Bilibili
-credentials use a separate encrypted session file with independent recovery and
-logout semantics. The detailed ready state remains available as an approved
-visual reference without appearing as fake product output on startup.
+## 什么时候需要推流服务
 
-Direct playback is deliberately limited to a stable public URL that every
-VRChat viewer can reach. The app does not publish a `localhost` proxy URL:
-inside a shared VRChat instance, that address would point to each viewer's own
-computer instead of the relay owner's machine.
+公开、稳定并且与 VRChat 兼容的 H.264/AAC 媒体可以直接返回，不会使用 VRCDN。
 
-## Managed FFmpeg
+B 站临时媒体地址、FLV、弹幕烧录以及其他需要转码的内容需要中继。这些情况需要准备：
 
-If both `ffmpeg.exe` and `ffprobe.exe` are already available on `PATH`, the app
-uses them and does not offer a redundant download. Otherwise, the settings page
-can download the Windows release-essentials ZIP published by
-[gyan.dev](https://www.gyan.dev/ffmpeg/builds/),
-one of the Windows build providers linked by the official
-[FFmpeg download page](https://ffmpeg.org/download.html).
+- RTMP 或 RTMPS 推流地址；
+- 推流密钥；
+- VRChat 可以访问的完整播放地址。
 
-Rust downloads the ZIP in the background, obtains the matching publisher
-SHA-256 value, rejects oversized or mismatched files, extracts only
-`bin/ffmpeg.exe` and `bin/ffprobe.exe`, checks both Windows executable
-signatures, and activates the pair with an atomic replacement. The managed
-toolchain and its source metadata live at:
+软件目前按照 VRCDN 的使用流程完成验证。设置页允许填写自定义服务器和播放地址，但其他服务需要自行确认推流协议、播放格式和公网可访问性。
 
-```text
-%LOCALAPPDATA%\VRC Bili Relay\media\ffmpeg\
-```
+## 下载与使用
 
-The upstream Essentials build is GPLv3 software downloaded separately at the
-user's request; it is not embedded in this repository or the application EXE.
+1. 从 [Releases](https://github.com/Rizumu85/rizum-vrc-bili-relay/releases/latest) 下载 Windows x64 便携包。
+2. 完整解压 ZIP，不要单独移动主程序或删除 `relay-worker.exe`、`assets` 文件夹。
+3. 运行 `VRC-Bili-Relay.exe`，粘贴链接并生成地址。
+4. 如果软件提示需要中继，在设置页填入推流服务提供的服务器、密钥和完整播放地址。
 
-## Run
+当前构建没有代码签名，Windows SmartScreen 可能显示未知发布者提示。
+
+## 主要功能
+
+- 支持 B 站视频、分 P、直播间、`b23.tv` 短链接和常见公开媒体地址；
+- 自动选择直接播放或 FFmpeg 中继；
+- 支持播放、暂停、进度跳转和分 P 切换；
+- 支持弹幕显示、样式设置和烧录；
+- 默认使用游客模式，也可以通过 B 站扫码登录；
+- 自动检测系统 FFmpeg，缺少时可以在设置页下载受管版本；
+- 推流密钥和 B 站登录信息保存在本机，并使用 Windows 当前用户加密。
+
+游客模式下，B 站最高提供 480P。FFmpeg 不包含在便携包里；电脑已经安装可用版本时，软件会直接使用，不会重复下载。
+
+## 从源码运行
+
+需要 [Bun](https://bun.sh/) 和 Rust 工具链：
 
 ```powershell
 bun install
 bun run dev
 ```
 
-`bun run dev` builds the debug Rust worker first, then starts GPUIX with Bun HMR.
-Changing TSX or Rizum Glass values does not rebuild Rust.
-
-Build the portable Windows distribution:
-
-```powershell
-bun run build
-```
-
-Keep all files from `dist/` in the same directory:
-
-```text
-VRC-Bili-Relay.exe
-relay-worker.exe
-assets/
-LICENSE
-```
-
-Create the versioned ZIP used by GitHub Releases:
+生成便携包：
 
 ```powershell
 bun run package:windows
 ```
 
-The archive is written to `release/`. Extract it anywhere and run
-`VRC-Bili-Relay.exe`; no installation or registry registration is required.
-The release is currently unsigned, so Windows may show a SmartScreen warning.
+项目使用 React 19 + GPUIX 构建界面，媒体解析、配置和 FFmpeg 生命周期由 Rust 处理。完整边界见 [架构文档](./docs/architecture.md)。仓库只允许运行基准测试；其他验证方式和限制见 [AGENTS.md](./AGENTS.md)。
 
-## Verification policy
+## License
 
-This repository deliberately forbids ordinary test suites. Read `AGENTS.md`
-before running any verification command. The only executable suite is the GPU
-render benchmark:
-
-```powershell
-bun run bench
-```
-
-Rust compilation and TypeScript checking are permitted non-suite verification:
-
-```powershell
-cargo check --workspace
-bun run typecheck
-```
-
-The benchmark reports the requested and actual offscreen viewport alongside
-mount and idle-frame timings. GPUIX `0.5.1` currently ignores the requested
-offscreen size on this Windows machine (`428×448` becomes `1536×1095.11`), so
-the benchmark deliberately skips its screenshot when that mismatch occurs.
-
-Capture the real application window instead:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme light
-powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme light -Scene idle -OutputPath artifacts/idle-light.png
-powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme light -Scene idle -Source "https://www.bilibili.com/video/BV1UCVn66Eww" -GenerateAddress -OutputPath artifacts/real-resolution.png
-powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme dark -OutputPath artifacts/live-window-dark.png
-powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme light -Scene settings -OutputPath artifacts/settings-light.png
-powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme light -Scene settings -OpenLogin -OutputPath artifacts/login-light.png
-powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme dark -Scene danmaku -OutputPath artifacts/danmaku-dark.png
-```
-
-## Design and runtime boundaries
-
-`design/reference-contract.json` records the approved web source, dimensions,
-states, tokens, motion, and GPUIX material fallback. The browser's ambient
-presentation canvas is intentionally absent: the native window itself is the
-product surface.
-
-The Windows frame still owns the shadow and outer rounded silhouette. GPUIX's
-transparent-title-bar mode lets the React root carry the Rizum Glass material
-to that real edge instead of drawing a second rounded application card. The
-shared 42px band contains the contextual title, Back/Settings when relevant,
-and three Windows-sized caption slots without a product logo. A narrow Windows
-adapter keeps dragging, minimizing, and closing as native window operations;
-maximize is intentionally disabled because this utility is fixed-size. Pinned
-GPUIX `0.5.1` does not expose caption hit-test geometry, so this shell does not
-claim Snap Layout support.
-
-Runtime ownership and protocol rules are documented in
-[`docs/architecture.md`](docs/architecture.md).
+[Apache License 2.0](./LICENSE)

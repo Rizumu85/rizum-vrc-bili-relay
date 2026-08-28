@@ -1,4 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">VRC Bili Relay</title>
+  <desc id="desc">粉色显示器轮廓，中间是播放按钮。</desc>
   <rect x="8" y="10" width="48" height="34" rx="5" stroke="#FB7299" stroke-width="4"/>
   <path d="M32 44v8M24 52h16" stroke="#FB7299" stroke-width="4" stroke-linecap="round"/>
   <path d="M26 19v16l18-8-18-8Z" fill="#FB7299"/>
