@@ -18,6 +18,7 @@ param(
     [switch]$OpenPartSelect,
     [switch]$IncludePopup,
     [switch]$CyclePlaybackEndBehavior,
+    [switch]$DragSeekThumb,
     [switch]$FocusSource,
     [switch]$DragSelectSourceInside,
     [switch]$DragSelectSourceOutside,
@@ -279,6 +280,29 @@ try {
         [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
         [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
         Start-Sleep -Milliseconds 500
+    }
+
+    if ($DragSeekThumb) {
+        if ($Scene -ne "ready-vod") {
+            throw "DragSeekThumb requires -Scene ready-vod."
+        }
+        # Reference VOD starts at 03:24 of 12:34. Begin exactly on the
+        # visible 12px thumb, then drag through the native pointer path.
+        $scale = $width / $logicalWidth
+        $trackLeft = 28
+        $trackWidth = 416
+        $startRatio = 204.0 / 754.0
+        $targetRatio = 0.72
+        $seekY = $rectangle.Top + [int](300 * $scale)
+        $startX = $rectangle.Left + [int](($trackLeft + $trackWidth * $startRatio) * $scale)
+        $targetX = $rectangle.Left + [int](($trackLeft + $trackWidth * $targetRatio) * $scale)
+        [GpuixWindowCapture]::SetCursorPos($startX, $seekY) | Out-Null
+        [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 80
+        [GpuixWindowCapture]::SetCursorPos($targetX, $seekY) | Out-Null
+        Start-Sleep -Milliseconds 180
+        [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 350
     }
 
     if ($DragSelectStaticText) {

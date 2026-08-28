@@ -1175,6 +1175,7 @@ function SeekControl({
             height: 2,
             borderRadius: RADII.full,
             backgroundColor: palette.surfaceLine,
+            pointerEvents: "none",
           }}
         />
         <div
@@ -1186,6 +1187,7 @@ function SeekControl({
             height: 12,
             borderRadius: RADII.full,
             backgroundColor: palette.caption,
+            pointerEvents: "none",
             boxShadow: {
               offsetX: 0,
               offsetY: 0,
