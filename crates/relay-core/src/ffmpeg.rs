@@ -258,6 +258,21 @@ impl FfmpegProcess {
         }
 
         if paused {
+            if self.completion_hold_started_at.is_some() {
+                let frozen_position = self
+                    .position_seconds()
+                    .unwrap_or(requested_start_seconds.max(0.0));
+                // The completion hold is already producing the exact still
+                // frame and silence needed for pause. Reclassify it in place
+                // so the publisher remains connected and the one-hour pause
+                // timeout replaces the shorter completion-drain timeout.
+                self.completed_position_seconds = None;
+                self.completion_hold_started_at = None;
+                self.paused_position_seconds = Some(frozen_position);
+                self.paused_at = Some(Instant::now());
+                self.awaiting_content_start = false;
+                return Ok(());
+            }
             if self.awaiting_content_start {
                 self.awaiting_content_start = false;
                 self.paused_position_seconds = Some(requested_start_seconds.max(0.0));
