@@ -21,10 +21,12 @@ for (const source of [
 ]) {
   copyFileSync(source, resolve(stage, basename(source)));
 }
-copyFileSync(
-  resolve(root, "dist", "assets", "danmaku-preview-backdrop.png"),
-  resolve(stage, "assets", "danmaku-preview-backdrop.png"),
-);
+for (const assetName of ["danmaku-preview-backdrop.png", "VRCBiliRelay.ico"]) {
+  copyFileSync(
+    resolve(root, "dist", "assets", assetName),
+    resolve(stage, "assets", assetName),
+  );
+}
 
 run(["tar", "-a", "-c", "-f", archive, "-C", releaseRoot, packageName]);
 

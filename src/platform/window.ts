@@ -1,4 +1,5 @@
 import { FFIType, JSCallback, dlopen, ptr } from "bun:ffi";
+import { dirname, resolve } from "node:path";
 
 export const PRODUCT_WINDOW_TITLE = "VRC Bili Relay";
 
@@ -11,6 +12,8 @@ const WM_SETICON = 0x0080;
 const ICON_SMALL = 0;
 const ICON_BIG = 1;
 const ICON_SMALL2 = 2;
+const IMAGE_ICON = 1;
+const LR_LOADFROMFILE = 0x0010;
 const SPI_GETCLIENTAREAANIMATION = 0x1042;
 const VK_LBUTTON = 0x01;
 
@@ -129,6 +132,17 @@ const user32 = process.platform === "win32"
         ],
         returns: FFIType.uint32_t,
       },
+      LoadImageW: {
+        args: [
+          FFIType.ptr,
+          FFIType.ptr,
+          FFIType.uint32_t,
+          FFIType.int32_t,
+          FFIType.int32_t,
+          FFIType.uint32_t,
+        ],
+        returns: FFIType.u64,
+      },
       DestroyIcon: {
         args: [FFIType.ptr],
         returns: FFIType.bool,
@@ -149,10 +163,16 @@ export function setProductWindowIconFromExecutable(): boolean {
   if (dpi === productWindowIconDpi && productWindowIconHandles.length > 0) return true;
 
   const executablePath = Buffer.from(`${process.execPath}\0`, "utf16le");
+  const sidecarIconPath = Buffer.from(
+    `${resolve(dirname(process.execPath), "assets", "VRCBiliRelay.ico")}\0`,
+    "utf16le",
+  );
   const taskbarSize = Math.max(16, Math.round(24 * dpi / 96));
   const titleBarSize = Math.max(16, Math.round(16 * dpi / 96));
-  const largeIcon = extractProductIcon(executablePath, taskbarSize);
-  const smallIcon = extractProductIcon(executablePath, titleBarSize);
+  const largeIcon = loadProductIcon(sidecarIconPath, taskbarSize)
+    || extractProductIcon(executablePath, taskbarSize);
+  const smallIcon = loadProductIcon(sidecarIconPath, titleBarSize)
+    || extractProductIcon(executablePath, titleBarSize);
   if (largeIcon === 0n && smallIcon === 0n) return false;
 
   const staleIcons = productWindowIconHandles.splice(0);
@@ -171,6 +191,18 @@ export function setProductWindowIconFromExecutable(): boolean {
   productWindowIconDpi = dpi;
   for (const staleIcon of staleIcons) user32.symbols.DestroyIcon(staleIcon);
   return true;
+}
+
+function loadProductIcon(iconPath: Buffer, size: number): bigint {
+  if (!user32) return 0n;
+  return user32.symbols.LoadImageW(
+    null,
+    ptr(iconPath),
+    IMAGE_ICON,
+    size,
+    size,
+    LR_LOADFROMFILE,
+  );
 }
 
 function extractProductIcon(executablePath: Buffer, size: number): bigint {

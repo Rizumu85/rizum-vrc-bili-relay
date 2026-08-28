@@ -18,6 +18,10 @@ copyFileSync(
   resolve(root, "assets", "danmaku-preview-backdrop.png"),
   resolve(dist, "assets", "danmaku-preview-backdrop.png"),
 );
+copyFileSync(
+  resolve(root, "assets", "VRCBiliRelay.ico"),
+  resolve(dist, "assets", "VRCBiliRelay.ico"),
+);
 run([
   "bun",
   "build",
