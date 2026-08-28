@@ -1,11 +1,5 @@
 <p align="center">
-  <img src="./assets/VRCBiliRelay.svg" width="88" alt="VRC Bili Relay 图标">
-</p>
-
-<h1 align="center">VRC Bili Relay</h1>
-
-<p align="center">
-  把 B 站视频、直播和常见媒体链接转换成可以放进 VRChat 播放器的地址。需要中继时，配合 <a href="https://vrcdn.live/">VRCDN</a> 或同类推流服务使用。
+  <img src="./assets/readme/hero.png" width="100%" alt="VRC Bili Relay：把 B 站视频和直播链接转换成 VRChat 播放地址">
 </p>
 
 <p align="center">
@@ -16,10 +10,6 @@
 
 <p align="center">
   <a href="https://github.com/Rizumu85/rizum-vrc-bili-relay/releases/latest"><strong>下载 Windows x64 便携版</strong></a>
-</p>
-
-<p align="center">
-  <img src="./assets/readme/app-ready-light.png" width="549" alt="VRC Bili Relay 已生成 VRChat 播放地址的主界面">
 </p>
 
 ## 它是什么

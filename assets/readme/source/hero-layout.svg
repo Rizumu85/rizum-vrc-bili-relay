@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="1200" height="440" viewBox="0 0 1200 440"
+     role="img" aria-labelledby="title desc">
+  <title id="title">VRC Bili Relay</title>
+  <desc id="desc">把 B 站视频、直播和常见媒体链接转换成 VRChat 可以播放的地址。</desc>
+
+  <defs>
+    <linearGradient id="surface" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FBF7F9"/>
+      <stop offset="0.52" stop-color="#F7F6FA"/>
+      <stop offset="1" stop-color="#F1F8F7"/>
+    </linearGradient>
+    <linearGradient id="route" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FB7185"/>
+      <stop offset="0.5" stop-color="#A78BFA"/>
+      <stop offset="1" stop-color="#2DD4BF"/>
+    </linearGradient>
+    <filter id="window-shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#292530" flood-opacity="0.18"/>
+    </filter>
+    <clipPath id="window-clip">
+      <rect x="768" y="29" width="382" height="382" rx="14"/>
+    </clipPath>
+  </defs>
+
+  <rect width="1200" height="440" rx="32" fill="url(#surface)"/>
+  <rect x="0.5" y="0.5" width="1199" height="439" rx="31.5" fill="none" stroke="#E7E2E8"/>
+
+  <g id="title-block" transform="translate(64 56)">
+    <text x="0" y="0" dominant-baseline="hanging"
+          fill="#8A7F8B" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif"
+          font-size="18" font-weight="600" letter-spacing="0.6">B 站媒体 → VRChat</text>
+
+    <text x="0" y="58" dominant-baseline="hanging"
+          fill="#28232B" font-family="Georgia, 'Songti SC', serif"
+          font-size="58" font-weight="600">VRC Bili Relay</text>
+
+    <text x="0" y="137" dominant-baseline="hanging"
+          fill="#625B66" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif"
+          font-size="22">粘贴视频或直播链接，生成 VRChat 可以播放的地址。</text>
+
+    <g id="route-preview" transform="translate(0 229)">
+      <path d="M20 28 H502" stroke="#DED8E1" stroke-width="8" stroke-linecap="round"/>
+      <path d="M20 28 H502" stroke="url(#route)" stroke-width="3" stroke-linecap="round"/>
+
+      <circle cx="20" cy="28" r="11" fill="#FB7185"/>
+      <circle cx="261" cy="28" r="11" fill="#A78BFA"/>
+      <circle cx="502" cy="28" r="11" fill="#2DD4BF"/>
+
+      <text x="0" y="61" dominant-baseline="hanging"
+            fill="#49434D" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif"
+            font-size="18" font-weight="600">链接</text>
+      <text x="219" y="61" dominant-baseline="hanging"
+            fill="#49434D" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif"
+            font-size="18" font-weight="600">自动判断</text>
+      <text x="466" y="61" dominant-baseline="hanging"
+            fill="#49434D" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif"
+            font-size="18" font-weight="600">播放</text>
+
+      <text x="0" y="101" dominant-baseline="hanging"
+            fill="#8B8490" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+            font-size="17">直接播放 · FFmpeg 中继 · 弹幕烧录</text>
+    </g>
+  </g>
+
+  <g id="product-proof" filter="url(#window-shadow)">
+    <rect x="768" y="29" width="382" height="382" rx="14" fill="#FAFAFA"/>
+    <g clip-path="url(#window-clip)">
+      <image x="761.5" y="29" width="395.28" height="387.36"
+             xlink:href="../app-ready-light.png" preserveAspectRatio="none"/>
+    </g>
+    <rect x="768.5" y="29.5" width="381" height="381" rx="13.5" fill="none" stroke="#D8D4D9"/>
+  </g>
+</svg>
