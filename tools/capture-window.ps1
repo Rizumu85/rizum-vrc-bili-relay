@@ -249,7 +249,8 @@ try {
 
     if ($ScrollContent) {
         $scale = $width / $logicalWidth
-        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](240 * $scale), $rectangle.Top + [int](230 * $scale)) | Out-Null
+        $scrollY = if ($OpenPartSelect) { 400 } else { 230 }
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](240 * $scale), $rectangle.Top + [int]($scrollY * $scale)) | Out-Null
         [GpuixWindowCapture]::mouse_event(0x0800, 0, 0, [uint32]4294966576, [UIntPtr]::Zero)
         Start-Sleep -Milliseconds 300
     }

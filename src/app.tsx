@@ -783,11 +783,13 @@ function PartSelect({
           style={{
             position: "relative",
             width: "100%",
+            height: "100%",
             padding: 4,
             borderRadius: 10,
             borderWidth: 1,
             borderColor: palette.panelEdge,
             backgroundColor: palette.panel,
+            overflow: "scroll",
             boxShadow: {
               offsetX: 0,
               offsetY: 16,
