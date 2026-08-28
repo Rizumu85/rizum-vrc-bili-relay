@@ -1,7 +1,10 @@
 import { render } from "@gpuix/react";
 
-import { AppSurface, sceneWindowHeight, type Scene } from "./app";
-import { PRODUCT_WINDOW_TITLE } from "./platform/window";
+import { AppSurface, sceneWindowHeight, sceneWindowWidth, type Scene } from "./app";
+import {
+  PRODUCT_WINDOW_TITLE,
+  setProductWindowPointerRenderer,
+} from "./platform/window";
 import type { ThemePreference } from "./settings";
 import type { Appearance } from "./theme";
 
@@ -29,12 +32,29 @@ render(
     initialSource={process.env.VRC_BILI_RELAY_SOURCE}
   />,
   {
-  title: PRODUCT_WINDOW_TITLE,
-  width: 428,
-  height: sceneWindowHeight(initialScene),
-  minWidth: 428,
-  minHeight: 205,
-  resizable: false,
-  windowBackground: "blurred",
+    title: PRODUCT_WINDOW_TITLE,
+    appName: "VRC Bili Relay",
+    width: sceneWindowWidth(initialScene),
+    height: sceneWindowHeight(initialScene),
+    minWidth: sceneWindowWidth("idle"),
+    minHeight: sceneWindowHeight("idle"),
+    resizable: false,
+    titlebarTransparent: process.platform === "win32",
+    windowBackground: "blurred",
   },
 );
+
+// GPUIX does not yet expose the live renderer returned by render(). Its render
+// host is synchronous, so bridge the retained instance after mounting. This
+// lets Win32 pointer capture keep native text selection moving beyond the
+// window boundary instead of stopping at the final in-window mouse event.
+const renderHost = Reflect.get(globalThis, "__gpuixRenderHost") as
+  | {
+      renderer?: {
+        getElementBounds: (elementId: number) => number[] | null;
+        getWindowSize: () => { width: number; height: number };
+        simulateMouseMove: (x: number, y: number, pressedButton?: number | null) => void;
+      };
+    }
+  | undefined;
+setProductWindowPointerRenderer(renderHost?.renderer ?? null);

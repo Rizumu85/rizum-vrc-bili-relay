@@ -4,13 +4,20 @@ import { resolve } from "node:path";
 const root = resolve(import.meta.dir, "..");
 const dist = resolve(root, "dist");
 
-run(["cargo", "build", "--release", "--bin", "relay-worker"]);
-mkdirSync(dist, { recursive: true });
+run(["bun", "run", "tools/generate-danmaku-backdrop.ts"]);
+mkdirSync(resolve(dist, "assets"), { recursive: true });
 copyFileSync(
-  resolve(root, "target", "release", "relay-worker.exe"),
-  resolve(dist, "relay-worker.exe"),
+  resolve(root, "assets", "danmaku-preview-backdrop.png"),
+  resolve(dist, "assets", "danmaku-preview-backdrop.png"),
 );
-run(["bun", "run", "tools/build-ui.ts"]);
+run([
+  "bun",
+  "build",
+  "--compile",
+  "src/main.tsx",
+  "--outfile",
+  "dist/vrc-bili-relay-gpuix.exe",
+]);
 
 function run(command: string[]): void {
   const result = Bun.spawnSync(command, {

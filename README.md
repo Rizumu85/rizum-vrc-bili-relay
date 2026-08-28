@@ -34,6 +34,7 @@ vertical slice is connected end to end:
   and packaged-executable discovery;
 - source conversion uses the Rust network resolution instead of a frontend regex and timer;
 - the Windows shell expands from the compact input state to the full player or settings surface, then contracts on return;
+- the fixed-size Windows utility uses one edge-to-edge Glass surface with a shared 42px title-bar band, no visible product logo, and native drag/minimize/close operations behind its translated caption controls;
 - a resolved relay that needs setup is retained while the user opens settings, then resumes from the same media session after valid settings are saved and the user returns;
 - FFmpeg discovery runs in Rust and feeds the existing settings surface;
 - when no system FFmpeg is present, the settings page can install a managed copy without blocking the worker;
@@ -59,8 +60,8 @@ vertical slice is connected end to end:
 - authenticated API and danmaku requests reuse the Rust-owned session while cookies never cross into React or plaintext storage;
 - a successful QR login is encrypted for the current Windows user and restored on restart; returning to guest mode removes it;
 - VRCDN values and appearance are loaded and saved by Rust with legacy `settings.json` migration and transactional replacement;
-- legacy plaintext stream keys migrate to Windows current-user encryption, while replies expose only `missing`, `available`, or `unavailable` state;
-- the stream key and its protected value stay inside Rust, and relay commands no longer carry either one;
+- legacy plaintext stream keys migrate to Windows current-user encryption, while routine settings replies expose only `missing`, `available`, or `unavailable` state;
+- the masked settings field requests the decrypted stream key only after the user clicks its reveal icon, clears that temporary UI value when hidden or closed, and keeps relay commands free of the key;
 - the ready view now follows the real starting/running/completed/stopped/failed lifecycle;
 - release builds put `vrc-bili-relay-gpuix.exe` and `relay-worker.exe` together in `dist/`;
 - a packaged UI prefers its sibling worker over repository build artifacts, while
@@ -161,7 +162,7 @@ bun run typecheck
 
 The benchmark reports the requested and actual offscreen viewport alongside
 mount and idle-frame timings. GPUIX `0.5.1` currently ignores the requested
-offscreen size on this Windows machine (`428×478` becomes `1536×1095.11`), so
+offscreen size on this Windows machine (`428×448` becomes `1536×1095.11`), so
 the benchmark deliberately skips its screenshot when that mismatch occurs.
 
 Capture the real application window instead:
@@ -182,6 +183,16 @@ powershell -ExecutionPolicy Bypass -File tools/capture-window.ps1 -Theme dark -S
 states, tokens, motion, and GPUIX material fallback. The browser's ambient
 presentation canvas is intentionally absent: the native window itself is the
 product surface.
+
+The Windows frame still owns the shadow and outer rounded silhouette. GPUIX's
+transparent-title-bar mode lets the React root carry the Rizum Glass material
+to that real edge instead of drawing a second rounded application card. The
+shared 42px band contains the contextual title, Back/Settings when relevant,
+and three Windows-sized caption slots without a product logo. A narrow Windows
+adapter keeps dragging, minimizing, and closing as native window operations;
+maximize is intentionally disabled because this utility is fixed-size. Pinned
+GPUIX `0.5.1` does not expose caption hit-test geometry, so this shell does not
+claim Snap Layout support.
 
 Runtime ownership and protocol rules are documented in
 [`docs/architecture.md`](docs/architecture.md).

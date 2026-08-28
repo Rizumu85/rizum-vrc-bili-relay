@@ -2,12 +2,12 @@
   "$schema": "./reference-contract.schema.json",
   "reference": {
     "stack": "React + TypeScript + Vite + Tailwind CSS + shadcn/ui + Rizum Glass",
-    "source": "workspace:design/product-reference-v3-agent; evidence copied into design/reference",
-    "approvedAt": "2026-08-26T00:00:00-04:00"
+    "source": "workspace:design/product-reference-v3-agent plus rizum-glass/examples/window-identity-directions-v5.html; evidence copied into design/reference",
+    "approvedAt": "2026-08-27T19:00:00-04:00"
   },
   "viewport": {
-    "width": 428,
-    "height": 478,
+    "width": 472,
+    "height": 480,
     "scale": 1
   },
   "components": [
@@ -15,30 +15,38 @@
       "id": "application-shell",
       "primitive": "GPUIX div + text + svg",
       "dimensions": {
-        "minWidth": 428,
-        "preferredWidth": 428,
-        "maxWidth": 428,
-        "preferredHeight": 478,
-        "padding": "header 16px 24px 11px; body 16px 24px 24px",
+        "minWidth": 472,
+        "preferredWidth": 472,
+        "maxWidth": 472,
+        "preferredHeight": 480,
+        "padding": "shared Windows title-bar band 43px; body 17px 26px 26px",
         "gap": 12
       },
       "tokens": {
-        "lightSurface": "rgba(255,255,255,.92)",
+        "lightSurface": "#FFFFFFF8; calibrated for GPUIX premultiplied Windows composition to visually match the web glass surface near #F8F8F7",
         "darkSurface": "rgba(39,39,42,.94)",
-        "panelRadius": 20,
-        "identityTitle": "Noto Serif SC 16px semibold",
-        "logoAccent": "#fb7185"
+        "outerRadiusSource": "platform",
+        "systemControlOwnership": "Windows platform adapter behind a React title-bar translation",
+        "visibleProductIdentity": false,
+        "contextTitle": "Noto Serif SC 14px semibold",
+        "nativeLegibilityCorrection": "GPUIX body text and controls use an approximately 10% larger native metric than the browser reference after hands-on Windows review. Only the 14px contextual title is explicitly exempt; the surrounding title-bar geometry follows the product scale.",
+        "nativeLegibilityGeometry": "Primary widths, control heights, icon hit targets, seek geometry, body insets, and content-sized window bounds move together. Typography receives an additional 0.5px optical correction where GPUIX rasterizes smaller. Radius, border, and shadow roles stay on the Rizum Glass rhythm instead of being mathematically scaled, so hierarchy does not inflate.",
+        "captionButtonGeometry": "three 47px by 43px Windows slots; maximize disabled for the fixed-size utility",
+        "windowOperations": "The custom title band captures the pointer through Win32 and moves the window from global screen coordinates, including negative coordinates on monitors above or left of the primary display. Minimize and close remain native Win32 operations; Snap Layout is not claimed.",
+        "selectionOwnership": "The application shell disables selection for static UI copy. Native input editors opt back into text selection explicitly; copy actions remain the primary affordance for generated playback URLs.",
+        "scrollOwnership": "Fixed utility surfaces are not scroll containers when their complete task fits the content-sized window. Menus may scroll within their own bounded overlay; the settings and danmaku bodies do not react to the wheel.",
+        "rootSurfaceReachesWindowEdge": true
       },
       "states": [
         {
           "name": "empty-light",
           "evidence": "reference/empty-light.png",
-          "notes": "The browser ambient canvas is presentation-only and is not translated into the native window."
+          "notes": "The platform window is the only full-window glass surface. Its shared title-bar band carries the task title and Windows controls without a logo, ambient canvas, inner app card, or duplicate product identity."
         },
         {
           "name": "ready-vod-light",
           "evidence": "reference/ready-vod-light.png",
-          "notes": "The default spike state exercises the densest main surface."
+          "notes": "The default spike state exercises the densest main surface with one contextual task title and no duplicate product identity."
         },
         {
           "name": "ready-vod-dark",
@@ -51,21 +59,28 @@
       "id": "source-and-result",
       "primitive": "GPUIX input + headless Select + interactive div controls",
       "dimensions": {
-        "minWidth": 380,
-        "preferredWidth": 380,
-        "maxWidth": 380,
-        "preferredHeight": 374,
+        "minWidth": 420,
+        "preferredWidth": 420,
+        "maxWidth": 420,
+        "preferredHeight": 392,
         "padding": "0",
         "gap": 13
       },
       "tokens": {
-        "inputHeight": 32,
-        "buttonHeight": 30,
+        "singlePartWindowHeight": 445,
+        "inputHeight": 35,
+        "nativeEditorHeight": 19,
+        "nativeEditorOffsetY": -4,
+        "buttonHeight": 33,
         "controlRadius": 8,
         "resultSeparatorTop": 18,
         "resultSeparatorPadding": 16,
+        "runtimeSeparator": "The ready surface has three regions: source input, media routing with danmaku controls, and runtime output. Like the settings footer, the runtime row follows a quiet divider with 18px before and 14px after the line; no extra card or repeated section title is added.",
+        "sectionMarkers": "Source uses rose, media routing uses violet, and danmaku uses teal. The dots identify stable content groups rather than transient health states.",
         "seekVisualTrack": 2,
-        "seekHitTarget": 28
+        "seekHitTarget": 28,
+        "playbackTransport": "A compact 22px play/pause action shares the time row beneath the full-width 416px seek track. It pauses and resumes the active relay session at its reported media position; direct URLs remain under VRChat player control.",
+        "partSelect": "Render the full row only when the resolved video exposes at least two parts. A single-part video omits the label and selector, moves the seek control into the released space, and shortens the content-sized window. When shown, it uses the same 33px trigger, open-state border, chevron change, 220ms floating menu, row geometry, and selected check as the danmaku font selector. Trigger and menu labels own a bounded clipping region with ellipsis so long Bilibili titles cannot crowd the trailing chevron or panel edge."
       },
       "states": [
         {
@@ -79,25 +94,40 @@
       "id": "settings-surface",
       "primitive": "GPUIX input + motion segmented control + native file persistence",
       "dimensions": {
-        "minWidth": 428,
-        "preferredWidth": 428,
-        "maxWidth": 428,
-        "preferredHeight": 478,
-        "padding": "header 13px 24px 9px; body 16px 24px 20px",
-        "gap": 16
+        "minWidth": 528,
+        "preferredWidth": 528,
+        "maxWidth": 528,
+        "preferredHeight": 378,
+        "padding": "shared title-bar band 43px; body 17px 26px 26px",
+        "gap": 20
       },
       "tokens": {
-        "taskTitle": "Noto Serif SC 19px bold",
-        "fieldHeight": 30,
+        "taskTitle": "Noto Serif SC 14px semibold in the shared title-bar band",
+        "fieldHeight": 33,
+        "nativeEditorHeight": 19,
+        "nativeEditorOffsetY": -4,
+        "inputTypography": "All settings values, including complete playback URLs, use Noto Sans SC 13px regular; monospace is reserved for comparable numeric playback data.",
+        "segmentedHeight": 33,
+        "segmentedTrack": "rgba(24,24,27,.04) in light appearance",
+        "segmentedThumb": "rgba(255,255,255,.82) in light appearance",
+        "segmentedTypography": "Noto Sans SC 12px regular with a fixed line box across every option; the 170px appearance control keeps the approved 64 / 42 / 42 proportions so the four-character system option retains relaxed side space after native legibility correction",
+        "buttonSurface": "rgba(255,255,255,.84) in light appearance; native-composition calibration of the web control surface",
+        "sectionDividers": "Horizontal section dividers use the surface-line color at 50% alpha; the two-column structural divider uses 55% alpha. Control outlines keep the solid surface-line token.",
+        "expandedHeight": 414,
+        "mediaRowSizing": "Prototype rhythm: 18px section separation and 14px inset above the media status; 30px compact status row and 44px when download action, progress, or error detail is present",
+        "secretField": "Masked by default with a compact trailing eye action; saved plaintext is requested from Rust only after explicit reveal",
+        "accountPopover": "The QR login popover is bounded to the 188px account column: 170px content width, 10px inset, a 116px QR well, and compact status/footer copy. It must remain inside the product panel at every settings height.",
+        "connectionStatus": "A compact worker-health status follows the playback address after the prototype's 10px field close plus 2px status offset, then retains 18px before the media section; it reports checking, available, or unavailable without duplicating local-persistence copy",
         "controlRadius": 8,
         "desktopReferenceIntrinsicWidth": 480,
-        "desktopReferenceIntrinsicHeight": 425
+        "desktopReferenceIntrinsicHeight": 425,
+        "nativeProductWidth": 528
       },
       "states": [
         {
           "name": "settings-light",
           "evidence": "reference/settings-light.png",
-          "notes": "The native 428px product window preserves the approved two-column proportions at a slightly narrower intrinsic width."
+          "notes": "The native 528px product window preserves the approved two-column proportions while applying the Windows hands-on legibility correction. Its height follows the visible media state: compact when FFmpeg is already available, expanded when download actions, progress, or error details are present."
         },
         {
           "name": "settings-dark",
@@ -110,17 +140,24 @@
       "id": "danmaku-settings-surface",
       "primitive": "GPUIX motion segmented controls + headless Select + pointer slider + filter chips",
       "dimensions": {
-        "minWidth": 428,
-        "preferredWidth": 428,
-        "maxWidth": 428,
-        "preferredHeight": 478,
-        "padding": "header 13px 24px 9px; body 10px 24px 16px",
-        "gap": 6
+        "minWidth": 484,
+        "preferredWidth": 484,
+        "maxWidth": 484,
+        "preferredHeight": 572,
+        "padding": "shared title-bar band 43px; body 17px 26px 24px",
+        "gap": 9
       },
       "tokens": {
-        "previewHeight": 66,
-        "rowHeight": 28,
+        "previewHeight": 76,
+        "previewSurface": "A deterministic code-generated media field using Zen's layered-gradient construction and the user's Arc shell palette: coral #E39A9D with #EC6765 at the edge, warm neutral #CBC4B8, and teal #89E5DF with a stronger cyan-green edge. The faded browser-content whites are excluded; a separate fine-grain pass keeps the surface tactile.",
+        "previewClip": "The outer media surface and backdrop share one 10px rounded path. The backdrop carries that radius directly because GPUIX 0.5.1 overflow clipping does not follow the parent's rounded path. The preview has no border; depth comes only from its quiet highlight and soft shadow.",
+        "previewMotion": "The preview lines remain in the approved static positions. Continuous travel is deferred until GPUIX exposes reliable presentation-synchronized Windows motion.",
+        "masterVisibilityHeight": 31,
+        "quickVisibilityHeight": 33,
+        "rowGeometry": "Within the 432px body width, every advanced row uses an 80px label column, a 12px gutter, and a 340px control column. Preview, controls, values, and hidden-type filters share the same right edge.",
+        "rowHeight": 33,
         "controlRadius": 8,
+        "compactSelect": "33px trigger; 6px anchored offset; 4px menu inset; 31px option rows; 10px menu radius; floating glass uses the panel surface instead of the nested-region surface; selected-row tint is 4% semantic ink; open state changes the chevron direction and enters from -4px with the shared 220ms ease-out motion",
         "sliderTrackHeight": 2,
         "sliderThumbSize": 12
       },
@@ -128,7 +165,7 @@
         {
           "name": "danmaku-settings-light",
           "evidence": "reference/danmaku-settings-light.png",
-          "notes": "All advanced controls fit the fixed native product window; overflow remains scrollable for future longer labels."
+          "notes": "All advanced controls, including the hidden-type filters and bottom safe area, fit the native product window. The fixed utility body does not scroll; a future content expansion must establish a deliberate bounded body instead of leaking wheel movement into the whole surface."
         },
         {
           "name": "danmaku-settings-dark",
@@ -146,16 +183,16 @@
       "durationMs": 220,
       "easing": "cubic-bezier(.23, 1, .32, 1)",
       "interruptible": true,
-      "reducedMotion": "Render the final state immediately with no transform."
+      "reducedMotion": "Render the final state immediately. GPUIX 0.5.1 uses opacity only because it does not expose a reliable transform motion primitive."
     },
     {
       "id": "control-response",
       "from": "rest",
       "to": "hover or active",
-      "durationMs": 180,
-      "easing": "ease-out",
+      "durationMs": 0,
+      "easing": "immediate native semantic state",
       "interruptible": true,
-      "reducedMotion": "Retain semantic color changes and omit positional movement."
+      "reducedMotion": "Same immediate semantic color and surface response. GPUIX motion cannot interpolate background color or transform in the pinned release."
     },
     {
       "id": "segmented-thumb",
@@ -164,10 +201,51 @@
       "durationMs": 240,
       "easing": "cubic-bezier(.23, 1, .32, 1)",
       "interruptible": true,
-      "reducedMotion": "Move the neutral capsule immediately while retaining selected-label contrast."
+      "reducedMotion": "Move the neutral capsule immediately while retaining selected-label contrast. Keyboard selection also resolves immediately."
+    },
+    {
+      "id": "floating-select-enter",
+      "from": "closed",
+      "to": "open select menu",
+      "durationMs": 220,
+      "easing": "cubic-bezier(.23, 1, .32, 1)",
+      "interruptible": true,
+      "reducedMotion": "Render immediately. The native fallback fades opacity without translating the surface or animating layout coordinates."
+    },
+    {
+      "id": "compact-popover-enter",
+      "from": "closed",
+      "to": "open help or account popover",
+      "durationMs": 180,
+      "easing": "cubic-bezier(.23, 1, .32, 1)",
+      "interruptible": true,
+      "reducedMotion": "Render immediately. The native fallback fades opacity without translating the surface or animating layout coordinates."
+    },
+    {
+      "id": "coarse-state-crossfade",
+      "from": "previous copy, save, login, media, or relay state",
+      "to": "current state inside a stable shell",
+      "durationMs": 140,
+      "easing": "cubic-bezier(.23, 1, .32, 1)",
+      "interruptible": true,
+      "reducedMotion": "Replace content immediately while keeping the control or row geometry fixed. Continuously changing progress and seek values never crossfade."
+    },
+    {
+      "id": "direct-range-update",
+      "from": "previous slider or seek position",
+      "to": "current pointer or keyboard position",
+      "durationMs": 0,
+      "easing": "direct",
+      "interruptible": true,
+      "reducedMotion": "Identical direct update."
     }
   ],
   "materialFallbacks": [
+    {
+      "webEffect": "Application actions share an extended title-bar band beside platform controls.",
+      "gpuiStrategy": "Use GPUIX transparent title-bar mode and a 42px React translation of the approved Single utility band. A Windows-only adapter forwards dragging, minimizing, and closing to Win32; the fixed-size utility keeps maximize disabled.",
+      "acceptedDifference": "GPUIX 0.5.1 does not expose Windows caption geometry or native caption-button primitives, so this fixed-size utility reproduces their standard slots and native operations without Snap Layout."
+    },
     {
       "webEffect": "Per-panel backdrop-filter blur over an ambient radial presentation canvas",
       "gpuiStrategy": "Use GPUI window-level blur with a neutral translucent root surface, one quiet border, and a soft shadow.",
@@ -179,9 +257,9 @@
       "acceptedDifference": "The first spike preserves semantic feedback but omits transform-based pointer motion."
     },
     {
-      "webEffect": "CSS text-shadow variants in the danmaku preview",
-      "gpuiStrategy": "Use one high-contrast foreground preview while preserving the selected outline state for the future FFmpeg renderer.",
-      "acceptedDifference": "GPUIX 0.5.1 has no text-shadow style, so heavy outline and 45-degree shadow are stateful settings but cannot be faithfully previewed in the native UI layer."
+      "webEffect": "CSS text-shadow variants and transform-based continuous scrolling in the danmaku preview",
+      "gpuiStrategy": "Use one foreground glyph run plus at most four bounded native offset copies for heavy/standard outline, or one offset copy for the 45-degree shadow, over a deterministic build asset composed from independent gradients and procedural grain. Keep both preview lines in fixed positions.",
+      "acceptedDifference": "GPUIX 0.5.1 exposes neither gradient primitives, text-shadow, transform/repeat motion, nor a public presentation-synchronized frame callback. The build therefore rasterizes the backdrop algorithm once, keeps native font rasterization and a deliberately small outline layer count, and leaves the preview static until a reliable native motion path is available."
     }
   ]
 }

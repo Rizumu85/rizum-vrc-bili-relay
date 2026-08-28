@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 import { createTestRoot } from "@gpuix/react/testing";
 
-import { AppSurface } from "../src/app";
+import { AppSurface, sceneWindowHeight, sceneWindowWidth } from "../src/app";
 
 const WARMUP_FRAMES = 12;
 const SAMPLE_FRAMES = 80;
@@ -23,23 +23,31 @@ function summarize(values: number[]) {
   };
 }
 
-const { render, renderer, unmount } = createTestRoot({ width: 428, height: 478 });
+const requestedViewport = {
+  width: sceneWindowWidth("ready-vod"),
+  height: sceneWindowHeight("ready-vod"),
+};
+const { render, renderer, unmount } = createTestRoot(requestedViewport);
 const actualViewport = renderer.getWindowSize();
 
-const mountStarted = performance.now();
-render(<AppSurface initialScene="ready-vod" initialAppearance="light" />);
-const mountMs = performance.now() - mountStarted;
+async function measureSurface(key: string, scene: "ready-vod" | "danmaku") {
+  const mountStarted = performance.now();
+  render(<AppSurface key={key} initialScene={scene} initialAppearance="light" />);
+  const mountMs = performance.now() - mountStarted;
 
-for (let index = 0; index < WARMUP_FRAMES; index += 1) renderer.flush();
+  for (let index = 0; index < WARMUP_FRAMES; index += 1) renderer.flush();
 
-const frames: number[] = [];
-for (let index = 0; index < SAMPLE_FRAMES; index += 1) {
-  const started = performance.now();
-  renderer.flush();
-  frames.push(performance.now() - started);
+  const frames: number[] = [];
+  for (let index = 0; index < SAMPLE_FRAMES; index += 1) {
+    const started = performance.now();
+    renderer.flush();
+    frames.push(performance.now() - started);
+  }
+  return { mountMs, frames: summarize(frames) };
 }
 
-const requestedViewport = { width: 428, height: 478 };
+const readyVod = await measureSurface("ready-vod", "ready-vod");
+
 let screenshotPath: string | null = null;
 if (
   Math.abs(actualViewport.width - requestedViewport.width) < 0.5 &&
@@ -51,6 +59,8 @@ if (
   renderer.captureScreenshot(screenshotPath);
 }
 
+const danmaku = await measureSurface("danmaku", "danmaku");
+
 console.log(
   JSON.stringify(
     {
@@ -58,8 +68,10 @@ console.log(
       gpuix: "0.5.1",
       requestedViewport,
       actualViewport,
-      mountMs,
-      idleFrames: summarize(frames),
+      surfaces: {
+        readyVod,
+        danmakuPreview: danmaku,
+      },
       screenshotPath,
       screenshotSkippedReason:
         screenshotPath === null

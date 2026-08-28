@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type * as React from "react";
-import { motion, type EventPayload } from "@gpuix/react";
+import { motion, type EventPayload, type StyleDesc } from "@gpuix/react";
 import * as Select from "@gpuix/react/select";
+import { basename, dirname, resolve } from "node:path";
 
 import { ICONS, type IconName } from "./icons";
 import {
   FONT_MONO,
   FONT_SERIF,
   FONT_UI,
+  MOTION,
   PALETTES,
   RADII,
   type Appearance,
@@ -29,16 +31,37 @@ import {
   type SourceResolution,
 } from "./relay/protocol";
 import { RelayWorkerClient, RelayWorkerError } from "./relay/worker-client";
-import { setProductWindowClientHeight } from "./platform/window";
+import {
+  beginProductWindowDrag,
+  closeProductWindow,
+  minimizeProductWindow,
+  prefersReducedMotion,
+  releaseProductWindowPointer,
+  registerProductWindowTextInput,
+  setProductWindowClientSize,
+  unregisterProductWindowTextInput,
+} from "./platform/window";
 
 export type Scene = "idle" | "loading" | "error" | "ready-vod" | "settings" | "danmaku";
 type DanmakuVisibility = "shown" | "hidden";
 type LoginMode = "guest" | "account";
 
-export function sceneWindowHeight(scene: Scene): number {
-  if (scene === "idle" || scene === "loading") return 205;
-  if (scene === "error") return 254;
-  return 478;
+export function sceneWindowHeight(
+  scene: Scene,
+  settingsExpanded = false,
+  singlePartVideo = false,
+): number {
+  if (scene === "idle" || scene === "loading") return 188;
+  if (scene === "error") return 240;
+  if (scene === "ready-vod") return singlePartVideo ? 445 : 480;
+  if (scene === "settings") return settingsExpanded ? 414 : 378;
+  return 572;
+}
+
+export function sceneWindowWidth(scene: Scene): number {
+  if (scene === "settings") return 528;
+  if (scene === "danmaku") return 484;
+  return 472;
 }
 type DanmakuSize = "small" | "medium" | "large";
 type DanmakuArea = "quarter" | "half" | "full";
@@ -89,12 +112,13 @@ const REFERENCE_PARTS: PlaybackPart[] = [
   { value: "3", label: "P3 · 常见问题", duration: 318 },
 ] as const;
 const POSITION_BY_PART: Record<string, number> = { "1": 0, "2": 204, "3": 0 };
-const TRACK_WIDTH = 376;
+const TRACK_WIDTH = 416;
 const THEME_OPTIONS = [
   { value: "system", label: "跟随系统" },
   { value: "light", label: "浅色" },
   { value: "dark", label: "深色" },
 ] as const;
+const THEME_OPTION_WEIGHTS = [64, 42, 42] as const;
 const LOGIN_OPTIONS = [
   { value: "guest", label: "访客" },
   { value: "account", label: "扫码登录" },
@@ -149,6 +173,36 @@ const DEFAULT_DANMAKU_SETTINGS: DanmakuSettings = {
   outline: "heavy",
   hiddenTypes: ["advanced"],
 };
+
+const REDUCED_MOTION = prefersReducedMotion();
+
+function motionTransition(duration: number) {
+  return {
+    duration: REDUCED_MOTION ? 0 : duration,
+    ease: MOTION.easeOut,
+  };
+}
+
+function MotionFade({
+  children,
+  style,
+  duration = MOTION.surfaceEnterSeconds,
+}: {
+  children: React.ReactNode;
+  style?: StyleDesc;
+  duration?: number;
+}) {
+  return (
+    <motion.div
+      initial={REDUCED_MOTION ? false : { opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={motionTransition(duration)}
+      style={style}
+    >
+      {children}
+    </motion.div>
+  );
+}
 
 function formatPlaybackTime(seconds: number): string {
   const value = Math.max(0, Math.round(seconds));
@@ -239,6 +293,7 @@ interface ButtonProps {
   disabled?: boolean;
   width?: number;
   testId?: string;
+  contentKey?: string;
 }
 
 function Button({
@@ -251,6 +306,7 @@ function Button({
   disabled = false,
   width,
   testId,
+  contentKey,
 }: ButtonProps) {
   const activate = () => {
     if (!disabled) onClick?.();
@@ -266,47 +322,70 @@ function Button({
       }}
       style={{
         width,
-        height: 30,
+        height: 33,
         flexShrink: 0,
         display: "flex",
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "center",
-        gap: 5,
-        paddingLeft: 13,
-        paddingRight: 13,
+        gap: 6,
+        paddingLeft: 15,
+        paddingRight: 15,
         borderRadius: RADII.control,
         borderWidth: 1,
         borderColor: palette.panelEdge,
-        backgroundColor: palette.surface,
+        backgroundColor: palette.buttonSurface,
         boxShadow: {
           offsetX: 0,
           offsetY: 1,
           blurRadius: 2,
           spreadRadius: 0,
-          color: palette.panelShadow,
+          color: palette.controlShadow,
         },
         cursor: disabled ? "default" : "pointer",
         opacity: disabled ? 0.48 : 1,
         userSelect: "none",
         hover: disabled
           ? undefined
-          : { backgroundColor: palette.surfaceHover, borderColor: palette.surfaceLine },
+          : { backgroundColor: palette.buttonHover, borderColor: palette.surfaceLine },
         active: disabled ? undefined : { backgroundColor: palette.surfaceActive },
       }}
     >
-      {icon ? <Icon name={icon} size={11} color={iconColor ?? palette.inkMuted} /> : null}
-      <text
-        style={{
-          color: quiet ? palette.caption : palette.inkSoft,
-          fontFamily: FONT_UI,
-          fontSize: 12,
-          fontWeight: 400,
-          lineHeight: 16,
-        }}
-      >
-        {label}
-      </text>
+      {contentKey ? (
+        <MotionFade
+          key={contentKey}
+          duration={MOTION.stateCrossfadeSeconds}
+          style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 }}
+        >
+          {icon ? <Icon name={icon} size={12.5} color={iconColor ?? palette.inkMuted} /> : null}
+          <text
+            style={{
+              color: quiet ? palette.caption : palette.inkSoft,
+              fontFamily: FONT_UI,
+              fontSize: 13,
+              fontWeight: 400,
+              lineHeight: 17,
+            }}
+          >
+            {label}
+          </text>
+        </MotionFade>
+      ) : (
+        <>
+          {icon ? <Icon name={icon} size={12.5} color={iconColor ?? palette.inkMuted} /> : null}
+          <text
+            style={{
+              color: quiet ? palette.caption : palette.inkSoft,
+              fontFamily: FONT_UI,
+              fontSize: 13,
+              fontWeight: 400,
+              lineHeight: 17,
+            }}
+          >
+            {label}
+          </text>
+        </>
+      )}
     </div>
   );
 }
@@ -317,12 +396,14 @@ function IconButton({
   color,
   label,
   onClick,
+  contentKey,
 }: {
   name: IconName;
   palette: Palette;
   color?: string;
   label: string;
   onClick: () => void;
+  contentKey?: string;
 }) {
   return (
     <div
@@ -333,8 +414,8 @@ function IconButton({
         if (event.key === "enter" || event.key === "space") onClick();
       }}
       style={{
-        width: 26,
-        height: 26,
+        width: 29,
+        height: 29,
         flexShrink: 0,
         display: "flex",
         alignItems: "center",
@@ -346,7 +427,17 @@ function IconButton({
         active: { backgroundColor: palette.surfaceActive },
       }}
     >
-      <Icon name={name} size={13} color={color ?? palette.inkMuted} />
+      {contentKey ? (
+        <MotionFade
+          key={contentKey}
+          duration={MOTION.stateCrossfadeSeconds}
+          style={{ display: "flex", alignItems: "center", justifyContent: "center" }}
+        >
+          <Icon name={name} size={14.5} color={color ?? palette.inkMuted} />
+        </MotionFade>
+      ) : (
+        <Icon name={name} size={14.5} color={color ?? palette.inkMuted} />
+      )}
     </div>
   );
 }
@@ -365,85 +456,188 @@ function StatusDot({ color }: { color: string }) {
   );
 }
 
+function CaptionButton({
+  kind,
+  palette,
+  disabled = false,
+  onClick,
+}: {
+  kind: "minimize" | "maximize" | "close";
+  palette: Palette;
+  disabled?: boolean;
+  onClick?: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const closeHovered = kind === "close" && hovered && !disabled;
+  return (
+    <div
+      testId={`caption-${kind}`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onClick={() => {
+        if (!disabled) onClick?.();
+      }}
+      style={{
+        width: 47,
+        height: 43,
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: closeHovered ? "#FFFFFF" : palette.inkMuted,
+        backgroundColor: closeHovered
+          ? "#C42B1C"
+          : hovered && !disabled
+            ? palette.surfaceHover
+            : "#00000000",
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.34 : 1,
+        userSelect: "none",
+        active: disabled
+          ? undefined
+          : { backgroundColor: kind === "close" ? "#B32017" : palette.surfaceActive },
+      }}
+    >
+      <Icon name={kind} size={10} color={closeHovered ? "#FFFFFF" : palette.inkMuted} />
+    </div>
+  );
+}
+
 function Header({
   palette,
   scene,
   onSettings,
   onBack,
+  onClose,
 }: {
   palette: Palette;
   scene: Scene;
   onSettings: () => void;
   onBack: () => void;
+  onClose: () => void;
 }) {
   const isSettings = scene === "settings";
   const isDanmaku = scene === "danmaku";
   const isSubview = isSettings || isDanmaku;
-  const title = isSettings ? "设置" : isDanmaku ? "弹幕样式" : "VRC Bili Relay";
-  const subtitle = isSettings
-    ? "连接、账号与外观"
+  const title = isSettings
+    ? "设置"
     : isDanmaku
-      ? "调整烧录到画面中的弹幕"
-      : "把 B 站链接转换成 VRChat 播放地址";
+      ? "弹幕样式"
+      : "VRC Bili Relay";
+  const beginDrag = (event: EventPayload) => {
+    if (event.button === 0 && (event.clickCount ?? 1) === 1) {
+      beginProductWindowDrag();
+    }
+  };
 
   return (
     <div
       style={{
-        minHeight: isSubview ? 66 : 72,
-        display: "flex",
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 10,
-        paddingTop: isSubview ? 13 : 16,
-        paddingRight: 24,
-        paddingBottom: isSubview ? 9 : 11,
-        paddingLeft: 24,
+        height: 43,
+        flexShrink: 0,
+        position: "relative",
+        userSelect: "none",
       }}
     >
+      <div
+        testId="window-drag-area"
+        onMouseDown={beginDrag}
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: isSubview ? 141 : 188,
+          height: 43,
+          backgroundColor: "#FFFFFF01",
+        }}
+      />
       {isSubview ? (
-        <IconButton name="back" palette={palette} label="back" onClick={onBack} />
-      ) : (
-        <div
-          style={{
-            width: 28,
-            height: 28,
-            flexShrink: 0,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <Icon name="logo" size={18} color={palette.accentRose} />
+        <div style={{ position: "absolute", top: 7, left: 8 }}>
+          <IconButton name="back" palette={palette} label="back" onClick={onBack} />
         </div>
-      )}
-      <div style={{ minWidth: 0, flexGrow: 1, display: "flex", flexDirection: "column", gap: 4 }}>
-        <text
-          style={{
-            color: palette.ink,
-            fontFamily: FONT_SERIF,
-            fontSize: isSubview ? 19 : 16,
-            fontWeight: isSubview ? 700 : 600,
-            lineHeight: isSubview ? 24 : 22,
-          }}
-        >
-          {title}
-        </text>
-        <text
-          style={{
-            color: palette.caption,
-            fontFamily: FONT_UI,
-            fontSize: 11,
-            fontWeight: 400,
-            lineHeight: 16,
-          }}
-        >
-          {subtitle}
-        </text>
-      </div>
-      {!isSubview ? (
-        <IconButton name="settings" palette={palette} label="settings" onClick={onSettings} />
       ) : null}
+      <text
+        onMouseDown={beginDrag}
+        style={{
+          position: "absolute",
+          top: 10,
+          left: isSubview ? 47 : 16,
+          right: isSubview ? 149 : 188,
+          color: palette.ink,
+          fontFamily: FONT_SERIF,
+          fontSize: 14,
+          fontWeight: 600,
+          lineHeight: 22,
+        }}
+      >
+        {title}
+      </text>
+      {!isSubview ? (
+        <div style={{ position: "absolute", top: 7, right: 149 }}>
+          <IconButton name="settings" palette={palette} label="settings" onClick={onSettings} />
+        </div>
+      ) : null}
+      <div
+        style={{
+          width: 141,
+          height: 43,
+          position: "absolute",
+          top: 0,
+          right: 0,
+          display: "flex",
+          flexDirection: "row",
+        }}
+      >
+        <CaptionButton kind="minimize" palette={palette} onClick={minimizeProductWindow} />
+        <CaptionButton kind="maximize" palette={palette} disabled />
+        <CaptionButton kind="close" palette={palette} onClick={onClose} />
+      </div>
     </div>
+  );
+}
+
+function ProductTextInput({
+  value,
+  placeholder,
+  onChange,
+  palette,
+  style,
+  testId,
+}: {
+  value: string;
+  placeholder?: string;
+  onChange: (value: string) => void;
+  palette: Palette;
+  style: StyleDesc;
+  testId?: string;
+}) {
+  const registeredElementId = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (registeredElementId.current !== null) {
+      unregisterProductWindowTextInput(registeredElementId.current);
+    }
+    releaseProductWindowPointer();
+  }, []);
+  return (
+    <input
+      ref={(instance) => {
+        const nextElementId = instance?.id ?? null;
+        if (registeredElementId.current === nextElementId) return;
+        if (registeredElementId.current !== null) {
+          unregisterProductWindowTextInput(registeredElementId.current);
+        }
+        registeredElementId.current = nextElementId;
+        if (nextElementId !== null) registerProductWindowTextInput(nextElementId);
+      }}
+      value={value}
+      testId={testId}
+      placeholder={placeholder}
+      onChange={(event) => onChange(event.value ?? "")}
+      onMouseUp={releaseProductWindowPointer}
+      onBlur={releaseProductWindowPointer}
+      theme={{ appearance: palette === PALETTES.dark ? "dark" : "light", caret: palette.accentTeal }}
+      style={{ ...style, userSelect: "text" }}
+    />
   );
 }
 
@@ -465,13 +659,13 @@ function SourceField({
     <div
       style={{
         width: "100%",
-        height: 32,
+        height: 35,
         display: "flex",
         flexDirection: "row",
         alignItems: "center",
         gap: 4,
-        paddingLeft: 10,
-        paddingRight: 4,
+        paddingLeft: 11,
+        paddingRight: 3,
         borderRadius: RADII.control,
         borderWidth: 1,
         borderColor: palette.panelEdge,
@@ -479,20 +673,22 @@ function SourceField({
         hover: { backgroundColor: palette.surfaceHover },
       }}
     >
-      <input
+      <ProductTextInput
         testId="source-input"
         value={source}
         placeholder="粘贴 B 站或媒体链接"
-        onChange={(event) => setSource(event.value ?? "")}
-        theme={{ appearance: palette === PALETTES.dark ? "dark" : "light", caret: palette.accentTeal }}
+        onChange={setSource}
+        palette={palette}
         style={{
           flexGrow: 1,
           minWidth: 0,
-          height: 28,
+          height: 19,
+          position: "relative",
+          top: -4,
           color: palette.inkSoft,
           fontFamily: FONT_UI,
-          fontSize: 12.5,
-          lineHeight: 17,
+          fontSize: 13.5,
+          lineHeight: 19,
         }}
       />
       <IconButton
@@ -518,9 +714,14 @@ function PartSelect({
   palette: Palette;
   disabled: boolean;
 }) {
+  const [open, setOpen] = useState(false);
+  const selected = parts.find((entry) => entry.value === part) ?? parts[0];
+  const menuHeight = Math.min(152, parts.length * 31 + 8);
   return (
     <Select.Root
       value={part}
+      open={open}
+      onOpenChange={setOpen}
       onValueChange={setPart}
       disabled={disabled}
       style={{ flexGrow: 1, minWidth: 0, opacity: disabled ? 0.62 : 1 }}
@@ -529,14 +730,14 @@ function PartSelect({
         testId="part-select"
         style={({ open, disabled: selectDisabled }) => ({
           width: "100%",
-          height: 30,
+          height: 33,
           display: "flex",
           flexDirection: "row",
           alignItems: "center",
           justifyContent: "space-between",
           gap: 8,
-          paddingLeft: 10,
-          paddingRight: 9,
+          paddingLeft: 11,
+          paddingRight: 10,
           borderRadius: RADII.control,
           borderWidth: 1,
           borderColor: open ? palette.surfaceLine : palette.panelEdge,
@@ -546,58 +747,93 @@ function PartSelect({
           hover: { backgroundColor: palette.surfaceHover },
         })}
       >
-        <Select.Value>
-          <text style={{ color: palette.inkSoft, fontFamily: FONT_UI, fontSize: 11.5 }}>
-            {parts.find((entry) => entry.value === part)?.label ?? parts[0]?.label ?? "P1"}
-          </text>
-        </Select.Value>
-        <Icon name="chevron" size={11} color={palette.caption} />
+        <div style={{ minWidth: 0, flexGrow: 1, overflow: "hidden", paddingRight: 4 }}>
+          <Select.Value>
+            <text
+              style={{
+                width: "100%",
+                overflow: "hidden",
+                color: palette.inkSoft,
+                fontFamily: FONT_UI,
+                fontSize: 13,
+                whiteSpace: "nowrap",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {selected?.label ?? "P1"}
+            </text>
+          </Select.Value>
+        </div>
+        <Icon name={open ? "chevronUp" : "chevron"} size={10} color={open ? palette.inkMuted : palette.caption} />
       </Select.Trigger>
       <Select.Content
         side="bottom"
         sideOffset={6}
         style={{
-          width: 328,
-          maxHeight: 140,
-          padding: 4,
-          borderRadius: 10,
-          borderWidth: 1,
-          borderColor: palette.panelEdge,
-          backgroundColor: palette.nestedStrong,
-          boxShadow: {
-            offsetX: 0,
-            offsetY: 12,
-            blurRadius: 30,
-            spreadRadius: 0,
-            color: palette.panelShadow,
-          },
+          width: 368,
+          height: menuHeight,
+          maxHeight: 152,
+          backgroundColor: palette.panel,
         }}
       >
-        {parts.map((entry) => (
-          <Select.Item
-            key={entry.value}
-            value={entry.value}
-            style={({ selected, highlighted }) => ({
-              minHeight: 28,
-              display: "flex",
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 10,
-              paddingLeft: 8,
-              paddingRight: 8,
-              borderRadius: 7,
-              cursor: "pointer",
-              backgroundColor: highlighted ? palette.surfaceHover : "#00000000",
-              opacity: selected ? 1 : 0.9,
-            })}
-          >
-            <text style={{ color: palette.inkSoft, fontFamily: FONT_UI, fontSize: 11.5 }}>
-              {entry.label}
-            </text>
-            {entry.value === part ? <Icon name="check" size={10} color={palette.accentTeal} /> : null}
-          </Select.Item>
-        ))}
+        <motion.div
+          initial={REDUCED_MOTION ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={motionTransition(MOTION.selectEnterSeconds)}
+          style={{
+            position: "relative",
+            width: "100%",
+            padding: 4,
+            borderRadius: 10,
+            borderWidth: 1,
+            borderColor: palette.panelEdge,
+            backgroundColor: palette.panel,
+            boxShadow: {
+              offsetX: 0,
+              offsetY: 16,
+              blurRadius: 36,
+              spreadRadius: 0,
+              color: palette.floatingShadow,
+            },
+          }}
+        >
+          {parts.map((entry) => (
+            <Select.Item
+              key={entry.value}
+              value={entry.value}
+              style={({ highlighted }) => ({
+                minHeight: 31,
+                display: "flex",
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+                paddingLeft: 8,
+                paddingRight: 8,
+                borderRadius: 7,
+                cursor: "pointer",
+                backgroundColor: highlighted ? palette.segmentedTrack : "#00000000",
+              })}
+            >
+              <div style={{ minWidth: 0, flexGrow: 1, overflow: "hidden" }}>
+                <text
+                  style={{
+                    width: "100%",
+                    overflow: "hidden",
+                    color: palette.inkSoft,
+                    fontFamily: FONT_UI,
+                    fontSize: 13,
+                    whiteSpace: "nowrap",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {entry.label}
+                </text>
+              </div>
+              {entry.value === part ? <Icon name="check" size={10} color={palette.accentTeal} /> : null}
+            </Select.Item>
+          ))}
+        </motion.div>
       </Select.Content>
     </Select.Root>
   );
@@ -610,6 +846,10 @@ function SeekControl({
   onPositionCommit,
   onInteractionChange,
   disabled,
+  showTransport,
+  playing,
+  transportBusy,
+  onTogglePlayback,
   palette,
 }: {
   duration: number;
@@ -618,6 +858,10 @@ function SeekControl({
   onPositionCommit: (value: number) => void;
   onInteractionChange: (active: boolean) => void;
   disabled: boolean;
+  showTransport: boolean;
+  playing: boolean;
+  transportBusy: boolean;
+  onTogglePlayback: () => void;
   palette: Palette;
 }) {
   const [dragging, setDragging] = useState(false);
@@ -726,11 +970,52 @@ function SeekControl({
           }}
         />
       </div>
-      <div style={{ width: TRACK_WIDTH, display: "flex", flexDirection: "row", justifyContent: "space-between" }}>
-        <text style={{ color: palette.caption, fontFamily: FONT_MONO, fontSize: 10 }}>
+      <div
+        style={{
+          width: TRACK_WIDTH,
+          height: 22,
+          display: "flex",
+          flexDirection: "row",
+          alignItems: "center",
+        }}
+      >
+        {showTransport ? (
+          <div
+            testId="playback-toggle"
+            tabIndex={transportBusy ? -1 : 0}
+            onClick={() => {
+              if (!transportBusy) onTogglePlayback();
+            }}
+            onKeyDown={(event) => {
+              if (!transportBusy && (event.key === "enter" || event.key === "space")) onTogglePlayback();
+            }}
+            style={{
+              width: 22,
+              height: 22,
+              marginRight: 7,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: 6,
+              color: palette.inkMuted,
+              backgroundColor: palette.buttonSurface,
+              borderWidth: 1,
+              borderColor: palette.panelEdge,
+              cursor: transportBusy ? "default" : "pointer",
+              opacity: transportBusy ? 0.48 : 1,
+              userSelect: "none",
+              hover: transportBusy ? undefined : { backgroundColor: palette.buttonHover },
+              active: transportBusy ? undefined : { backgroundColor: palette.surfaceActive },
+            }}
+          >
+            <Icon name={playing ? "pause" : "play"} size={10} color={palette.inkMuted} />
+          </div>
+        ) : null}
+        <text style={{ color: palette.caption, fontFamily: FONT_MONO, fontSize: 11.5 }}>
           {formatPlaybackTime(visiblePosition)}
         </text>
-        <text style={{ color: palette.caption, fontFamily: FONT_MONO, fontSize: 10 }}>
+        <div style={{ flexGrow: 1 }} />
+        <text style={{ color: palette.caption, fontFamily: FONT_MONO, fontSize: 11.5 }}>
           {formatPlaybackTime(duration)}
         </text>
       </div>
@@ -742,24 +1027,44 @@ function appearanceShadow(palette: Palette): string {
   return palette === PALETTES.dark ? "#00000052" : "#A1A1AA3D";
 }
 
+const DANMAKU_LABEL_WIDTH = 80;
+const DANMAKU_ROW_GAP = 12;
+const DANMAKU_CONTROL_WIDTH = 340;
+
 function Segmented<T extends string>({
   value,
   onChange,
   palette,
   options,
+  optionWeights,
   width,
-  height = 28,
+  height = 33,
 }: {
   value: T;
   onChange: (value: T) => void;
   palette: Palette;
   options: ReadonlyArray<{ value: T; label: string }>;
+  optionWeights?: ReadonlyArray<number>;
   width: number;
   height?: number;
 }) {
+  const [instantThumb, setInstantThumb] = useState(false);
   const selectedIndex = Math.max(0, options.findIndex((option) => option.value === value));
   const inset = 2;
-  const thumbWidth = (width - inset * 2) / options.length;
+  const innerWidth = width - inset * 2;
+  const weights = optionWeights?.length === options.length && optionWeights.every((weight) => weight > 0)
+    ? optionWeights
+    : options.map(() => 1);
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  const optionWidths = weights.map((weight) => innerWidth * weight / totalWeight);
+  const selectedWidth = optionWidths[selectedIndex] ?? innerWidth / options.length;
+  const selectedLeft = inset + optionWidths
+    .slice(0, selectedIndex)
+    .reduce((sum, optionWidth) => sum + optionWidth, 0);
+
+  useEffect(() => {
+    if (instantThumb) setInstantThumb(false);
+  }, [instantThumb, value]);
 
   return (
     <div
@@ -772,43 +1077,52 @@ function Segmented<T extends string>({
         alignItems: "center",
         padding: inset,
         borderRadius: RADII.control,
-        backgroundColor: palette.surfaceMuted,
+        backgroundColor: palette.segmentedTrack,
       }}
     >
       <motion.div
         animate={{
-          left: inset + selectedIndex * thumbWidth,
-          width: thumbWidth,
+          left: selectedLeft,
+          width: selectedWidth,
           top: inset,
           height: height - inset * 2,
           borderRadius: 6,
         }}
-        transition={{ duration: 0.24, ease: [0.23, 1, 0.32, 1] }}
+        transition={{
+          duration: REDUCED_MOTION || instantThumb ? 0 : MOTION.segmentedSeconds,
+          ease: MOTION.easeOut,
+        }}
         style={{
           position: "absolute",
-          backgroundColor: palette.nestedStrong,
+          backgroundColor: palette.segmentedThumb,
           boxShadow: {
             offsetX: 0,
             offsetY: 1,
             blurRadius: 3,
             spreadRadius: 0,
-            color: palette.panelShadow,
+            color: palette.segmentedShadow,
           },
           pointerEvents: "none",
         }}
       />
-      {options.map((option) => {
+      {options.map((option, index) => {
         const selected = value === option.value;
         return (
           <div
             key={option.value}
             tabIndex={0}
-            onClick={() => onChange(option.value)}
+            onClick={() => {
+              setInstantThumb(false);
+              onChange(option.value);
+            }}
             onKeyDown={(event) => {
-              if (event.key === "enter" || event.key === "space") onChange(option.value);
+              if (event.key === "enter" || event.key === "space") {
+                setInstantThumb(true);
+                onChange(option.value);
+              }
             }}
             style={{
-              width: thumbWidth,
+              width: optionWidths[index] ?? innerWidth / options.length,
               height: height - inset * 2,
               position: "relative",
               display: "flex",
@@ -821,9 +1135,14 @@ function Segmented<T extends string>({
           >
             <text
               style={{
+                width: "100%",
                 color: selected ? palette.inkSoft : palette.caption,
                 fontFamily: FONT_UI,
-                fontSize: 10.5,
+                fontSize: 12,
+                fontWeight: 400,
+                lineHeight: 15,
+                textAlign: "center",
+                whiteSpace: "nowrap",
               }}
             >
               {option.label}
@@ -885,7 +1204,7 @@ function qrRectangles(qr: BilibiliLoginQr): QrRectangle[] {
 
 function BilibiliQrCode({ qr }: { qr: BilibiliLoginQr }) {
   const quietZone = 4;
-  const moduleSize = Math.max(2, Math.floor(132 / (qr.size + quietZone * 2)));
+  const moduleSize = Math.max(2, Math.floor(108 / (qr.size + quietZone * 2)));
   const side = (qr.size + quietZone * 2) * moduleSize;
   const rectangles = useMemo(() => qrRectangles(qr), [qr.path, qr.size]);
   return (
@@ -937,24 +1256,25 @@ function BilibiliLoginPopover({
       : auth?.stage === "expired"
         ? "二维码已失效"
         : auth?.qr
-          ? "请使用哔哩哔哩 App 扫码"
+          ? "等待扫码"
           : "正在生成二维码";
 
   return (
     <motion.div
-      initial={{ opacity: 0, top: 96 }}
-      animate={{ opacity: 1, top: 100 }}
-      transition={{ duration: 0.18, ease: [0.23, 1, 0.32, 1] }}
+      initial={REDUCED_MOTION ? false : { opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={motionTransition(MOTION.popoverEnterSeconds)}
       onMouseDownOutside={onDismiss}
       style={{
-        width: 210,
+        width: 164,
         position: "absolute",
+        top: 100,
         right: 24,
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        gap: 9,
-        padding: 12,
+        gap: 8,
+        padding: 10,
         borderRadius: 12,
         borderWidth: 1,
         borderColor: palette.panelEdge,
@@ -973,54 +1293,51 @@ function BilibiliLoginPopover({
           alignSelf: "flex-start",
           color: palette.ink,
           fontFamily: FONT_SERIF,
-          fontSize: 11.5,
+          fontSize: 11,
           fontWeight: 600,
         }}
       >
         用哔哩哔哩 App 扫码
       </text>
-      {auth?.qr ? (
-        <div
-          style={{
-            width: 140,
-            height: 140,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            borderRadius: 9,
-            backgroundColor: "#FFFFFF",
-          }}
-        >
-          <BilibiliQrCode qr={auth.qr} />
-        </div>
-      ) : (
-        <div
-          style={{
-            width: 140,
-            height: 76,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            borderRadius: 9,
-            backgroundColor: palette.surfaceMuted,
-          }}
-        >
-          <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 10.5 }}>
-            {busy ? "正在生成" : "二维码不可用"}
-          </text>
-        </div>
-      )}
-      <div style={{ minHeight: 17, display: "flex", flexDirection: "row", alignItems: "center", gap: 6 }}>
+      <div
+        style={{
+          width: 116,
+          height: 116,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          overflow: "hidden",
+          borderRadius: 9,
+          backgroundColor: auth?.qr ? "#FFFFFF" : palette.surfaceMuted,
+        }}
+      >
+        {auth?.qr ? (
+          <MotionFade key="login-qr" duration={MOTION.stateCrossfadeSeconds}>
+            <BilibiliQrCode qr={auth.qr} />
+          </MotionFade>
+        ) : (
+          <MotionFade key="login-qr-placeholder" duration={MOTION.stateCrossfadeSeconds}>
+            <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 11 }}>
+              {busy ? "正在生成" : "二维码不可用"}
+            </text>
+          </MotionFade>
+        )}
+      </div>
+      <MotionFade
+        key={statusText}
+        duration={MOTION.stateCrossfadeSeconds}
+        style={{ minHeight: 17, display: "flex", flexDirection: "row", alignItems: "center", gap: 6 }}
+      >
         <StatusDot color={error || auth?.stage === "expired" ? palette.accentRose : palette.accentTeal} />
-        <text style={{ color: error ? palette.inkMuted : palette.caption, fontFamily: FONT_UI, fontSize: 10.5 }}>
+        <text style={{ color: error ? palette.inkMuted : palette.caption, fontFamily: FONT_UI, fontSize: 11 }}>
           {statusText}
         </text>
-      </div>
+      </MotionFade>
       {error || auth?.stage === "expired" ? (
         <Button label="重新生成" palette={palette} disabled={busy} onClick={onBegin} />
       ) : null}
       <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 9.5 }}>
-        登录成功后会加密保存在本机
+        登录信息会加密保存在本机
       </text>
     </motion.div>
   );
@@ -1036,6 +1353,9 @@ function Result({
   onSeekInteractionChange,
   playbackUpdating,
   playbackMessage,
+  playbackPaused,
+  playbackToggling,
+  onTogglePlayback,
   danmaku,
   onDanmakuChange,
   onOpenDanmaku,
@@ -1055,6 +1375,9 @@ function Result({
   onSeekInteractionChange: (active: boolean) => void;
   playbackUpdating: PlaybackUpdate;
   playbackMessage: string | null;
+  playbackPaused: boolean;
+  playbackToggling: boolean;
+  onTogglePlayback: () => void;
   danmaku: DanmakuVisibility;
   onDanmakuChange: (value: DanmakuVisibility) => void;
   onOpenDanmaku: () => void;
@@ -1066,22 +1389,36 @@ function Result({
   relayStopping: boolean;
 }) {
   const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isReference = sourceResolution === null;
   const output = isReference
     ? VIDEO_OUTPUT.replace("{part}", part)
-    : relayOutputDescription(sourceResolution, relayStatus, relayError);
+    : relayOutputDescription(sourceResolution, relayStatus, relayError, playbackPaused);
   const relayRunning = relayStatus?.stage === "running" && Boolean(relayStatus.playback_url);
+  const relayActive = relayStatus?.stage === "starting" || relayStatus?.stage === "running";
   const directReady = sourceResolution?.routing.kind === "direct" && Boolean(sourceResolution.playback_url);
-  const canCopy = isReference || relayRunning || directReady;
-  const parts: PlaybackPart[] = sourceResolution?.kind === "video" && sourceResolution.parts?.length
-    ? sourceResolution.parts.map((entry) => ({
-        value: String(entry.page),
-        label: `P${entry.page} · ${entry.title}`,
-        duration: entry.duration_seconds,
-      }))
+  const canCopy = isReference || relayRunning || playbackPaused || directReady;
+  const parts: PlaybackPart[] = sourceResolution?.kind === "video"
+    ? sourceResolution.parts?.length
+      ? sourceResolution.parts.map((entry) => ({
+          value: String(entry.page),
+          label: `P${entry.page} · ${entry.title}`,
+          duration: entry.duration_seconds,
+        }))
+      : [{
+          value: String(sourceResolution.selected_part ?? 1),
+          label: "P1",
+          duration: sourceResolution.duration_seconds ?? 0,
+        }]
     : REFERENCE_PARTS;
   const isLive = sourceResolution?.kind === "live";
   const showPlaybackControls = isReference || sourceResolution?.kind === "video";
+  const showPartControl = isReference || parts.length > 1;
+  const showTransport = isReference || (
+    sourceResolution?.kind === "video"
+    && sourceResolution.routing.kind !== "direct"
+    && (relayActive || playbackPaused)
+  );
   const showDanmakuControls = isReference
     || sourceResolution?.kind === "video"
     || sourceResolution?.kind === "live";
@@ -1095,12 +1432,30 @@ function Result({
         : sourceResolution?.live_status === "replay"
           ? "轮播"
           : "未开播";
+  const statusLabel = resultStatusLabel(
+    isReference,
+    sourceResolution,
+    relayStatus,
+    relayError,
+    playbackUpdating,
+    playbackMessage,
+    playbackPaused,
+    danmaku,
+  );
+
+  useEffect(
+    () => () => {
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    },
+    [],
+  );
 
   const copy = async () => {
     if (!canCopy) return;
     await writeClipboard(output);
     setCopied(true);
-    setTimeout(() => setCopied(false), 1200);
+    if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopied(false), 1200);
   };
 
   return (
@@ -1110,39 +1465,37 @@ function Result({
         marginTop: 18,
         paddingTop: 16,
         borderTopWidth: 1,
-        borderColor: palette.surfaceLine,
+        borderColor: palette.surfaceDivider,
       }}
     >
-      <div style={{ height: 16, display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
+      <div style={{ height: 17, display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
         <StatusDot color={palette.accentViolet} />
-        <text style={{ color: palette.inkMuted, fontFamily: FONT_SERIF, fontSize: 11.5, fontWeight: 600 }}>
+        <text style={{ color: palette.inkMuted, fontFamily: FONT_SERIF, fontSize: 13, fontWeight: 600 }}>
           {isReference || relayRunning || directReady ? "VRChat 播放地址" : "媒体路由"}
         </text>
         <div style={{ flexGrow: 1 }} />
-        <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 9.5 }}>
+        <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 11 }}>
           {sourceKindLabel}
         </text>
-        <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 9.5 }}>
-          {resultStatusLabel(
-            isReference,
-            sourceResolution,
-            relayStatus,
-            relayError,
-            playbackUpdating,
-            playbackMessage,
-            danmaku,
-          )}
-        </text>
+        <MotionFade key={statusLabel} duration={MOTION.stateCrossfadeSeconds}>
+          <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 11 }}>
+            {statusLabel}
+          </text>
+        </MotionFade>
       </div>
 
       <text
         style={{
+          width: "100%",
           marginTop: 13,
+          overflow: "hidden",
           color: palette.ink,
           fontFamily: FONT_SERIF,
-          fontSize: 14,
+          fontSize: 14.5,
           fontWeight: 600,
           lineHeight: 20,
+          whiteSpace: "nowrap",
+          textOverflow: "ellipsis",
         }}
       >
         {sourceResolution?.title ?? VIDEO_TITLE}
@@ -1150,20 +1503,22 @@ function Result({
 
       {showPlaybackControls ? (
         <>
-          <div style={{ marginTop: 9, display: "flex", flexDirection: "row", alignItems: "center", gap: 10 }}>
-            <text style={{ width: 42, color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 11 }}>
-              分 P
-            </text>
-            <PartSelect
-              part={part}
-              setPart={onPartChange}
-              parts={parts}
-              palette={palette}
-              disabled={playbackUpdating !== null}
-            />
-          </div>
+          {showPartControl ? (
+            <div style={{ marginTop: 9, display: "flex", flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <text style={{ width: 46, color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12.5 }}>
+                分 P
+              </text>
+              <PartSelect
+                part={part}
+                setPart={onPartChange}
+                parts={parts}
+                palette={palette}
+                disabled={playbackUpdating !== null}
+              />
+            </div>
+          ) : null}
 
-          <div style={{ marginTop: 5, paddingLeft: 2, paddingRight: 2 }}>
+          <div style={{ marginTop: showPartControl ? 5 : 12, paddingLeft: 2, paddingRight: 2 }}>
             <SeekControl
               duration={playbackDuration}
               position={playbackPosition}
@@ -1171,6 +1526,10 @@ function Result({
               onPositionCommit={onPlaybackPositionCommit}
               onInteractionChange={onSeekInteractionChange}
               disabled={playbackUpdating !== null}
+              showTransport={showTransport}
+              playing={isReference ? !playbackPaused : relayActive && !playbackPaused}
+              transportBusy={playbackToggling || playbackUpdating !== null}
+              onTogglePlayback={onTogglePlayback}
               palette={palette}
             />
           </div>
@@ -1181,7 +1540,7 @@ function Result({
         <div
           style={{
             position: "relative",
-            minHeight: 30,
+            minHeight: 32,
             marginTop: 15,
             display: "flex",
             flexDirection: "row",
@@ -1191,14 +1550,14 @@ function Result({
         >
           <div style={{ flexGrow: 1, display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
             <StatusDot color={danmaku === "shown" ? palette.accentTeal : palette.surfaceLine} />
-            <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 11.5 }}>弹幕</text>
+            <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 13 }}>弹幕</text>
           </div>
           <Segmented
             value={danmaku}
             onChange={onDanmakuChange}
             options={VISIBILITY_OPTIONS}
-            width={92}
-            height={24}
+            width={96}
+            height={28}
             palette={palette}
           />
           <Button label="样式" palette={palette} onClick={onOpenDanmaku} />
@@ -1207,59 +1566,75 @@ function Result({
 
       <div
         style={{
-          minHeight: 32,
-          marginTop: 13,
-          display: "flex",
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 6,
-          paddingTop: 2,
-          paddingRight: 3,
-          paddingBottom: 2,
-          paddingLeft: 10,
-          borderRadius: RADII.nested,
-          backgroundColor: palette.nested,
+          marginTop: 18,
+          paddingTop: 14,
+          borderTopWidth: 1,
+          borderColor: palette.surfaceDivider,
         }}
       >
-        <Icon
-          name="link"
-          size={11}
-          color={sourceResolution?.routing.kind === "unavailable" ? palette.accentViolet : palette.accentTeal}
-        />
-        <text
+        <div
           style={{
-            minWidth: 0,
-            flexGrow: 1,
-            color: palette.inkSoft,
-            fontFamily: FONT_MONO,
-            fontSize: 10,
-            whiteSpace: "nowrap",
-            textOverflow: "ellipsis",
+            minHeight: 32,
+            display: "flex",
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 6,
+            paddingTop: 2,
+            paddingRight: 3,
+            paddingBottom: 2,
+            paddingLeft: 10,
+            borderRadius: RADII.nested,
+            backgroundColor: palette.nested,
           }}
         >
-          {output}
-        </text>
-        {canCopy ? (
-          <IconButton
-            name={copied ? "check" : "copy"}
-            palette={palette}
-            color={copied ? palette.accentTeal : palette.inkMuted}
-            label="copy-output"
-            onClick={() => void copy()}
+          <Icon
+            name="link"
+            size={11}
+            color={sourceResolution?.routing.kind === "unavailable" ? palette.accentViolet : palette.accentTeal}
           />
-        ) : null}
-        {!isReference && (relayStatus?.stage === "starting" || relayStatus?.stage === "running") ? (
-          <Button
-            label={relayStopping ? "停止中" : "停止"}
-            palette={palette}
-            quiet
-            disabled={relayStopping || playbackUpdating !== null}
-            onClick={onStopRelay}
-          />
-        ) : null}
-        {!isReference && relayError && sourceResolution?.routing.kind !== "unavailable" ? (
-          <Button label="设置" palette={palette} quiet onClick={onOpenSettings} />
-        ) : null}
+          <MotionFade
+            key={output}
+            duration={MOTION.stateCrossfadeSeconds}
+            style={{ minWidth: 0, flexGrow: 1, overflow: "hidden" }}
+          >
+            <text
+              style={{
+                width: "100%",
+                overflow: "hidden",
+                color: palette.inkSoft,
+                fontFamily: FONT_MONO,
+                fontSize: 11.5,
+                whiteSpace: "nowrap",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {output}
+            </text>
+          </MotionFade>
+          {canCopy ? (
+            <IconButton
+              name={copied ? "check" : "copy"}
+              palette={palette}
+              color={copied ? palette.accentTeal : palette.inkMuted}
+              label="copy-output"
+              contentKey={copied ? "copied" : "copy"}
+              onClick={() => void copy()}
+            />
+          ) : null}
+          {!isReference && (relayStatus?.stage === "starting" || relayStatus?.stage === "running") ? (
+            <Button
+              label={relayStopping ? "停止中" : "停止"}
+              palette={palette}
+              quiet
+              disabled={relayStopping || playbackUpdating !== null}
+              contentKey={relayStopping ? "stopping" : "stop"}
+              onClick={onStopRelay}
+            />
+          ) : null}
+          {!isReference && relayError && sourceResolution?.routing.kind !== "unavailable" ? (
+            <Button label="设置" palette={palette} quiet onClick={onOpenSettings} />
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -1272,9 +1647,11 @@ function resultStatusLabel(
   relayError: string | null,
   playbackUpdating: PlaybackUpdate,
   playbackMessage: string | null,
+  playbackPaused: boolean,
   danmaku: DanmakuVisibility,
 ): string {
-  if (isReference) return "· 中继运行中 · 请保持开启";
+  if (playbackPaused) return "· 已暂停 · 可以继续播放";
+  if (isReference) return "· 中继运行中 · 请保持软件运行";
   if (source?.routing.kind === "unavailable") return "· 当前无法生成地址";
   if (source?.routing.kind === "direct" && source.playback_url) return "· 可直接播放 · 软件可关闭";
   if (playbackUpdating === "part") return "· 正在切换分 P";
@@ -1287,12 +1664,12 @@ function resultStatusLabel(
     && danmaku === "shown"
     && relay?.stage === "running"
     && relay.danmaku_events === undefined
-  ) return "· 暂无可用弹幕 · 原画中继";
+  ) return "· 中继运行中 · 暂无弹幕";
   switch (relay?.stage) {
     case "starting":
       return "· 正在连接 VRCDN";
     case "running":
-      return "· 中继运行中 · 请保持开启";
+      return "· 中继运行中 · 请保持软件运行";
     case "completed":
       return "· 视频播放完成";
     case "stopped":
@@ -1300,7 +1677,7 @@ function resultStatusLabel(
     case "failed":
       return "· 中继启动失败";
     default:
-      return "· 媒体已探测 · 等待中继";
+      return "· 正在准备播放地址";
   }
 }
 
@@ -1308,10 +1685,11 @@ function relayOutputDescription(
   source: SourceResolution,
   relay: RelayStatus | null,
   relayError: string | null,
+  playbackPaused = false,
 ): string {
   if (source.routing.kind === "direct" && source.playback_url) return source.playback_url;
-  if (relay?.stage === "running" && relay.playback_url) return relay.playback_url;
-  if (relay?.stage === "starting") return "正在启动 FFmpeg 并连接 VRCDN";
+  if (relay?.playback_url && (relay.stage === "running" || playbackPaused)) return relay.playback_url;
+  if (relay?.stage === "starting") return "正在准备播放地址";
   if (relay?.stage === "completed") return "视频已播放完成";
   if (relay?.stage === "stopped") return "中继已停止，重新生成地址即可再次启动";
   if (relay?.stage === "failed") return relayError ?? "中继启动失败，检查设置后再试";
@@ -1325,15 +1703,15 @@ function routeDescription(source: SourceResolution): string {
     case "source_replay":
       return "当前是轮播，暂不支持生成播放地址";
     case "dash_tracks":
-      return "已找到 H.264 DASH 视频和音频，需要 FFmpeg 中继";
+      return "需要中继后播放";
     case "flv_container":
-      return "已找到 H.264 FLV 直播流，需要 FFmpeg 转换";
+      return "需要中继后播放";
     case "mpeg_ts_container":
-      return "已找到 H.264 MPEG-TS 直播流，需要 FFmpeg 中继";
+      return "需要中继后播放";
     case "requires_headers":
-      return "已找到媒体流，需要本软件中继";
+      return "需要中继后播放";
     case "expiring_url":
-      return "媒体地址带有时效签名，需要本软件中继";
+      return "需要中继后播放";
     case "direct_compatible":
       return "媒体流可以直接播放";
   }
@@ -1347,7 +1725,7 @@ function SectionHeading({
   palette,
 }: {
   title: string;
-  subtitle: string;
+  subtitle?: string;
   compact?: boolean;
   flush?: boolean;
   palette: Palette;
@@ -1358,16 +1736,18 @@ function SectionHeading({
         style={{
           color: palette.inkMuted,
           fontFamily: FONT_SERIF,
-          fontSize: 11.5,
+          fontSize: 13,
           fontWeight: 600,
-          lineHeight: 15,
+          lineHeight: 17,
         }}
       >
         {title}
       </text>
-      <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 10, lineHeight: 14 }}>
-        {subtitle}
-      </text>
+      {subtitle ? (
+        <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 11.5, lineHeight: 15 }}>
+          {subtitle}
+        </text>
+      ) : null}
     </div>
   );
 }
@@ -1377,35 +1757,173 @@ function SettingsInput({
   onChange,
   placeholder,
   palette,
-  mono = false,
 }: {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
   palette: Palette;
-  mono?: boolean;
 }) {
   return (
-    <input
-      value={value}
-      placeholder={placeholder}
-      onChange={(event) => onChange(event.value ?? "")}
-      theme={{ appearance: palette === PALETTES.dark ? "dark" : "light", caret: palette.accentTeal }}
+    <div
       style={{
         width: "100%",
-        height: 30,
-        paddingLeft: 10,
-        paddingRight: 10,
-        color: palette.inkSoft,
+        height: 33,
+        display: "flex",
+        alignItems: "center",
+        paddingLeft: 11,
+        paddingRight: 11,
         backgroundColor: palette.surface,
         borderWidth: 1,
         borderColor: palette.panelEdge,
         borderRadius: RADII.control,
-        fontFamily: mono ? FONT_MONO : FONT_UI,
-        fontSize: mono ? 10.5 : 11.5,
-        lineHeight: 16,
       }}
-    />
+    >
+      <ProductTextInput
+        value={value}
+        placeholder={placeholder}
+        onChange={onChange}
+        palette={palette}
+        style={{
+          width: "100%",
+          height: 19,
+          position: "relative",
+          top: -4,
+          color: palette.inkSoft,
+          fontFamily: FONT_UI,
+          fontSize: 13,
+          lineHeight: 19,
+        }}
+      />
+    </div>
+  );
+}
+
+function SettingsSecretInput({
+  value,
+  onChange,
+  placeholder,
+  palette,
+  storedAvailable,
+  resetVersion,
+  onRevealStored,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  palette: Palette;
+  storedAvailable: boolean;
+  resetVersion: number;
+  onRevealStored: () => Promise<string>;
+}) {
+  const [revealed, setRevealed] = useState(false);
+  const [revealedStored, setRevealedStored] = useState<string | null>(null);
+  const [revealing, setRevealing] = useState(false);
+  const hasDraft = value.length > 0;
+  const hasSecret = hasDraft || storedAvailable;
+  const inputValue = hasDraft ? value : revealedStored ?? "";
+
+  useEffect(() => {
+    setRevealed(false);
+    setRevealedStored(null);
+  }, [resetVersion]);
+
+  useEffect(() => {
+    if (!hasSecret) {
+      setRevealed(false);
+      setRevealedStored(null);
+    }
+  }, [hasSecret]);
+
+  const toggleReveal = async () => {
+    if (revealing) return;
+    if (revealed) {
+      setRevealed(false);
+      setRevealedStored(null);
+      return;
+    }
+    if (hasDraft) {
+      setRevealed(true);
+      return;
+    }
+    if (!storedAvailable) return;
+    setRevealing(true);
+    try {
+      const stored = await onRevealStored();
+      setRevealedStored(stored);
+      setRevealed(true);
+    } catch {
+      setRevealedStored(null);
+      setRevealed(false);
+    } finally {
+      setRevealing(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        width: "100%",
+        height: 33,
+        position: "relative",
+        backgroundColor: palette.surface,
+        borderWidth: 1,
+        borderColor: palette.panelEdge,
+        borderRadius: RADII.control,
+      }}
+    >
+      <ProductTextInput
+        value={inputValue}
+        placeholder={hasSecret ? undefined : placeholder}
+        onChange={(next) => {
+          setRevealedStored(null);
+          onChange(next);
+        }}
+        palette={palette}
+        style={{
+          width: "100%",
+          height: 19,
+          position: "absolute",
+          top: 3,
+          left: 0,
+          paddingLeft: 11,
+          paddingRight: hasSecret ? 36 : 11,
+          color: revealed ? palette.inkSoft : "#00000000",
+          fontFamily: FONT_UI,
+          fontSize: 13,
+          lineHeight: 19,
+        }}
+      />
+      {hasSecret && !revealed ? (
+        <text
+          style={{
+            height: 19,
+            position: "absolute",
+            top: 7,
+            left: 11,
+            right: 36,
+            overflow: "hidden",
+            color: palette.inkSoft,
+            fontFamily: FONT_UI,
+            fontSize: 9,
+            lineHeight: 19,
+            whiteSpace: "nowrap",
+            pointerEvents: "none",
+          }}
+        >
+          {"●".repeat(hasDraft ? value.length : 18)}
+        </text>
+      ) : null}
+      {hasSecret ? (
+        <div style={{ position: "absolute", top: 2, right: 2 }}>
+          <IconButton
+            name={revealed ? "eyeOff" : "eye"}
+            palette={palette}
+            label={revealed ? "hide-stream-key" : "show-stream-key"}
+            onClick={() => void toggleReveal()}
+          />
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1421,9 +1939,9 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
-      <div style={{ height: 14, display: "flex", flexDirection: "row", alignItems: "center", gap: 3 }}>
-        <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 10, lineHeight: 14 }}>
+    <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 5 }}>
+      <div style={{ height: 16, display: "flex", flexDirection: "row", alignItems: "center", gap: 3 }}>
+        <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 11.5, lineHeight: 16 }}>
           {label}
         </text>
         {help}
@@ -1471,12 +1989,14 @@ function HelpButton({
       </div>
       {open ? (
         <motion.div
-          initial={{ opacity: 0, top: 18 }}
-          animate={{ opacity: 1, top: 22 }}
-          transition={{ duration: 0.18, ease: [0.23, 1, 0.32, 1] }}
+          initial={REDUCED_MOTION ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={motionTransition(MOTION.popoverEnterSeconds)}
+          onMouseDownOutside={() => setOpen(false)}
           style={{
             width: 238,
             position: "absolute",
+            top: 22,
             left: align === "start" ? 0 : undefined,
             right: align === "end" ? 0 : undefined,
             display: "flex",
@@ -1496,20 +2016,17 @@ function HelpButton({
             },
           }}
         >
-          <text style={{ color: palette.ink, fontFamily: FONT_SERIF, fontSize: 11.5, fontWeight: 600 }}>
-            {relay ? "什么时候需要？" : "为什么需要 FFmpeg？"}
+          <text style={{ color: palette.ink, fontFamily: FONT_SERIF, fontSize: 12, fontWeight: 600 }}>
+            {relay ? "什么时候需要推流密钥？" : "为什么需要 FFmpeg？"}
           </text>
           {relay ? (
             <>
               <HelpRow color={palette.accentViolet} palette={palette}>
-                需要　FLV、无法直放、转码或开启弹幕
+                开启弹幕，或链接无法直接播放时需要
               </HelpRow>
               <HelpRow color={palette.accentTeal} palette={palette}>
-                不需要　链接可直接播放，并且弹幕关闭
+                链接可以直接播放且弹幕关闭时不需要
               </HelpRow>
-              <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 10, lineHeight: 14 }}>
-                自动模式会按内容判断是否使用中继。
-              </text>
             </>
           ) : (
             <>
@@ -1541,7 +2058,7 @@ function HelpRow({
       <div style={{ paddingTop: 5 }}>
         <StatusDot color={color} />
       </div>
-      <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 10.5, lineHeight: 15 }}>
+      <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 11, lineHeight: 15 }}>
         {children}
       </text>
     </div>
@@ -1562,18 +2079,25 @@ function CompactSelect<T extends string>({
   palette: Palette;
 }) {
   const selected = options.find((option) => option.value === value) ?? options[0];
+  const [open, setOpen] = useState(false);
   return (
-    <Select.Root value={value} onValueChange={(next) => onChange(next as T)} style={{ width }}>
+    <Select.Root
+      value={value}
+      open={open}
+      onOpenChange={setOpen}
+      onValueChange={(next) => onChange(next as T)}
+      style={{ width }}
+    >
       <Select.Trigger
         style={({ open }) => ({
           width,
-          height: 30,
+          height: 33,
           display: "flex",
           flexDirection: "row",
           alignItems: "center",
           justifyContent: "space-between",
-          paddingLeft: 10,
-          paddingRight: 9,
+          paddingLeft: 11,
+          paddingRight: 10,
           borderRadius: RADII.control,
           borderWidth: 1,
           borderColor: open ? palette.surfaceLine : palette.panelEdge,
@@ -1583,55 +2107,67 @@ function CompactSelect<T extends string>({
         })}
       >
         <Select.Value>
-          <text style={{ color: palette.inkSoft, fontFamily: FONT_UI, fontSize: 11.5 }}>
+          <text style={{ color: palette.inkSoft, fontFamily: FONT_UI, fontSize: 13 }}>
             {selected?.label ?? ""}
           </text>
         </Select.Value>
-        <Icon name="chevron" size={10} color={palette.caption} />
+        <Icon name={open ? "chevronUp" : "chevron"} size={10} color={open ? palette.inkMuted : palette.caption} />
       </Select.Trigger>
       <Select.Content
         side="bottom"
-        sideOffset={5}
+        sideOffset={6}
         style={{
           width,
-          maxHeight: 132,
-          padding: 4,
-          borderRadius: 10,
-          borderWidth: 1,
-          borderColor: palette.panelEdge,
-          backgroundColor: palette.nestedStrong,
-          boxShadow: {
-            offsetX: 0,
-            offsetY: 12,
-            blurRadius: 30,
-            spreadRadius: 0,
-            color: palette.panelShadow,
-          },
+          height: 132,
+          maxHeight: 144,
+          backgroundColor: palette.panel,
         }}
       >
-        {options.map((option) => (
-          <Select.Item
-            key={option.value}
-            value={option.value}
-            style={({ highlighted }) => ({
-              minHeight: 28,
-              display: "flex",
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-              paddingLeft: 8,
-              paddingRight: 8,
-              borderRadius: 7,
-              cursor: "pointer",
-              backgroundColor: highlighted ? palette.surfaceHover : "#00000000",
-            })}
-          >
-            <text style={{ color: palette.inkSoft, fontFamily: FONT_UI, fontSize: 11.5 }}>
-              {option.label}
-            </text>
-            {option.value === value ? <Icon name="check" size={10} color={palette.accentTeal} /> : null}
-          </Select.Item>
-        ))}
+        <motion.div
+          initial={REDUCED_MOTION ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={motionTransition(MOTION.selectEnterSeconds)}
+          style={{
+            position: "relative",
+            width: "100%",
+            padding: 4,
+            borderRadius: 10,
+            borderWidth: 1,
+            borderColor: palette.panelEdge,
+            backgroundColor: palette.panel,
+            boxShadow: {
+              offsetX: 0,
+              offsetY: 16,
+              blurRadius: 36,
+              spreadRadius: 0,
+              color: palette.floatingShadow,
+            },
+          }}
+        >
+          {options.map((option) => (
+            <Select.Item
+              key={option.value}
+              value={option.value}
+              style={({ highlighted }) => ({
+                minHeight: 31,
+                display: "flex",
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                paddingLeft: 8,
+                paddingRight: 8,
+                borderRadius: 7,
+                cursor: "pointer",
+                backgroundColor: highlighted ? palette.segmentedTrack : "#00000000",
+              })}
+            >
+              <text style={{ color: palette.inkSoft, fontFamily: FONT_UI, fontSize: 13 }}>
+                {option.label}
+              </text>
+              {option.value === value ? <Icon name="check" size={10} color={palette.accentTeal} /> : null}
+            </Select.Item>
+          ))}
+        </motion.div>
       </Select.Content>
     </Select.Root>
   );
@@ -1646,7 +2182,9 @@ function OpacitySlider({
   onChange: (value: number) => void;
   palette: Palette;
 }) {
-  const width = 228;
+  const valueWidth = 40;
+  const gap = 8;
+  const width = DANMAKU_CONTROL_WIDTH - valueWidth - gap;
   const [dragging, setDragging] = useState(false);
   const update = (event: EventPayload) => {
     const localX = Math.max(0, Math.min(width, (event.x ?? 108) - 108));
@@ -1656,7 +2194,7 @@ function OpacitySlider({
   const ratio = (value - 20) / 80;
 
   return (
-    <div style={{ width: 276, height: 28, display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
+    <div style={{ width: DANMAKU_CONTROL_WIDTH, height: 32, display: "flex", flexDirection: "row", alignItems: "center", gap }}>
       <div
         tabIndex={0}
         onMouseDown={(event) => {
@@ -1671,7 +2209,7 @@ function OpacitySlider({
           if (event.key === "left") onChange(Math.max(20, value - 5));
           if (event.key === "right") onChange(Math.min(100, value + 5));
         }}
-        style={{ width, height: 24, position: "relative", cursor: dragging ? "grabbing" : "pointer" }}
+        style={{ width, height: 25, position: "relative", cursor: dragging ? "grabbing" : "pointer" }}
       >
         <div
           style={{
@@ -1684,11 +2222,14 @@ function OpacitySlider({
             backgroundColor: palette.surfaceLine,
           }}
         />
-        <motion.div
-          animate={{ left: Math.round((width - 12) * ratio), top: 6, width: 12, height: 12, borderRadius: 999 }}
-          transition={{ duration: dragging ? 0 : 0.14, ease: "easeOut" }}
+        <div
           style={{
             position: "absolute",
+            left: Math.round((width - 12) * ratio),
+            top: 6,
+            width: 12,
+            height: 12,
+            borderRadius: RADII.full,
             backgroundColor: palette.caption,
             boxShadow: {
               offsetX: 0,
@@ -1700,11 +2241,184 @@ function OpacitySlider({
           }}
         />
       </div>
-      <div style={{ width: 40, display: "flex", flexDirection: "row", justifyContent: "flex-end", gap: 1 }}>
-        <text style={{ color: palette.caption, fontFamily: FONT_MONO, fontSize: 8.5 }}>{value}</text>
-        <text style={{ color: palette.caption, fontFamily: FONT_MONO, fontSize: 8.5 }}>%</text>
+      <div style={{ width: valueWidth, display: "flex", flexDirection: "row", justifyContent: "flex-end", gap: 1 }}>
+        <text style={{ color: palette.caption, fontFamily: FONT_MONO, fontSize: 10 }}>{value}</text>
+        <text style={{ color: palette.caption, fontFamily: FONT_MONO, fontSize: 10 }}>%</text>
       </div>
     </div>
+  );
+}
+
+const DANMAKU_PREVIEW_BACKDROP = resolve(
+  basename(process.execPath).toLowerCase().startsWith("bun")
+    ? resolve(import.meta.dir, "..")
+    : dirname(process.execPath),
+  "assets",
+  "danmaku-preview-backdrop.png",
+);
+
+function DanmakuPreviewBackdrop() {
+  return (
+    <img
+      src={DANMAKU_PREVIEW_BACKDROP}
+      objectFit="cover"
+      style={{
+        width: "100%",
+        height: "100%",
+        position: "absolute",
+        top: 0,
+        left: 0,
+        borderRadius: 10,
+        pointerEvents: "none",
+      }}
+    />
+  );
+}
+
+function danmakuPreviewOutlineOffsets(outline: DanmakuOutline): ReadonlyArray<readonly [number, number]> {
+  if (outline === "shadow") return [[2, 2]];
+  if (outline === "heavy") return [[-1, -1], [1, -1], [-1, 1], [1, 1]];
+  return [[-1, 0], [1, 0], [0, -1], [0, 1]];
+}
+
+function DanmakuPreviewText({
+  text,
+  width,
+  fontFamily,
+  fontSize,
+  fontWeight,
+  outline,
+  color,
+}: {
+  text: string;
+  width: number;
+  fontFamily: string;
+  fontSize: number;
+  fontWeight: number;
+  outline: DanmakuOutline;
+  color: string;
+}) {
+  const offsets = danmakuPreviewOutlineOffsets(outline);
+  return (
+    <div style={{ width, height: 20, position: "relative", flexShrink: 0 }}>
+      {offsets.map(([left, top]) => (
+        <text
+          key={`${left}:${top}`}
+          style={{
+            position: "absolute",
+            top,
+            left,
+            color: outline === "shadow" ? "#101014D6" : "#101014F2",
+            fontFamily,
+            fontSize,
+            fontWeight,
+            lineHeight: 20,
+            whiteSpace: "nowrap",
+          }}
+        >
+          {text}
+        </text>
+      ))}
+      <text
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          color,
+          fontFamily,
+          fontSize,
+          fontWeight,
+          lineHeight: 20,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {text}
+      </text>
+    </div>
+  );
+}
+
+function DanmakuPreviewLine({
+  text,
+  top,
+  width,
+  staticRight,
+  fontFamily,
+  fontSize,
+  fontWeight,
+  outline,
+  opacity,
+}: {
+  text: string;
+  top: number;
+  width: number;
+  staticRight: number;
+  fontFamily: string;
+  fontSize: number;
+  fontWeight: number;
+  outline: DanmakuOutline;
+  opacity: number;
+}) {
+  const content = (
+    <DanmakuPreviewText
+      text={text}
+      width={width}
+      fontFamily={fontFamily}
+      fontSize={fontSize}
+      fontWeight={fontWeight}
+      outline={outline}
+      color="#FFFFFF"
+    />
+  );
+  const style = {
+    width,
+    height: 20,
+    position: "absolute" as const,
+    top,
+    opacity,
+  };
+  return <div style={{ ...style, right: staticRight }}>{content}</div>;
+}
+
+function DanmakuPreview({
+  fontFamily,
+  fontSize,
+  fontWeight,
+  outline,
+  opacity,
+}: {
+  fontFamily: string;
+  fontSize: number;
+  fontWeight: number;
+  outline: DanmakuOutline;
+  opacity: number;
+}) {
+  return (
+    <>
+      <DanmakuPreviewBackdrop />
+      <DanmakuPreviewLine
+        text="这条弹幕会显示在画面上"
+        top={13}
+        width={220}
+        staticRight={18}
+        fontFamily={fontFamily}
+        fontSize={fontSize}
+        fontWeight={fontWeight}
+        outline={outline}
+        opacity={opacity}
+      />
+      <DanmakuPreviewLine
+        text="VRChat 一起看"
+        top={42}
+        width={150}
+        staticRight={78}
+        fontFamily={fontFamily}
+        fontSize={Math.max(10, fontSize - 1)}
+        fontWeight={fontWeight}
+        outline={outline}
+        opacity={opacity}
+      />
+    </>
   );
 }
 
@@ -1729,7 +2443,7 @@ function DanmakuView({
         : settings.font === "source-han-sans"
           ? "Source Han Sans SC"
           : "SimHei";
-  const previewSize = settings.size === "small" ? 11 : settings.size === "large" ? 15 : 13;
+  const previewSize = settings.size === "small" ? 11.5 : settings.size === "large" ? 15.5 : 13.5;
   const update = <K extends keyof DanmakuSettings>(key: K, value: DanmakuSettings[K]) =>
     setSettings((current) => ({ ...current, [key]: value }));
   const toggleFilter = (filter: DanmakuFilter) =>
@@ -1745,32 +2459,32 @@ function DanmakuView({
       style={{
         flexGrow: 1,
         minHeight: 0,
-        overflowY: "scroll",
-        paddingTop: 10,
-        paddingRight: 24,
-        paddingBottom: 16,
-        paddingLeft: 24,
+        overflow: "hidden",
+        paddingTop: 17,
+        paddingRight: 26,
+        paddingBottom: 24,
+        paddingLeft: 26,
       }}
     >
-      <div style={{ minHeight: 42, display: "flex", flexDirection: "row", alignItems: "center", gap: 16 }}>
+      <div style={{ minHeight: 33, display: "flex", flexDirection: "row", alignItems: "center", gap: 16 }}>
         <div style={{ minWidth: 0, flexGrow: 1 }}>
-          <SectionHeading title="显示弹幕" subtitle="弹幕会直接烧录到中继画面中" compact flush palette={palette} />
+          <SectionHeading title="弹幕" subtitle="开启后，弹幕会合成到画面中" compact flush palette={palette} />
         </div>
         <Segmented
           value={visibility}
           onChange={setVisibility}
           options={VISIBILITY_OPTIONS}
-          width={112}
-          height={28}
+          width={116}
+          height={31}
           palette={palette}
         />
       </div>
 
       {visibility === "hidden" ? (
         <motion.div
-          initial={{ opacity: 0, top: 5 }}
-          animate={{ opacity: 1, top: 0 }}
-          transition={{ duration: 0.22, ease: [0.23, 1, 0.32, 1] }}
+          initial={REDUCED_MOTION ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={motionTransition(MOTION.surfaceEnterSeconds)}
           style={{
             marginTop: 14,
             padding: 11,
@@ -1778,24 +2492,24 @@ function DanmakuView({
             backgroundColor: palette.nested,
           }}
         >
-          <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 11 }}>
+          <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 11.5 }}>
             当前地址不会包含弹幕。
           </text>
         </motion.div>
       ) : (
         <motion.div
-          initial={{ opacity: 0, top: 5 }}
-          animate={{ opacity: 1, top: 0 }}
-          transition={{ duration: 0.22, ease: [0.23, 1, 0.32, 1] }}
-          style={{ marginTop: 12 }}
+          initial={REDUCED_MOTION ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={motionTransition(MOTION.surfaceEnterSeconds)}
+          style={{ marginTop: 16 }}
         >
           <div
             style={{
-              height: 66,
+              height: 76,
               position: "relative",
               overflow: "hidden",
               borderRadius: 10,
-              backgroundColor: "#202024",
+              backgroundColor: palette.panel,
               boxShadow: {
                 offsetX: 0,
                 offsetY: 8,
@@ -1805,63 +2519,42 @@ function DanmakuView({
               },
             }}
           >
-            <text
-              style={{
-                position: "absolute",
-                top: 14,
-                right: 18,
-                color: "#FFFFFFF4",
-                fontFamily,
-                fontSize: previewSize,
-                fontWeight: settings.weight === "bold" ? 700 : 400,
-                opacity: settings.opacity / 100,
-              }}
-            >
-              这条弹幕会显示在画面上
-            </text>
-            <text
-              style={{
-                position: "absolute",
-                top: 39,
-                right: 77,
-                color: "#FFFFFFDD",
-                fontFamily,
-                fontSize: Math.max(10, previewSize - 1),
-                fontWeight: settings.weight === "bold" ? 700 : 400,
-                opacity: Math.max(0.3, settings.opacity / 130),
-              }}
-            >
-              VRChat 一起看
-            </text>
+            <DanmakuPreview
+              fontFamily={fontFamily}
+              fontSize={previewSize}
+              fontWeight={settings.weight === "bold" ? 700 : 400}
+              outline={settings.outline}
+              opacity={settings.opacity / 100}
+            />
           </div>
 
-          <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 9 }}>
             <DanmakuRow label="字体大小" palette={palette}>
-              <Segmented value={settings.size} onChange={(value) => update("size", value)} options={SIZE_OPTIONS} width={296} palette={palette} />
+              <Segmented value={settings.size} onChange={(value) => update("size", value)} options={SIZE_OPTIONS} width={DANMAKU_CONTROL_WIDTH} palette={palette} />
             </DanmakuRow>
             <DanmakuRow label="显示区域" palette={palette}>
-              <Segmented value={settings.area} onChange={(value) => update("area", value)} options={AREA_OPTIONS} width={296} palette={palette} />
+              <Segmented value={settings.area} onChange={(value) => update("area", value)} options={AREA_OPTIONS} width={DANMAKU_CONTROL_WIDTH} palette={palette} />
             </DanmakuRow>
             <DanmakuRow label="滚动速度" palette={palette}>
-              <Segmented value={settings.speed} onChange={(value) => update("speed", value)} options={SPEED_OPTIONS} width={296} palette={palette} />
+              <Segmented value={settings.speed} onChange={(value) => update("speed", value)} options={SPEED_OPTIONS} width={DANMAKU_CONTROL_WIDTH} palette={palette} />
             </DanmakuRow>
             <DanmakuRow label="不透明度" palette={palette}>
               <OpacitySlider value={settings.opacity} onChange={(value) => update("opacity", value)} palette={palette} />
             </DanmakuRow>
 
-            <div style={{ height: 1, marginTop: 3, marginRight: 8, marginBottom: 3, marginLeft: 8, backgroundColor: palette.surfaceLine, opacity: 0.5 }} />
+            <div style={{ height: 1, marginTop: 4, marginRight: 8, marginBottom: 4, marginLeft: 8, backgroundColor: palette.surfaceDivider }} />
 
             <DanmakuRow label="弹幕字体" palette={palette}>
-              <CompactSelect value={settings.font} onChange={(value) => update("font", value)} options={FONT_OPTIONS} width={296} palette={palette} />
+              <CompactSelect value={settings.font} onChange={(value) => update("font", value)} options={FONT_OPTIONS} width={DANMAKU_CONTROL_WIDTH} palette={palette} />
             </DanmakuRow>
             <DanmakuRow label="字重" palette={palette}>
-              <Segmented value={settings.weight} onChange={(value) => update("weight", value)} options={WEIGHT_OPTIONS} width={296} palette={palette} />
+              <Segmented value={settings.weight} onChange={(value) => update("weight", value)} options={WEIGHT_OPTIONS} width={DANMAKU_CONTROL_WIDTH} palette={palette} />
             </DanmakuRow>
             <DanmakuRow label="描边类型" palette={palette}>
-              <Segmented value={settings.outline} onChange={(value) => update("outline", value)} options={OUTLINE_OPTIONS} width={296} palette={palette} />
+              <Segmented value={settings.outline} onChange={(value) => update("outline", value)} options={OUTLINE_OPTIONS} width={DANMAKU_CONTROL_WIDTH} palette={palette} />
             </DanmakuRow>
             <DanmakuRow label="隐藏类型" palette={palette}>
-              <div style={{ width: 296, display: "flex", flexDirection: "row", gap: 5 }}>
+              <div style={{ width: DANMAKU_CONTROL_WIDTH, display: "flex", flexDirection: "row", gap: 5 }}>
                 {FILTER_OPTIONS.map((option) => {
                   const selected = settings.hiddenTypes.includes(option.value);
                   return (
@@ -1873,8 +2566,9 @@ function DanmakuView({
                         if (event.key === "enter" || event.key === "space") toggleFilter(option.value);
                       }}
                       style={{
-                        width: 70,
-                        height: 28,
+                        minWidth: 0,
+                        flexGrow: 1,
+                        height: 32,
                         display: "flex",
                         flexDirection: "row",
                         alignItems: "center",
@@ -1890,7 +2584,7 @@ function DanmakuView({
                       }}
                     >
                       <StatusDot color={selected ? palette.accentRose : palette.surfaceLine} />
-                      <text style={{ color: selected ? palette.inkSoft : palette.caption, fontFamily: FONT_UI, fontSize: 10.5 }}>
+                      <text style={{ color: selected ? palette.inkSoft : palette.caption, fontFamily: FONT_UI, fontSize: 12 }}>
                         {option.label}
                       </text>
                     </div>
@@ -1915,8 +2609,8 @@ function DanmakuRow({
   children: React.ReactNode;
 }) {
   return (
-    <div style={{ minHeight: 28, display: "flex", flexDirection: "row", alignItems: "center", gap: 12 }}>
-      <text style={{ width: 72, color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 11 }}>
+    <div style={{ minHeight: 33, display: "flex", flexDirection: "row", alignItems: "center", gap: DANMAKU_ROW_GAP }}>
+      <text style={{ width: DANMAKU_LABEL_WIDTH, color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12.5 }}>
         {label}
       </text>
       {children}
@@ -1936,6 +2630,7 @@ function SettingsView({
   storedSettings,
   settingsError,
   onSaveSettings,
+  onRevealStreamKey,
   mediaState,
   mediaStatus,
   onInstallFfmpeg,
@@ -1951,6 +2646,7 @@ function SettingsView({
   storedSettings: ProductSettings;
   settingsError: string | null;
   onSaveSettings: (settings: SettingsUpdate) => Promise<ProductSettings>;
+  onRevealStreamKey: () => Promise<string>;
   mediaState: MediaComponentState;
   mediaStatus: FfmpegStatus | null;
   onInstallFfmpeg: () => void;
@@ -1965,12 +2661,25 @@ function SettingsView({
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [secretInputVersion, setSecretInputVersion] = useState(0);
   const [accountPopoverOpen, setAccountPopoverOpen] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const accountAuthenticated = bilibiliAuth?.stage === "authenticated";
   const accountPending = bilibiliAuth?.stage === "waiting" || bilibiliAuth?.stage === "scanned";
   const loginMode: LoginMode = accountAuthenticated || accountPending ? "account" : "guest";
   const streamKeyUnavailable = storedSettings.streamKeyStatus === "unavailable" && !keyDirty;
+  const mediaCaption = mediaStateCaption(mediaState, mediaStatus);
+  const mediaActionVisible =
+    mediaState === "missing" || mediaState === "failed" || mediaState === "downloading";
+  const compactMediaRow = !mediaActionVisible && !mediaCaption;
+  const serviceUnavailable = mediaState === "unavailable" || Boolean(settingsError);
+  const serviceChecking = mediaState === "checking";
+  const serviceStatusLabel = serviceUnavailable
+    ? "服务暂不可用"
+    : serviceChecking
+      ? "正在检查服务"
+      : "服务可用";
+  const saveStatusText = saveError ?? settingsError ?? "配置只保存在本机";
 
   useEffect(
     () => () => {
@@ -2024,6 +2733,7 @@ function SettingsView({
     });
     setKeyDirty(true);
     setSaveError(null);
+    setSecretInputVersion((current) => current + 1);
     setThemePreference("system");
   };
   const save = async () => {
@@ -2044,6 +2754,7 @@ function SettingsView({
         theme: persisted.theme,
       });
       setKeyDirty(false);
+      setSecretInputVersion((current) => current + 1);
       setSaved(true);
       if (savedTimer.current) clearTimeout(savedTimer.current);
       savedTimer.current = setTimeout(() => setSaved(false), 1200);
@@ -2060,18 +2771,18 @@ function SettingsView({
         flexGrow: 1,
         minHeight: 0,
         position: "relative",
-        overflowY: "scroll",
-        paddingTop: 16,
-        paddingRight: 24,
-        paddingBottom: 20,
-        paddingLeft: 24,
+        overflow: "hidden",
+        paddingTop: 17,
+        paddingRight: 26,
+        paddingBottom: 26,
+        paddingLeft: 26,
       }}
     >
-      <div style={{ display: "flex", flexDirection: "row", gap: 16 }}>
+      <div style={{ display: "flex", flexDirection: "row", gap: 20 }}>
         <div style={{ minWidth: 0, flexGrow: 1 }}>
-          <SectionHeading title="VRCDN" subtitle="自动模式只在需要中继时使用" palette={palette} />
-          <div style={{ display: "flex", flexDirection: "row", gap: 8 }}>
-            <div style={{ width: 88 }}>
+          <SectionHeading title="VRCDN" palette={palette} />
+          <div style={{ display: "flex", flexDirection: "row", gap: 9 }}>
+            <div style={{ width: 108 }}>
               <Field label="服务器" palette={palette}>
                 <SettingsInput value={settings.host} onChange={(value) => update("host", value)} palette={palette} />
               </Field>
@@ -2082,7 +2793,7 @@ function SettingsView({
                 palette={palette}
                 help={<HelpButton kind="relay" align="end" palette={palette} />}
               >
-                <SettingsInput
+                <SettingsSecretInput
                   value={settings.key}
                   onChange={(value) => {
                     update("key", value);
@@ -2096,6 +2807,17 @@ function SettingsView({
                         : "未设置"
                   }
                   palette={palette}
+                  storedAvailable={!keyDirty && storedSettings.streamKeyStatus === "available"}
+                  resetVersion={secretInputVersion}
+                  onRevealStored={async () => {
+                    setSaveError(null);
+                    try {
+                      return await onRevealStreamKey();
+                    } catch (error) {
+                      setSaveError(relayErrorMessage(error));
+                      throw error;
+                    }
+                  }}
                 />
               </Field>
             </div>
@@ -2106,35 +2828,65 @@ function SettingsView({
                 value={settings.playbackUrl}
                 onChange={(value) => update("playbackUrl", value)}
                 placeholder="从 VRCDN Live 页面复制"
-                mono
                 palette={palette}
               />
             </Field>
           </div>
-          <div style={{ height: 18, marginTop: 7, display: "flex", flexDirection: "row", alignItems: "center", gap: 7 }}>
-            <StatusDot color={streamKeyUnavailable ? palette.accentRose : palette.accentTeal} />
-            <text
-              style={{
-                color: streamKeyUnavailable ? palette.accentRose : palette.inkMuted,
-                fontFamily: FONT_UI,
-                fontSize: 10.5,
-              }}
+          <div
+            style={{
+              height: 18,
+              marginTop: 12,
+              display: "flex",
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 7,
+            }}
+          >
+            <MotionFade
+              key={serviceStatusLabel}
+              duration={MOTION.stateCrossfadeSeconds}
+              style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 7 }}
             >
-              {streamKeyUnavailable ? "密钥无法读取，请重新填写" : "服务可用"}
-            </text>
-            <div style={{ flexGrow: 1 }} />
-            <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 10.5 }}>本机保存</text>
+              <StatusDot
+                color={
+                  serviceUnavailable
+                    ? palette.accentRose
+                    : serviceChecking
+                      ? palette.surfaceLine
+                      : palette.accentTeal
+                }
+              />
+              <text
+                style={{
+                  color: serviceUnavailable ? palette.accentRose : palette.caption,
+                  fontFamily: FONT_UI,
+                  fontSize: 12,
+                  fontWeight: 400,
+                  lineHeight: 16,
+                }}
+              >
+                {serviceStatusLabel}
+              </text>
+            </MotionFade>
           </div>
+          {streamKeyUnavailable ? (
+            <div style={{ height: 18, marginTop: 7, display: "flex", flexDirection: "row", alignItems: "center", gap: 7 }}>
+              <StatusDot color={palette.accentRose} />
+              <text style={{ color: palette.accentRose, fontFamily: FONT_UI, fontSize: 12 }}>
+                密钥无法读取，请重新填写
+              </text>
+            </div>
+          ) : null}
         </div>
 
         <div
           style={{
-            width: 140,
+            width: 188,
             flexShrink: 0,
             position: "relative",
-            paddingLeft: 14,
+            paddingLeft: 19,
             borderLeftWidth: 1,
-            borderColor: palette.surfaceLine,
+            borderColor: palette.columnDivider,
           }}
         >
           <SectionHeading
@@ -2146,7 +2898,7 @@ function SettingsView({
                   : `已登录 · ${bilibiliAuth.display_name ?? "Bilibili 用户"}`
                 : bilibiliAuth?.persistence === "unavailable"
                   ? "本机登录信息无法读取，请重新扫码"
-                  : "公开内容可直接使用访客模式"
+                  : "未登录时最高 480P"
             }
             compact
             palette={palette}
@@ -2155,66 +2907,83 @@ function SettingsView({
             value={loginMode}
             onChange={updateLogin}
             options={LOGIN_OPTIONS}
-            width={126}
+            width={170}
             palette={palette}
           />
-          <div style={{ height: 1, marginTop: 16, marginRight: 8, marginBottom: 16, marginLeft: 8, backgroundColor: palette.surfaceLine, opacity: 0.5 }} />
-          <SectionHeading title="外观" subtitle="跟随系统会自动切换明暗" compact palette={palette} />
-          <Segmented value={themePreference} onChange={updateTheme} options={THEME_OPTIONS} width={126} palette={palette} />
+          <div style={{ height: 1, marginTop: 10, marginRight: 8, marginBottom: 10, marginLeft: 8, backgroundColor: palette.surfaceDivider }} />
+          <SectionHeading title="外观" compact palette={palette} />
+          <Segmented
+            value={themePreference}
+            onChange={updateTheme}
+            options={THEME_OPTIONS}
+            optionWeights={THEME_OPTION_WEIGHTS}
+            width={170}
+            palette={palette}
+          />
         </div>
       </div>
 
       <div
         style={{
-          minHeight: 62,
-          marginTop: 17,
-          paddingTop: 13,
+          minHeight: compactMediaRow ? 30 : 44,
+          marginTop: 18,
+          paddingTop: 14,
           paddingLeft: 8,
           paddingRight: 8,
           borderTopWidth: 1,
-          borderColor: palette.surfaceLine,
+          borderColor: palette.surfaceDivider,
           display: "flex",
           flexDirection: "row",
           alignItems: "center",
           gap: 10,
         }}
       >
-        <div style={{ width: 72, display: "flex", flexDirection: "row", alignItems: "center", gap: 3 }}>
-          <text style={{ color: palette.inkMuted, fontFamily: FONT_SERIF, fontSize: 11.5, fontWeight: 600 }}>
+        <div style={{ width: 80, display: "flex", flexDirection: "row", alignItems: "center", gap: 3 }}>
+          <text style={{ color: palette.inkMuted, fontFamily: FONT_SERIF, fontSize: 13, fontWeight: 600 }}>
             视频处理
           </text>
           <HelpButton kind="media" palette={palette} />
         </div>
-        <div style={{ minWidth: 0, flexGrow: 1, display: "flex", flexDirection: "column", gap: 3 }}>
+        <MotionFade
+          key={mediaState}
+          duration={MOTION.stateCrossfadeSeconds}
+          style={{ minWidth: 0, flexGrow: 1, display: "flex", flexDirection: "column", gap: 3 }}
+        >
           <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 7 }}>
             <StatusDot color={mediaStateDotColor(mediaState, palette)} />
-            <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 10.5, whiteSpace: "nowrap" }}>
+            <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12, whiteSpace: "nowrap" }}>
               {mediaStateLabel(mediaState)}
             </text>
           </div>
-          <text style={{ marginLeft: 12, color: palette.caption, fontFamily: FONT_UI, fontSize: 10 }}>
-            {mediaStateCaption(mediaState, mediaStatus)}
-          </text>
-        </div>
+          {mediaCaption ? (
+            <text style={{ marginLeft: 12, color: palette.caption, fontFamily: FONT_UI, fontSize: 11.5 }}>
+              {mediaCaption}
+            </text>
+          ) : null}
+        </MotionFade>
         {mediaState === "missing" || mediaState === "failed" ? (
-          <Button
-            label={mediaState === "failed" ? "重试下载" : "下载 FFmpeg"}
-            icon="download"
-            palette={palette}
-            onClick={onInstallFfmpeg}
-          />
+          <MotionFade key={`media-action-${mediaState}`} duration={MOTION.stateCrossfadeSeconds}>
+            <Button
+              label={mediaState === "failed" ? "重试下载" : "下载 FFmpeg"}
+              icon="download"
+              palette={palette}
+              onClick={onInstallFfmpeg}
+            />
+          </MotionFade>
         ) : mediaState === "downloading" ? (
-          <Button label="下载中" icon="download" palette={palette} disabled />
+          <MotionFade key="media-action-downloading" duration={MOTION.stateCrossfadeSeconds}>
+            <Button label="下载中" icon="download" palette={palette} disabled />
+          </MotionFade>
         ) : null}
       </div>
 
       <div
         style={{
-          minHeight: 46,
-          marginTop: 15,
-          paddingTop: 13,
+          minHeight: 44,
+          marginTop: 18,
+          paddingTop: 14,
           borderTopWidth: 1,
-          borderColor: palette.surfaceLine,
+          borderColor: palette.surfaceDivider,
           display: "flex",
           flexDirection: "row",
           alignItems: "center",
@@ -2228,20 +2997,23 @@ function SettingsView({
           iconColor={saved ? palette.accentTeal : palette.accentRose}
           palette={palette}
           disabled={saving}
+          contentKey={saving ? "saving" : saved ? "saved" : "save"}
           onClick={() => void save()}
         />
         <div style={{ flexGrow: 1 }} />
-        <text
-          style={{
-            maxWidth: 190,
-            color: saveError || settingsError ? palette.accentRose : palette.caption,
-            fontFamily: FONT_UI,
-            fontSize: 10.5,
-            lineClamp: 1,
-          }}
-        >
-          {saveError ?? settingsError ?? "配置只保存在本机"}
-        </text>
+        <MotionFade key={saveStatusText} duration={MOTION.stateCrossfadeSeconds} style={{ maxWidth: 190 }}>
+          <text
+            style={{
+              maxWidth: 190,
+              color: saveError || settingsError ? palette.accentRose : palette.caption,
+              fontFamily: FONT_UI,
+              fontSize: 12,
+              lineClamp: 1,
+            }}
+          >
+            {saveStatusText}
+          </text>
+        </MotionFade>
       </div>
       {accountPopoverOpen ? (
         <BilibiliLoginPopover
@@ -2259,22 +3031,28 @@ function SettingsView({
 
 function Loading({ palette }: { palette: Palette }) {
   return (
-    <div style={{ marginTop: 18, display: "flex", flexDirection: "row", alignItems: "center", gap: 6 }}>
+    <div style={{ height: 32, display: "flex", flexDirection: "row", alignItems: "center", gap: 6 }}>
       <div style={{ display: "flex", flexDirection: "row", gap: 2 }}>
         {[0.45, 0.65, 0.85].map((opacity, index) => (
-          <div
+          <motion.div
             key={index}
+            initial={REDUCED_MOTION ? false : { opacity: 0.2 }}
+            animate={{ opacity }}
+            transition={{
+              duration: REDUCED_MOTION ? 0 : MOTION.stateCrossfadeSeconds,
+              delay: REDUCED_MOTION ? 0 : index * 0.04,
+              ease: MOTION.easeOut,
+            }}
             style={{
               width: 3,
               height: 3,
               borderRadius: RADII.full,
               backgroundColor: palette.inkMuted,
-              opacity,
             }}
           />
         ))}
       </div>
-      <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 11 }}>正在读取链接</text>
+      <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 12.5 }}>正在读取链接</text>
     </div>
   );
 }
@@ -2312,6 +3090,8 @@ export function AppSurface({
   const [playbackPosition, setPlaybackPosition] = useState(POSITION_BY_PART["2"] ?? 0);
   const [playbackUpdating, setPlaybackUpdating] = useState<PlaybackUpdate>(null);
   const [playbackMessage, setPlaybackMessage] = useState<string | null>(null);
+  const [playbackPaused, setPlaybackPaused] = useState(false);
+  const [playbackToggling, setPlaybackToggling] = useState(false);
   const [seekInteractionActive, setSeekInteractionActive] = useState(false);
   const [danmaku, setDanmaku] = useState<DanmakuVisibility>("shown");
   const [danmakuSettings, setDanmakuSettings] = useState<DanmakuSettings>(DEFAULT_DANMAKU_SETTINGS);
@@ -2327,6 +3107,7 @@ export function AppSurface({
   const [bilibiliAuthError, setBilibiliAuthError] = useState<string | null>(null);
   const [bilibiliAuthBusy, setBilibiliAuthBusy] = useState(false);
   const relayWorker = useRef<RelayWorkerClient | null>(null);
+  const windowClosing = useRef(false);
   const conversionEpoch = useRef(0);
   const playbackEpoch = useRef(0);
   const appliedPlaybackOptions = useRef<string | null>(null);
@@ -2335,11 +3116,39 @@ export function AppSurface({
     themePreference === "system" ? initialAppearance : themePreference;
   const palette = PALETTES[resolvedAppearance];
   const mediaState = mediaComponentState(mediaStatus, mediaError);
+  const settingsExpanded =
+    mediaState === "missing" ||
+    mediaState === "failed" ||
+    mediaState === "downloading" ||
+    Boolean(mediaStateCaption(mediaState, mediaStatus));
+  const singlePartVideo =
+    sourceResolution?.kind === "video" && (sourceResolution.parts?.length ?? 0) <= 1;
+
+  const closeApplication = () => {
+    if (windowClosing.current) return;
+    windowClosing.current = true;
+    const finish = () => {
+      closeProductWindow();
+      setTimeout(() => process.exit(0), 0);
+    };
+    const worker = relayWorker.current;
+    if (worker) {
+      void worker.close().finally(finish);
+    } else {
+      finish();
+    }
+  };
 
   useEffect(() => {
-    const resize = setTimeout(() => setProductWindowClientHeight(sceneWindowHeight(scene)), 0);
+    const resize = setTimeout(
+      () => setProductWindowClientSize(
+        sceneWindowWidth(scene),
+        sceneWindowHeight(scene, settingsExpanded, singlePartVideo),
+      ),
+      0,
+    );
     return () => clearTimeout(resize);
-  }, [scene]);
+  }, [scene, settingsExpanded, singlePartVideo]);
 
   const getRelayWorker = () => {
     relayWorker.current ??= new RelayWorkerClient();
@@ -2572,6 +3381,7 @@ export function AppSurface({
     setResumeRelayAfterSettings(false);
     setPlaybackUpdating(null);
     setPlaybackMessage(null);
+    setPlaybackPaused(false);
     setSeekInteractionActive(false);
     appliedPlaybackOptions.current = null;
     setSource(normalizedSource);
@@ -2682,6 +3492,7 @@ export function AppSurface({
       setPart(String(playback.resolution.selected_part ?? effectivePart));
       setPlaybackPosition(playback.relay.position_seconds ?? effectiveStart);
       setRelayStatus(playback.relay);
+      setPlaybackPaused(false);
       setRelayError(null);
       setPlaybackMessage(null);
       appliedPlaybackOptions.current = playbackOptionsSignature(options);
@@ -2729,12 +3540,33 @@ export function AppSurface({
       || !Number.isFinite(requestedPart)
       || nextPart === part
     ) return;
+    if (playbackPaused) {
+      const epoch = ++playbackEpoch.current;
+      setPlaybackUpdating("part");
+      setPlaybackMessage(null);
+      void getRelayWorker()
+        .resolveSource(sourceResolution.canonical_url, requestedPart)
+        .then((resolution) => {
+          if (playbackEpoch.current !== epoch) return;
+          setSourceResolution(resolution);
+          setPart(String(resolution.selected_part ?? requestedPart));
+          setPlaybackPosition(0);
+        })
+        .catch((error) => {
+          if (playbackEpoch.current === epoch) setPlaybackMessage(relayErrorMessage(error));
+        })
+        .finally(() => {
+          if (playbackEpoch.current === epoch) setPlaybackUpdating(null);
+        });
+      return;
+    }
     void retargetPlayback(requestedPart, 0, "part");
   };
 
   const commitPlaybackPosition = (position: number) => {
     setPlaybackPosition(position);
     if (sourceResolution?.kind !== "video") return;
+    if (playbackPaused || sourceResolution.routing.kind === "direct") return;
     const requestedPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
     void retargetPlayback(requestedPart, position, "seek");
   };
@@ -2764,11 +3596,55 @@ export function AppSurface({
     try {
       const stopped = await getRelayWorker().stopRelay(relayStatus.session_id);
       setRelayStatus(stopped);
+      setPlaybackPaused(false);
       setRelayError(null);
     } catch (error) {
       setRelayError(relayErrorMessage(error));
     } finally {
       setRelayStopping(false);
+    }
+  };
+
+  const togglePlayback = async () => {
+    if (sourceResolution === null) {
+      setPlaybackPaused((current) => !current);
+      return;
+    }
+    if (
+      sourceResolution.kind !== "video"
+      || sourceResolution.routing.kind === "direct"
+      || playbackToggling
+      || playbackUpdating !== null
+    ) return;
+
+    setPlaybackToggling(true);
+    setPlaybackMessage(null);
+    setRelayError(null);
+    try {
+      const active = relayStatus?.stage === "starting" || relayStatus?.stage === "running";
+      if (active && relayStatus) {
+        const stopped = await getRelayWorker().stopRelay(relayStatus.session_id);
+        setRelayStatus(stopped);
+        if (stopped.position_seconds !== undefined) setPlaybackPosition(stopped.position_seconds);
+        setPlaybackPaused(true);
+        return;
+      }
+      if (!playbackPaused || !sourceResolution.session_id) return;
+      const options = configuredPlaybackOptions(danmaku, danmakuSettings);
+      const started = await getRelayWorker().startRelay(
+        sourceResolution.session_id,
+        options,
+        playbackPosition,
+      );
+      appliedPlaybackOptions.current = playbackOptionsSignature(options);
+      setRelayStatus(started);
+      if (started.position_seconds !== undefined) setPlaybackPosition(started.position_seconds);
+      setPlaybackPaused(false);
+    } catch (error) {
+      setRelayError(relayErrorMessage(error));
+      setPlaybackMessage(playbackPaused ? "继续播放失败" : "暂停失败");
+    } finally {
+      setPlaybackToggling(false);
     }
   };
 
@@ -2800,6 +3676,7 @@ export function AppSurface({
       if (conversionEpoch.current !== epoch) return;
       appliedPlaybackOptions.current = playbackOptionsSignature(options);
       setRelayStatus(started);
+      setPlaybackPaused(false);
       if (started.position_seconds !== undefined) setPlaybackPosition(started.position_seconds);
     } catch (error) {
       if (conversionEpoch.current === epoch) setRelayError(relayErrorMessage(error));
@@ -2862,17 +3739,8 @@ export function AppSurface({
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
-        borderRadius: RADII.panel,
-        borderWidth: 1,
-        borderColor: palette.panelEdge,
+        userSelect: "none",
         backgroundColor: palette.panel,
-        boxShadow: {
-          offsetX: 0,
-          offsetY: 20,
-          blurRadius: 60,
-          spreadRadius: 0,
-          color: palette.panelShadow,
-        },
       }}
     >
       <Header
@@ -2880,71 +3748,86 @@ export function AppSurface({
         scene={scene}
         onSettings={() => showSubview("settings")}
         onBack={leaveSubview}
+        onClose={closeApplication}
       />
       <div
         style={{
           height: 1,
-          marginLeft: 24,
-          marginRight: 24,
-          backgroundColor: palette.surfaceLine,
-          opacity: 0.5,
+          marginLeft: 26,
+          marginRight: 26,
+          backgroundColor: palette.surfaceDivider,
         }}
       />
       {scene === "settings" ? (
-        <SettingsView
-          palette={palette}
-          themePreference={themePreference}
-          setThemePreference={setThemePreference}
-          bilibiliAuth={bilibiliAuth}
-          bilibiliAuthError={bilibiliAuthError}
-          bilibiliAuthBusy={bilibiliAuthBusy}
-          onBeginBilibiliLogin={() => void beginBilibiliLogin()}
-          onLogoutBilibili={() => void logoutBilibili()}
-          storedSettings={productSettings}
-          settingsError={settingsError}
-          onSaveSettings={saveProductSettings}
-          mediaState={mediaState}
-          mediaStatus={mediaStatus}
-          onInstallFfmpeg={() => void installFfmpeg()}
-        />
+        <MotionFade key="settings" style={{ flexGrow: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+          <SettingsView
+            palette={palette}
+            themePreference={themePreference}
+            setThemePreference={setThemePreference}
+            bilibiliAuth={bilibiliAuth}
+            bilibiliAuthError={bilibiliAuthError}
+            bilibiliAuthBusy={bilibiliAuthBusy}
+            onBeginBilibiliLogin={() => void beginBilibiliLogin()}
+            onLogoutBilibili={() => void logoutBilibili()}
+            storedSettings={productSettings}
+            settingsError={settingsError}
+            onSaveSettings={saveProductSettings}
+            onRevealStreamKey={() => getRelayWorker().revealStreamKey()}
+            mediaState={mediaState}
+            mediaStatus={mediaStatus}
+            onInstallFfmpeg={() => void installFfmpeg()}
+          />
+        </MotionFade>
       ) : scene === "danmaku" ? (
-        <DanmakuView
-          palette={palette}
-          visibility={danmaku}
-          setVisibility={setDanmaku}
-          settings={danmakuSettings}
-          setSettings={setDanmakuSettings}
-        />
+        <MotionFade key="danmaku" style={{ flexGrow: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+          <DanmakuView
+            palette={palette}
+            visibility={danmaku}
+            setVisibility={setDanmaku}
+            settings={danmakuSettings}
+            setSettings={setDanmakuSettings}
+          />
+        </MotionFade>
       ) : (
-        <div style={{ flexGrow: 1, minHeight: 0, paddingTop: 16, paddingRight: 24, paddingBottom: 24, paddingLeft: 24 }}>
-          <text style={{ color: palette.inkMuted, fontFamily: FONT_SERIF, fontSize: 11.5, fontWeight: 600 }}>
-            视频链接
-          </text>
+        <div style={{ flexGrow: 1, minHeight: 0, paddingTop: 17, paddingRight: 26, paddingBottom: 26, paddingLeft: 26 }}>
+          <div style={{ height: 17, display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <StatusDot color={palette.accentRose} />
+            <text style={{ color: palette.inkMuted, fontFamily: FONT_SERIF, fontSize: 13, fontWeight: 600 }}>
+              视频链接
+            </text>
+          </div>
           <div style={{ marginTop: 7 }}>
             <SourceField source={source} setSource={setSource} palette={palette} />
           </div>
-          <div style={{ minHeight: 30, marginTop: 9, display: "flex", flexDirection: "row", alignItems: "center", gap: 9 }}>
+          <div style={{ minHeight: 33, marginTop: 9, display: "flex", flexDirection: "row", alignItems: "center", gap: 9 }}>
             <Button
               label="生成地址"
               palette={palette}
               icon="play"
-              iconColor={palette.accentTeal}
+              iconColor={palette.accentRose}
               onClick={() => void convert()}
               disabled={!source.trim() || scene === "loading" || playbackUpdating !== null}
               testId="convert-source"
             />
-            {scene === "loading" ? <Loading palette={palette} /> : null}
+            {scene === "loading" ? (
+              <MotionFade key="loading" duration={MOTION.stateCrossfadeSeconds}>
+                <Loading palette={palette} />
+              </MotionFade>
+            ) : null}
             {scene === "loading" ? (
               <div style={{ flexGrow: 1, display: "flex", justifyContent: "flex-end" }}>
-                <Button label="取消" palette={palette} quiet onClick={cancelConversion} />
+                <MotionFade key="cancel-conversion" duration={MOTION.stateCrossfadeSeconds}>
+                  <Button label="取消" palette={palette} quiet onClick={cancelConversion} />
+                </MotionFade>
               </div>
             ) : null}
           </div>
 
           {scene === "error" ? (
-            <div
+            <MotionFade
+              key="error"
               style={{
-                minHeight: 34,
+                minHeight: 36,
                 marginTop: 14,
                 display: "flex",
                 flexDirection: "row",
@@ -2957,35 +3840,40 @@ export function AppSurface({
               }}
             >
               <StatusDot color={palette.accentRose} />
-              <text style={{ color: palette.inkSoft, fontFamily: FONT_UI, fontSize: 11 }}>
+              <text style={{ color: palette.inkSoft, fontFamily: FONT_UI, fontSize: 12.5 }}>
                 {conversionError}
               </text>
               <div style={{ flexGrow: 1 }} />
               <Button label="重试" palette={palette} quiet onClick={() => void convert()} />
-            </div>
+            </MotionFade>
           ) : null}
 
           {scene === "ready-vod" ? (
-            <Result
-              palette={palette}
-              part={part}
-              onPartChange={changePart}
-              playbackPosition={playbackPosition}
-              onPlaybackPositionChange={setPlaybackPosition}
-              onPlaybackPositionCommit={commitPlaybackPosition}
-              onSeekInteractionChange={setSeekInteractionActive}
-              playbackUpdating={playbackUpdating}
-              playbackMessage={playbackMessage}
-              danmaku={danmaku}
-              onDanmakuChange={changeDanmakuVisibility}
-              onOpenDanmaku={() => showSubview("danmaku")}
-              onOpenSettings={() => showSubview("settings")}
-              onStopRelay={() => void stopRelay()}
-              sourceResolution={sourceResolution}
-              relayStatus={relayStatus}
-              relayError={relayError}
-              relayStopping={relayStopping}
-            />
+            <MotionFade key="ready-vod">
+              <Result
+                palette={palette}
+                part={part}
+                onPartChange={changePart}
+                playbackPosition={playbackPosition}
+                onPlaybackPositionChange={setPlaybackPosition}
+                onPlaybackPositionCommit={commitPlaybackPosition}
+                onSeekInteractionChange={setSeekInteractionActive}
+                playbackUpdating={playbackUpdating}
+                playbackMessage={playbackMessage}
+                playbackPaused={playbackPaused}
+                playbackToggling={playbackToggling}
+                onTogglePlayback={() => void togglePlayback()}
+                danmaku={danmaku}
+                onDanmakuChange={changeDanmakuVisibility}
+                onOpenDanmaku={() => showSubview("danmaku")}
+                onOpenSettings={() => showSubview("settings")}
+                onStopRelay={() => void stopRelay()}
+                sourceResolution={sourceResolution}
+                relayStatus={relayStatus}
+                relayError={relayError}
+                relayStopping={relayStopping}
+              />
+            </MotionFade>
           ) : null}
         </div>
       )}
@@ -3009,13 +3897,13 @@ function relayErrorMessage(error: unknown): string {
     case "live_stream_not_found":
     case "h264_stream_not_found":
     case "unsupported_video_format":
-      return "没有找到可以转换的 H.264 媒体流。";
+      return "没有找到可用的视频流。";
     case "unsupported_media_source":
     case "invalid_media_source":
-      return "只支持 MP4、HLS、MPEG-TS 和 FLV 媒体链接。";
+      return "暂不支持这个媒体链接。";
     case "ffprobe_start_failed":
     case "ffprobe_status_failed":
-      return "FFprobe 无法启动，请在设置中重新下载视频处理组件。";
+      return "视频处理组件无法启动，请在设置中重新下载。";
     case "media_probe_timeout":
       return "读取媒体信息超时，请检查链接后重试。";
     case "media_probe_failed":
@@ -3074,12 +3962,12 @@ function relayErrorMessage(error: unknown): string {
     case "live_danmaku_start_failed":
       return "直播弹幕处理没有启动，请重新生成地址。";
     case "ffmpeg_live_danmaku_unsupported":
-      return "当前 FFmpeg 缺少直播弹幕所需滤镜，请更换完整版本。";
+      return "当前视频处理组件不支持直播弹幕，请在设置中重新下载。";
     case "ffmpeg_start_failed":
     case "ffmpeg_status_failed":
-      return "FFmpeg 无法启动，请检查视频处理设置。";
+      return "视频处理组件无法启动，请检查相关设置。";
     case "ffmpeg_install_failed":
-      return "FFmpeg 下载服务暂时不可用，请稍后重试。";
+      return "视频处理组件暂时无法下载，请稍后重试。";
     case "worker_unavailable":
     case "worker_exited":
       return "视频处理服务没有启动，请重新打开软件。";
@@ -3116,7 +4004,7 @@ function mediaStateLabel(state: MediaComponentState): string {
     case "external":
       return "已找到电脑上的 FFmpeg";
     case "managed":
-      return "正在使用软件管理的 FFmpeg";
+      return "FFmpeg 已就绪";
     case "downloading":
       return "正在下载 FFmpeg";
     case "failed":
@@ -3128,14 +4016,14 @@ function mediaStateLabel(state: MediaComponentState): string {
   }
 }
 
-function mediaStateCaption(state: MediaComponentState, status: FfmpegStatus | null): string {
+function mediaStateCaption(state: MediaComponentState, status: FfmpegStatus | null): string | null {
   switch (state) {
     case "checking":
-      return "由 Rust 视频处理服务检测";
+      return null;
     case "external":
-      return "可以直接使用，不需要下载";
+      return null;
     case "managed":
-      return status?.version ? `软件管理 · FFmpeg ${status.version}` : "由软件统一管理";
+      return null;
     case "downloading":
       return downloadProgressCaption(status);
     case "failed":

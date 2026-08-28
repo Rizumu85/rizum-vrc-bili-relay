@@ -2,6 +2,7 @@ param(
     [string]$OutputPath = "artifacts\live-window.png",
     [string]$ExecutablePath,
     [string]$Source,
+    [string]$SettingsPath,
     [ValidateSet("light", "dark")]
     [string]$Theme = "light",
     [ValidateSet("idle", "loading", "error", "ready-vod", "settings", "danmaku")]
@@ -9,7 +10,19 @@ param(
     [switch]$GenerateAddress,
     [switch]$OpenSettings,
     [switch]$ReturnFromSubview,
-    [switch]$OpenLogin
+    [switch]$OpenLogin,
+    [switch]$TypeSampleStreamKey,
+    [switch]$RevealSampleStreamKey,
+    [switch]$SaveSettings,
+    [switch]$OpenDanmakuFont,
+    [switch]$OpenPartSelect,
+    [switch]$FocusSource,
+    [switch]$DragSelectSourceInside,
+    [switch]$DragSelectSourceOutside,
+    [switch]$DragSelectStaticText,
+    [switch]$ScrollContent,
+    [ValidateRange(250, 10000)]
+    [int]$SettleMilliseconds = 1000
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +33,7 @@ $outputDirectory = Split-Path -Parent $resolvedOutput
 
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Windows.Forms
 
 Add-Type @"
 using System;
@@ -68,7 +82,13 @@ $startInfo.EnvironmentVariables["VRC_BILI_RELAY_SCENE"] = $Scene
 if ($Source) {
     $startInfo.EnvironmentVariables["VRC_BILI_RELAY_SOURCE"] = $Source
 }
+if ($SettingsPath) {
+    $startInfo.EnvironmentVariables["VRC_BILI_RELAY_SETTINGS"] = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot $SettingsPath))
+}
 
+# Start reference captures with the pointer outside the future window bounds so
+# the first painted frame does not inherit a caption-button hover state.
+[GpuixWindowCapture]::SetCursorPos(0, 0) | Out-Null
 $process = [System.Diagnostics.Process]::Start($startInfo)
 try {
     $windowHandle = [IntPtr]::Zero
@@ -89,12 +109,13 @@ try {
     [GpuixWindowCapture]::ShowWindow($windowHandle, 1) | Out-Null
     [GpuixWindowCapture]::SetForegroundWindow($windowHandle) | Out-Null
     # Keep the product surface unobscured while CopyFromScreen reads its pixels.
-    [GpuixWindowCapture]::SetWindowPos($windowHandle, [IntPtr](-1), 0, 0, 0, 0, 0x0013) | Out-Null
-    Start-Sleep -Seconds 1
+    [GpuixWindowCapture]::SetWindowPos($windowHandle, [IntPtr](-1), 96, 96, 0, 0, 0x0013) | Out-Null
+    Start-Sleep -Milliseconds $SettleMilliseconds
     $rectangle = New-Object GpuixWindowCapture+RECT
     [GpuixWindowCapture]::GetWindowRect($windowHandle, [ref]$rectangle) | Out-Null
     $width = $rectangle.Right - $rectangle.Left
     $height = $rectangle.Bottom - $rectangle.Top
+    $logicalWidth = if ($Scene -eq "settings") { 528 } elseif ($Scene -eq "danmaku") { 484 } else { 472 }
     if ($width -le 0 -or $height -le 0) {
         throw "The GPUIX window reported an invalid size."
     }
@@ -102,41 +123,146 @@ try {
     if ($GenerateAddress) {
         # The capture window is fixed-size. Click the centre of the Generate button,
         # then allow the Rust worker and Bilibili request to complete before capture.
-        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + 93, $rectangle.Top + 226) | Out-Null
+        $scale = $width / $logicalWidth
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](93 * $scale), $rectangle.Top + [int](136 * $scale)) | Out-Null
         [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
         [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
         Start-Sleep -Seconds 7
     }
 
+    if ($FocusSource -or $DragSelectSourceInside -or $DragSelectSourceOutside) {
+        if ($Scene -ne "idle" -and $Scene -ne "ready-vod") {
+            throw "Source input probes require -Scene idle or -Scene ready-vod."
+        }
+        $scale = $width / $logicalWidth
+        $sourceY = $rectangle.Top + [int](100 * $scale)
+        $sourceX = $rectangle.Left + [int](64 * $scale)
+        [GpuixWindowCapture]::SetCursorPos($sourceX, $sourceY) | Out-Null
+        [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        if ($DragSelectSourceInside -or $DragSelectSourceOutside) {
+            Start-Sleep -Milliseconds 35
+            $selectionTargetX = if ($DragSelectSourceOutside) {
+                $rectangle.Right + [int](120 * $scale)
+            } else {
+                $rectangle.Left + [int](330 * $scale)
+            }
+            [GpuixWindowCapture]::SetCursorPos($selectionTargetX, $sourceY) | Out-Null
+            Start-Sleep -Milliseconds 220
+        }
+        [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds $(if ($DragSelectSourceInside -or $DragSelectSourceOutside) { 350 } else { 50 })
+    }
+
     if ($OpenSettings) {
-        [GpuixWindowCapture]::SetCursorPos($rectangle.Right - 42, $rectangle.Top + 78) | Out-Null
+        $scale = $width / $logicalWidth
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](296 * $scale), $rectangle.Top + [int](21 * $scale)) | Out-Null
         [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
         [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
         Start-Sleep -Seconds 2
         [GpuixWindowCapture]::GetWindowRect($windowHandle, [ref]$rectangle) | Out-Null
         $width = $rectangle.Right - $rectangle.Left
         $height = $rectangle.Bottom - $rectangle.Top
+        $logicalWidth = 528
     }
 
     if ($OpenLogin) {
         # Open the account side of the settings segmented control and allow the
         # worker to request the QR payload before capture.
-        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int]($width * 0.86), $rectangle.Top + [int]($height * 0.35)) | Out-Null
+        $scale = $width / $logicalWidth
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](447 * $scale), $rectangle.Top + [int](114 * $scale)) | Out-Null
         [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
         [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
         Start-Sleep -Seconds 4
     }
 
+    if ($TypeSampleStreamKey) {
+        $scale = $width / $logicalWidth
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](208 * $scale), $rectangle.Top + [int](114 * $scale)) | Out-Null
+        [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 150
+        [System.Windows.Forms.SendKeys]::SendWait("vrcdn_sample_stream_key_123456")
+        Start-Sleep -Milliseconds 350
+
+    }
+
+    if ($SaveSettings) {
+        $scale = $width / $logicalWidth
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](174 * $scale), $rectangle.Top + [int](303 * $scale)) | Out-Null
+        [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Seconds 1
+    }
+
+    if ($RevealSampleStreamKey) {
+        $scale = $width / $logicalWidth
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](274 * $scale), $rectangle.Top + [int](116 * $scale)) | Out-Null
+        [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 500
+    }
+
     if ($ReturnFromSubview) {
-        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + 52, $rectangle.Top + 76) | Out-Null
+        $scale = $width / $logicalWidth
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](21 * $scale), $rectangle.Top + [int](21 * $scale)) | Out-Null
         [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
         [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
         Start-Sleep -Seconds 2
     }
 
+    if ($OpenDanmakuFont) {
+        if ($Scene -ne "danmaku") {
+            throw "OpenDanmakuFont requires -Scene danmaku."
+        }
+        $scale = $width / $logicalWidth
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](279 * $scale), $rectangle.Top + [int](398 * $scale)) | Out-Null
+        [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 500
+    }
+
+    if ($OpenPartSelect) {
+        if ($Scene -ne "ready-vod") {
+            throw "OpenPartSelect requires -Scene ready-vod."
+        }
+        $scale = $width / $logicalWidth
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](276 * $scale), $rectangle.Top + [int](262 * $scale)) | Out-Null
+        [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 500
+    }
+
+    if ($DragSelectStaticText) {
+        if ($Scene -ne "settings") {
+            throw "DragSelectStaticText currently targets the settings surface."
+        }
+        $scale = $width / $logicalWidth
+        $selectionY = $rectangle.Top + [int](277 * $scale)
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](39 * $scale), $selectionY) | Out-Null
+        [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 40
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](296 * $scale), $selectionY) | Out-Null
+        Start-Sleep -Milliseconds 120
+        [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 250
+    }
+
+    if ($ScrollContent) {
+        $scale = $width / $logicalWidth
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](240 * $scale), $rectangle.Top + [int](230 * $scale)) | Out-Null
+        [GpuixWindowCapture]::mouse_event(0x0800, 0, 0, [uint32]4294966576, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 300
+    }
+
     [GpuixWindowCapture]::GetWindowRect($windowHandle, [ref]$rectangle) | Out-Null
     $width = $rectangle.Right - $rectangle.Left
     $height = $rectangle.Bottom - $rectangle.Top
+
+    # Keep hover-only fills out of reference captures unless a probe explicitly
+    # needs them. The pointer can otherwise remain over a caption button after
+    # an earlier interaction and make the shared title-bar band look unbalanced.
+    [GpuixWindowCapture]::SetCursorPos($rectangle.Left - 16, $rectangle.Bottom + 16) | Out-Null
+    Start-Sleep -Milliseconds 250
 
     $bitmap = New-Object System.Drawing.Bitmap $width, $height
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
