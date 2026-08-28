@@ -7,6 +7,10 @@ const SWP_NOZORDER = 0x0004;
 const SWP_NOACTIVATE = 0x0010;
 const SW_MINIMIZE = 6;
 const WM_CLOSE = 0x0010;
+const WM_SETICON = 0x0080;
+const ICON_SMALL = 0;
+const ICON_BIG = 1;
+const ICON_SMALL2 = 2;
 const SPI_GETCLIENTAREAANIMATION = 0x1042;
 const VK_LBUTTON = 0x01;
 
@@ -88,6 +92,10 @@ const user32 = process.platform === "win32"
         args: [FFIType.ptr, FFIType.uint32_t, FFIType.u64, FFIType.i64],
         returns: FFIType.bool,
       },
+      SendMessageW: {
+        args: [FFIType.ptr, FFIType.uint32_t, FFIType.u64, FFIType.i64],
+        returns: FFIType.i64,
+      },
       ShowWindow: {
         args: [FFIType.ptr, FFIType.int32_t],
         returns: FFIType.bool,
@@ -110,6 +118,49 @@ const user32 = process.platform === "win32"
       },
     } as const)
   : null;
+
+const shell32 = process.platform === "win32"
+  ? dlopen("shell32.dll", {
+      ExtractIconExW: {
+        args: [FFIType.ptr, FFIType.int32_t, FFIType.ptr, FFIType.ptr, FFIType.uint32_t],
+        returns: FFIType.uint32_t,
+      },
+    } as const)
+  : null;
+
+const productWindowIconHandles: bigint[] = [];
+
+export function setProductWindowIconFromExecutable(): boolean {
+  if (!user32 || !shell32) return false;
+  if (process.execPath.toLowerCase().endsWith("\\bun.exe")) return false;
+  const handle = findCurrentProcessWindow();
+  if (!handle) return false;
+
+  const executablePath = Buffer.from(`${process.execPath}\0`, "utf16le");
+  const largeIcons = new BigUint64Array(1);
+  const smallIcons = new BigUint64Array(1);
+  const extracted = shell32.symbols.ExtractIconExW(
+    ptr(executablePath),
+    0,
+    ptr(largeIcons),
+    ptr(smallIcons),
+    1,
+  );
+  if (extracted === 0) return false;
+
+  const largeIcon = largeIcons[0] ?? 0n;
+  const smallIcon = smallIcons[0] ?? 0n;
+  if (largeIcon !== 0n) {
+    user32.symbols.SendMessageW(handle, WM_SETICON, BigInt(ICON_BIG), largeIcon);
+    productWindowIconHandles.push(largeIcon);
+  }
+  if (smallIcon !== 0n) {
+    user32.symbols.SendMessageW(handle, WM_SETICON, BigInt(ICON_SMALL), smallIcon);
+    user32.symbols.SendMessageW(handle, WM_SETICON, BigInt(ICON_SMALL2), smallIcon);
+    productWindowIconHandles.push(smallIcon);
+  }
+  return largeIcon !== 0n || smallIcon !== 0n;
+}
 
 export function beginProductWindowDrag(): boolean {
   if (!user32) return false;

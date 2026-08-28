@@ -3,6 +3,7 @@ import { render } from "@gpuix/react";
 import { AppSurface, sceneWindowHeight, sceneWindowWidth, type Scene } from "./app";
 import {
   PRODUCT_WINDOW_TITLE,
+  setProductWindowIconFromExecutable,
   setProductWindowPointerRenderer,
 } from "./platform/window";
 import type { ThemePreference } from "./settings";
@@ -43,6 +44,10 @@ render(
     windowBackground: "blurred",
   },
 );
+
+// GPUIX 0.5.1 has no window-icon option. Assign the icon embedded by Bun to
+// the live HWND so the taskbar does not keep a stale shell-cached silhouette.
+setProductWindowIconFromExecutable();
 
 // GPUIX does not yet expose the live renderer returned by render(). Its render
 // host is synchronous, so bridge the retained instance after mounting. This

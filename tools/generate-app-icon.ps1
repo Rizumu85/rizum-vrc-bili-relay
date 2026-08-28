@@ -9,6 +9,8 @@ Add-Type -AssemblyName System.Drawing
 
 $tileInset = 52
 $tileSize = 1150
+# Keep the approved, restrained tile silhouette. Runtime taskbar consistency
+# is handled by explicitly assigning this embedded icon to the native window.
 $cornerRadius = 207
 $iconSizes = @(16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 128, 256)
 
