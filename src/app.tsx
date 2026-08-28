@@ -54,7 +54,7 @@ export function sceneWindowHeight(
   if (scene === "idle" || scene === "loading") return 178;
   if (scene === "error") return 230;
   if (scene === "ready-vod") return singlePartVideo ? 435 : 470;
-  if (scene === "settings") return settingsExpanded ? 400 : 364;
+  if (scene === "settings") return settingsExpanded ? 389 : 353;
   return 572;
 }
 
@@ -2979,7 +2979,7 @@ function SettingsView({
 
       <div
         style={{
-          minHeight: 44,
+          minHeight: 33,
           marginTop: 16,
           paddingTop: 12,
           borderTopWidth: 1,
