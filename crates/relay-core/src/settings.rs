@@ -179,6 +179,13 @@ impl SettingsStore {
         self.load_private().map(|settings| settings.public())
     }
 
+    pub fn reveal_stream_key(&self) -> Result<String, RelayError> {
+        self.load_private()?
+            .stream_key
+            .plaintext()
+            .map(str::to_string)
+    }
+
     pub fn save(&self, update: SettingsUpdate) -> Result<ProductSettings, RelayError> {
         let stream_key = match update.stream_key {
             Some(key) => StreamKeySecret::from_plaintext(key)?,

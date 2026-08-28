@@ -19,7 +19,7 @@ use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 use settings::SettingsStore;
 
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -70,6 +70,7 @@ pub enum Command {
     },
     LogoutBilibili,
     GetSettings,
+    RevealStreamKey,
     SaveSettings {
         settings: SettingsUpdate,
     },
@@ -131,6 +132,9 @@ pub enum Reply {
     },
     SettingsState {
         settings: ProductSettings,
+    },
+    StreamKeyValue {
+        stream_key: String,
     },
     ShutdownAccepted,
 }
@@ -706,6 +710,9 @@ impl RelayCore {
             }),
             Command::GetSettings => Ok(Reply::SettingsState {
                 settings: self.settings.load()?,
+            }),
+            Command::RevealStreamKey => Ok(Reply::StreamKeyValue {
+                stream_key: self.settings.reveal_stream_key()?,
             }),
             Command::SaveSettings { settings } => Ok(Reply::SettingsState {
                 settings: self.settings.save(settings)?,

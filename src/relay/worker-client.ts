@@ -21,6 +21,7 @@ import {
   type SourceResolution,
   type SourceResolutionReply,
   type SettingsStateReply,
+  type StreamKeyValueReply,
 } from "./protocol";
 
 interface PendingRequest {
@@ -167,6 +168,18 @@ export class RelayWorkerClient {
 
   async getSettings(): Promise<ProductSettings> {
     return this.settingsRequest({ type: "get_settings" });
+  }
+
+  async revealStreamKey(): Promise<string> {
+    await this.health();
+    const reply = await this.request({ type: "reveal_stream_key" });
+    if (reply.type !== "stream_key_value") {
+      throw new RelayWorkerError(
+        "protocol_mismatch",
+        `Expected stream key value, received ${reply.type}`,
+      );
+    }
+    return (reply as StreamKeyValueReply).stream_key;
   }
 
   async saveSettings(settings: SettingsUpdate): Promise<ProductSettings> {

@@ -1,4 +1,4 @@
-export const RELAY_PROTOCOL_VERSION = 13;
+export const RELAY_PROTOCOL_VERSION = 14;
 
 export type SourceKind = "video" | "live" | "media" | "short_link";
 export type RelayNextStep =
@@ -185,6 +185,11 @@ export interface SettingsStateReply {
   settings: ProductSettings;
 }
 
+export interface StreamKeyValueReply {
+  type: "stream_key_value";
+  stream_key: string;
+}
+
 export interface ShutdownAcceptedReply {
   type: "shutdown_accepted";
 }
@@ -198,6 +203,7 @@ export type RelayReply =
   | FfmpegStateReply
   | BilibiliAuthStateReply
   | SettingsStateReply
+  | StreamKeyValueReply
   | ShutdownAcceptedReply;
 
 export interface RelayFailure {
