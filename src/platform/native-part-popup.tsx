@@ -18,9 +18,9 @@ const MENU_WIDTH = 368;
 const MENU_ROW_HEIGHT = 31;
 const MENU_MAX_ROWS = 6;
 const MENU_PADDING = 4;
-const WINDOW_PADDING_X = 10;
-const WINDOW_PADDING_TOP = 8;
-const WINDOW_PADDING_BOTTOM = 16;
+const WINDOW_PADDING_X = 0;
+const WINDOW_PADDING_TOP = 0;
+const WINDOW_PADDING_BOTTOM = 0;
 
 const GWL_STYLE = -16;
 const GWL_EXSTYLE = -20;
@@ -37,6 +37,12 @@ const SWP_SHOWWINDOW = 0x0040;
 const WM_CLOSE = 0x0010;
 const MONITOR_DEFAULTTONEAREST = 0x00000002;
 const VK_LBUTTON = 0x01;
+const DWMWA_NCRENDERING_POLICY = 2;
+const DWMNCRP_DISABLED = 1;
+const DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+const DWMWCP_DONOTROUND = 1;
+const DWMWA_BORDER_COLOR = 34;
+const DWMWA_COLOR_NONE = 0xfffffffe;
 
 type WindowHandle = ReturnType<typeof ptr> | bigint;
 
@@ -143,6 +149,15 @@ const user32 = process.platform === "win32"
     } as const)
   : null;
 
+const dwmapi = process.platform === "win32"
+  ? dlopen("dwmapi.dll", {
+      DwmSetWindowAttribute: {
+        args: [FFIType.ptr, FFIType.uint32_t, FFIType.ptr, FFIType.uint32_t],
+        returns: FFIType.int32_t,
+      },
+    } as const)
+  : null;
+
 let popupRenderer: ReturnType<typeof createRenderer> | null = null;
 let popupRoot: Root | null = null;
 let popupHandle: WindowHandle | null = null;
@@ -240,6 +255,32 @@ function configurePopupWindow(handle: WindowHandle, mainHandle: WindowHandle): v
   user32.symbols.SetWindowLongPtrW(handle, GWL_STYLE, signedLong(popupStyle));
   user32.symbols.SetWindowLongPtrW(handle, GWL_EXSTYLE, signedLong(popupExStyle));
   user32.symbols.SetWindowLongPtrW(handle, GWLP_HWNDPARENT, signedLong(handleValue(mainHandle)));
+  disableNativePopupDecoration(handle);
+}
+
+function disableNativePopupDecoration(handle: WindowHandle): void {
+  if (!dwmapi) return;
+  const nonClientPolicy = new Uint32Array([DWMNCRP_DISABLED]);
+  const cornerPreference = new Uint32Array([DWMWCP_DONOTROUND]);
+  const borderColor = new Uint32Array([DWMWA_COLOR_NONE]);
+  dwmapi.symbols.DwmSetWindowAttribute(
+    handle,
+    DWMWA_NCRENDERING_POLICY,
+    ptr(nonClientPolicy),
+    nonClientPolicy.byteLength,
+  );
+  dwmapi.symbols.DwmSetWindowAttribute(
+    handle,
+    DWMWA_WINDOW_CORNER_PREFERENCE,
+    ptr(cornerPreference),
+    cornerPreference.byteLength,
+  );
+  dwmapi.symbols.DwmSetWindowAttribute(
+    handle,
+    DWMWA_BORDER_COLOR,
+    ptr(borderColor),
+    borderColor.byteLength,
+  );
 }
 
 function positionPopupWindow(
@@ -266,7 +307,10 @@ function positionPopupWindow(
   const logicalWindowHeight = panelHeight + WINDOW_PADDING_TOP + WINDOW_PADDING_BOTTOM;
   const physicalWindowWidth = Math.round(logicalWindowWidth * scaleX);
   const physicalWindowHeight = Math.round(logicalWindowHeight * scaleY);
-  const panelLeft = clientOrigin[0] + Math.round(anchorX * scaleX);
+  // GPUIX 0.5.1 already reports horizontal element origins in physical
+  // client pixels on Windows, while the popup window size remains logical.
+  // Scaling anchorX again shifts the menu right at 125%+ display scaling.
+  const panelLeft = clientOrigin[0] + Math.round(anchorX);
   const anchorTop = clientOrigin[1] + Math.round(anchorY * scaleY);
   const anchorBottom = clientOrigin[1] + Math.round((anchorY + anchorHeight) * scaleY);
   const panelGap = Math.round(6 * scaleY);
@@ -276,24 +320,52 @@ function positionPopupWindow(
   const panelTop = canOpenBelow
     ? anchorBottom + panelGap
     : Math.max(workArea.top + 8, anchorTop - panelGap - panelHeightPhysical);
-  const desiredLeft = Math.round(
+  const desiredPanelLeft = Math.round(
     Math.min(
       workArea.right - 8 - physicalWindowWidth,
-      Math.max(workArea.left + 8, panelLeft - WINDOW_PADDING_X * scaleX),
+      Math.max(workArea.left + 8, panelLeft),
     ),
   );
-  const desiredTop = Math.round(panelTop - WINDOW_PADDING_TOP * scaleY);
+  const desiredPanelTop = Math.round(panelTop);
 
   user32.symbols.SetWindowPos(
     handle,
     null,
-    desiredLeft,
-    desiredTop,
+    desiredPanelLeft,
+    desiredPanelTop,
     physicalWindowWidth,
     physicalWindowHeight,
     SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
   );
+  alignPopupClientOrigin(handle, desiredPanelLeft, desiredPanelTop, physicalWindowWidth, physicalWindowHeight);
   user32.symbols.ShowWindow(handle, SW_SHOW);
+}
+
+function alignPopupClientOrigin(
+  handle: WindowHandle,
+  desiredClientLeft: number,
+  desiredClientTop: number,
+  width: number,
+  height: number,
+): void {
+  if (!user32) return;
+  const windowRect = new Int32Array(4);
+  const clientOrigin = new Int32Array(2);
+  if (!user32.symbols.GetWindowRect(handle, ptr(windowRect)) || !user32.symbols.ClientToScreen(handle, ptr(clientOrigin))) {
+    return;
+  }
+  const insetX = clientOrigin[0] - windowRect[0];
+  const insetY = clientOrigin[1] - windowRect[1];
+  if (insetX === 0 && insetY === 0) return;
+  user32.symbols.SetWindowPos(
+    handle,
+    null,
+    desiredClientLeft - insetX,
+    desiredClientTop - insetY,
+    width,
+    height,
+    SWP_NOACTIVATE | SWP_SHOWWINDOW,
+  );
 }
 
 function monitorWorkArea(handle: WindowHandle): { left: number; top: number; right: number; bottom: number } {
@@ -510,13 +582,6 @@ function NativePartPopupSurface({
           borderWidth: 1,
           borderColor: request.palette.panelEdge,
           backgroundColor: request.palette.panel,
-          boxShadow: {
-            offsetX: 0,
-            offsetY: 12,
-            blurRadius: 30,
-            spreadRadius: 0,
-            color: request.palette.floatingShadow,
-          },
         }}
       >
         <div
