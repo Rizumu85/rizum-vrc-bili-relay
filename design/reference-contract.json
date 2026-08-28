@@ -7,7 +7,7 @@
   },
   "viewport": {
     "width": 472,
-    "height": 480,
+    "height": 470,
     "scale": 1
   },
   "components": [
@@ -18,8 +18,8 @@
         "minWidth": 472,
         "preferredWidth": 472,
         "maxWidth": 472,
-        "preferredHeight": 480,
-        "padding": "shared Windows title-bar band 43px; body 17px 26px 26px",
+        "preferredHeight": 470,
+        "padding": "shared Windows title-bar band 43px; body 17px 26px 16px",
         "gap": 12
       },
       "tokens": {
@@ -67,7 +67,7 @@
         "gap": 13
       },
       "tokens": {
-        "singlePartWindowHeight": 445,
+        "singlePartWindowHeight": 435,
         "inputHeight": 35,
         "nativeEditorHeight": 19,
         "nativeEditorOffsetY": -4,
@@ -97,8 +97,8 @@
         "minWidth": 528,
         "preferredWidth": 528,
         "maxWidth": 528,
-        "preferredHeight": 378,
-        "padding": "shared title-bar band 43px; body 17px 26px 26px",
+        "preferredHeight": 364,
+        "padding": "shared title-bar band 43px; body 17px 26px 16px",
         "gap": 20
       },
       "tokens": {
@@ -113,7 +113,8 @@
         "segmentedTypography": "Noto Sans SC 12px regular with a fixed line box across every option; the 170px appearance control keeps the approved 64 / 42 / 42 proportions so the four-character system option retains relaxed side space after native legibility correction",
         "buttonSurface": "rgba(255,255,255,.84) in light appearance; native-composition calibration of the web control surface",
         "sectionDividers": "Horizontal section dividers use the surface-line color at 50% alpha; the two-column structural divider uses 55% alpha. Control outlines keep the solid surface-line token.",
-        "expandedHeight": 414,
+        "expandedHeight": 400,
+        "footerRhythm": "The final settings action row uses 16px before its divider, 12px after the divider, and a 16px bottom safe area. The title entrance keeps its wider breathing room; the commit boundary closes more tightly without crowding the controls.",
         "mediaRowSizing": "Prototype rhythm: 18px section separation and 14px inset above the media status; 30px compact status row and 44px when download action, progress, or error detail is present",
         "secretField": "Masked by default with a compact trailing eye action; saved plaintext is requested from Rust only after explicit reveal",
         "accountPopover": "The QR login popover is bounded to the 188px account column: 170px content width, 10px inset, a 116px QR well, and compact status/footer copy. It must remain inside the product panel at every settings height.",

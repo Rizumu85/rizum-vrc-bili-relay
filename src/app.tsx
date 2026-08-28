@@ -51,10 +51,10 @@ export function sceneWindowHeight(
   settingsExpanded = false,
   singlePartVideo = false,
 ): number {
-  if (scene === "idle" || scene === "loading") return 188;
-  if (scene === "error") return 240;
-  if (scene === "ready-vod") return singlePartVideo ? 445 : 480;
-  if (scene === "settings") return settingsExpanded ? 414 : 378;
+  if (scene === "idle" || scene === "loading") return 178;
+  if (scene === "error") return 230;
+  if (scene === "ready-vod") return singlePartVideo ? 435 : 470;
+  if (scene === "settings") return settingsExpanded ? 400 : 364;
   return 572;
 }
 
@@ -2774,7 +2774,7 @@ function SettingsView({
         overflow: "hidden",
         paddingTop: 17,
         paddingRight: 26,
-        paddingBottom: 26,
+        paddingBottom: 16,
         paddingLeft: 26,
       }}
     >
@@ -2980,8 +2980,8 @@ function SettingsView({
       <div
         style={{
           minHeight: 44,
-          marginTop: 18,
-          paddingTop: 14,
+          marginTop: 16,
+          paddingTop: 12,
           borderTopWidth: 1,
           borderColor: palette.surfaceDivider,
           display: "flex",
@@ -3789,7 +3789,7 @@ export function AppSurface({
           />
         </MotionFade>
       ) : (
-        <div style={{ flexGrow: 1, minHeight: 0, paddingTop: 17, paddingRight: 26, paddingBottom: 26, paddingLeft: 26 }}>
+        <div style={{ flexGrow: 1, minHeight: 0, paddingTop: 17, paddingRight: 26, paddingBottom: 16, paddingLeft: 26 }}>
           <div style={{ height: 17, display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
             <StatusDot color={palette.accentRose} />
             <text style={{ color: palette.inkMuted, fontFamily: FONT_SERIF, fontSize: 13, fontWeight: 600 }}>
