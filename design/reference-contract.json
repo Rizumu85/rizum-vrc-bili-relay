@@ -97,7 +97,7 @@
         "minWidth": 528,
         "preferredWidth": 528,
         "maxWidth": 528,
-        "preferredHeight": 353,
+        "preferredHeight": 364,
         "padding": "shared title-bar band 43px; body 17px 26px 16px",
         "gap": 20
       },
@@ -113,7 +113,7 @@
         "segmentedTypography": "Noto Sans SC 12px regular with a fixed line box across every option; the 170px appearance control keeps the approved 64 / 42 / 42 proportions so the four-character system option retains relaxed side space after native legibility correction",
         "buttonSurface": "rgba(255,255,255,.84) in light appearance; native-composition calibration of the web control surface",
         "sectionDividers": "Horizontal section dividers use the surface-line color at 50% alpha; the two-column structural divider uses 55% alpha. Control outlines keep the solid surface-line token.",
-        "expandedHeight": 389,
+        "expandedHeight": 400,
         "footerRhythm": "The final settings action row uses 16px before its divider, 12px after the divider, a content-sized 33px action row, and a 16px bottom safe area measured from the control edge. The title entrance keeps its wider breathing room; the commit boundary closes more tightly without crowding the controls.",
         "mediaRowSizing": "Prototype rhythm: 18px section separation and 14px inset above the media status; 30px compact status row and 44px when download action, progress, or error detail is present",
         "secretField": "Masked by default with a compact trailing eye action; saved plaintext is requested from Rust only after explicit reveal",
