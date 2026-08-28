@@ -7,7 +7,7 @@
   },
   "viewport": {
     "width": 472,
-    "height": 470,
+    "height": 478,
     "scale": 1
   },
   "components": [
@@ -18,7 +18,7 @@
         "minWidth": 472,
         "preferredWidth": 472,
         "maxWidth": 472,
-        "preferredHeight": 470,
+        "preferredHeight": 478,
         "padding": "shared Windows title-bar band 43px; body 17px 26px 16px",
         "gap": 12
       },
@@ -62,12 +62,12 @@
         "minWidth": 420,
         "preferredWidth": 420,
         "maxWidth": 420,
-        "preferredHeight": 392,
+        "preferredHeight": 400,
         "padding": "0",
         "gap": 13
       },
       "tokens": {
-        "singlePartWindowHeight": 435,
+        "singlePartWindowHeight": 443,
         "inputHeight": 35,
         "nativeEditorHeight": 19,
         "nativeEditorOffsetY": -4,
@@ -75,7 +75,7 @@
         "controlRadius": 8,
         "resultSeparatorTop": 18,
         "resultSeparatorPadding": 16,
-        "runtimeSeparator": "The ready surface has three regions: source input, media routing with danmaku controls, and runtime output. Like the settings footer, the runtime row follows a quiet divider with 18px before and 14px after the line; no extra card or repeated section title is added.",
+        "runtimeSeparator": "The ready surface has three regions: source input, media routing with danmaku controls, and runtime output. Like the settings footer, the runtime row follows a quiet divider with 18px before and 14px after the line; no extra card or repeated section title is added. Its 32px minimum content box plus 2px vertical padding occupies 36px in GPUIX, and the content-sized window must preserve a separate 16px bottom safe area beneath that outer box.",
         "runtimeTypography": "Resolved playback URLs use Cascadia Mono 11.5px. Chinese preparation, routing, completion, stopped, and failure messages in the same stable row use Noto Sans SC 11.5px so missing CJK glyphs never fall through the Latin monospace face into an incidental system serif.",
         "sectionMarkers": "Source uses rose, media routing uses violet, and danmaku uses semantic amber (#F59E0B in light appearance, #FBBF24 in dark appearance). Teal remains reserved for available or healthy runtime state. The dots identify stable content groups rather than transient health states.",
         "seekVisualTrack": 2,
