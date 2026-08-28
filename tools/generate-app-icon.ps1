@@ -9,9 +9,9 @@ Add-Type -AssemblyName System.Drawing
 
 $tileInset = 52
 $tileSize = 1150
-# Keep the approved, restrained tile silhouette. Runtime taskbar consistency
-# is handled by explicitly assigning this embedded icon to the native window.
-$cornerRadius = 207
+# Fluent app icons use a 2 px exterior curve on the 48x48 construction grid.
+# 52.25 px is the exact equivalent on this 1254 px source canvas.
+$cornerRadius = 52.25
 $iconSizes = @(16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 128, 256)
 
 function Set-RoundedTileAlpha {
@@ -27,7 +27,8 @@ function Set-RoundedTileAlpha {
     $scale = $Bitmap.Width / 1254.0
     $scaledInset = [int][Math]::Round($tileInset * $scale)
     $scaledTileSize = [int][Math]::Round($tileSize * $scale)
-    $scaledRadius = [Math]::Max(1, [int][Math]::Round($cornerRadius * $scale))
+    $scaledRadius = [Math]::Max(0.5, $cornerRadius * $scale)
+    $cornerExtent = [int][Math]::Ceiling($scaledRadius)
 
     $rectangle = New-Object System.Drawing.Rectangle 0, 0, $Bitmap.Width, $Bitmap.Height
     $data = $Bitmap.LockBits(
@@ -44,9 +45,9 @@ function Set-RoundedTileAlpha {
         $far = $scaledInset + $scaledTileSize - 1
         $centers = @(
             [double[]]@(($near + $scaledRadius), ($near + $scaledRadius), $near, $near),
-            [double[]]@(($far - $scaledRadius + 1), ($near + $scaledRadius), ($far - $scaledRadius + 1), $near),
-            [double[]]@(($near + $scaledRadius), ($far - $scaledRadius + 1), $near, ($far - $scaledRadius + 1)),
-            [double[]]@(($far - $scaledRadius + 1), ($far - $scaledRadius + 1), ($far - $scaledRadius + 1), ($far - $scaledRadius + 1))
+            [double[]]@(($far - $scaledRadius + 1), ($near + $scaledRadius), ($far - $cornerExtent + 1), $near),
+            [double[]]@(($near + $scaledRadius), ($far - $scaledRadius + 1), $near, ($far - $cornerExtent + 1)),
+            [double[]]@(($far - $scaledRadius + 1), ($far - $scaledRadius + 1), ($far - $cornerExtent + 1), ($far - $cornerExtent + 1))
         )
 
         foreach ($corner in $centers) {
@@ -54,8 +55,8 @@ function Set-RoundedTileAlpha {
             $centerY = [double]$corner[1]
             $startX = [int]$corner[2]
             $startY = [int]$corner[3]
-            for ($y = $startY; $y -lt $startY + $scaledRadius; $y += 1) {
-                for ($x = $startX; $x -lt $startX + $scaledRadius; $x += 1) {
+            for ($y = $startY; $y -lt $startY + $cornerExtent; $y += 1) {
+                for ($x = $startX; $x -lt $startX + $cornerExtent; $x += 1) {
                     if ($SamplesPerAxis -le 1) {
                         $dx = ($x + 0.5) - $centerX
                         $dy = ($y + 0.5) - $centerY
