@@ -1394,8 +1394,10 @@ function Result({
   const output = isReference
     ? VIDEO_OUTPUT.replace("{part}", part)
     : relayOutputDescription(sourceResolution, relayStatus, relayError, playbackPaused);
-  const relayRunning = relayStatus?.stage === "running" && Boolean(relayStatus.playback_url);
-  const relayActive = relayStatus?.stage === "starting" || relayStatus?.stage === "running";
+  const relayRunning = (
+    relayStatus?.stage === "running" || relayStatus?.stage === "draining"
+  ) && Boolean(relayStatus.playback_url);
+  const relayActive = hasActivePublisher(relayStatus);
   const directReady = sourceResolution?.routing.kind === "direct" && Boolean(sourceResolution.playback_url);
   const canCopy = isReference || relayRunning || playbackPaused || directReady;
   const parts: PlaybackPart[] = sourceResolution?.kind === "video"
@@ -1527,7 +1529,11 @@ function Result({
               onInteractionChange={onSeekInteractionChange}
               disabled={playbackUpdating !== null}
               showTransport={showTransport}
-              playing={isReference ? !playbackPaused : relayActive && !playbackPaused}
+              playing={
+                isReference
+                  ? !playbackPaused
+                  : relayStatus?.stage === "running" && !playbackPaused
+              }
               transportBusy={
                 playbackToggling
                 || playbackUpdating !== null
@@ -1625,7 +1631,7 @@ function Result({
               onClick={() => void copy()}
             />
           ) : null}
-          {!isReference && (relayStatus?.stage === "starting" || relayStatus?.stage === "running") ? (
+          {!isReference && hasActivePublisher(relayStatus) ? (
             <Button
               label={relayStopping ? "停止中" : "停止"}
               palette={palette}
@@ -1678,6 +1684,8 @@ function resultStatusLabel(
       return "· 正在连接 VRCDN";
     case "running":
       return "· 中继运行中 · 请保持软件运行";
+    case "draining":
+      return "· 视频已结束 · 等待播放器播完";
     case "completed":
       return "· 视频播放完成";
     case "stopped":
@@ -1696,7 +1704,10 @@ function relayOutputDescription(
   playbackPaused = false,
 ): string {
   if (source.routing.kind === "direct" && source.playback_url) return source.playback_url;
-  if (relay?.playback_url && (relay.stage === "running" || playbackPaused)) return relay.playback_url;
+  if (
+    relay?.playback_url
+    && (relay.stage === "running" || relay.stage === "draining" || playbackPaused)
+  ) return relay.playback_url;
   if (relay?.stage === "starting") return "正在准备播放地址";
   if (relay?.stage === "completed") return "视频已播放完成";
   if (relay?.stage === "stopped") return "中继已停止，重新生成地址即可再次启动";
@@ -1723,6 +1734,12 @@ function routeDescription(source: SourceResolution): string {
     case "direct_compatible":
       return "媒体流可以直接播放";
   }
+}
+
+function hasActivePublisher(relay: RelayStatus | null | undefined): boolean {
+  return relay?.stage === "starting"
+    || relay?.stage === "running"
+    || relay?.stage === "draining";
 }
 
 function SectionHeading({
@@ -3345,7 +3362,7 @@ export function AppSurface({
   }, [mediaStatus?.availability]);
 
   useEffect(() => {
-    if (!relayStatus || (relayStatus.stage !== "starting" && relayStatus.stage !== "running")) return;
+    if (!relayStatus || !hasActivePublisher(relayStatus)) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const poll = async () => {
@@ -3358,7 +3375,7 @@ export function AppSurface({
             setPlaybackPosition(latest.position_seconds);
           }
           if (latest.stage === "failed") setRelayError("中继启动失败，检查设置后再试。");
-          if (latest.stage === "starting" || latest.stage === "running") {
+          if (hasActivePublisher(latest)) {
             timer = setTimeout(poll, latest.stage === "starting" ? 700 : 2000);
           }
         }
@@ -3396,7 +3413,7 @@ export function AppSurface({
     setSource(normalizedSource);
     setScene("loading");
     try {
-      if (relayStatus && (relayStatus.stage === "starting" || relayStatus.stage === "running")) {
+      if (relayStatus && hasActivePublisher(relayStatus)) {
         await getRelayWorker().stopRelay(relayStatus.session_id);
       }
       setRelayStatus(null);
@@ -3461,7 +3478,7 @@ export function AppSurface({
     const previousPart = part;
     const previousPosition = playbackPosition;
     const previousRelay = relayStatus;
-    const previousWasActive = previousRelay?.stage === "starting" || previousRelay?.stage === "running";
+    const previousWasActive = hasActivePublisher(previousRelay);
 
     setPlaybackUpdating(update);
     setPlaybackMessage(null);
@@ -3617,6 +3634,11 @@ export function AppSurface({
       || playbackUpdating !== null
       || relayStatus?.stage === "starting"
     ) return;
+    if (relayStatus?.stage === "draining") {
+      const requestedPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
+      void retargetPlayback(requestedPart, 0, "seek");
+      return;
+    }
 
     setPlaybackToggling(true);
     setPlaybackMessage(null);
@@ -3705,7 +3727,7 @@ export function AppSurface({
     }
     setScene(next);
     if (next === "settings") {
-      const active = relayStatus?.stage === "starting" || relayStatus?.stage === "running";
+      const active = hasActivePublisher(relayStatus);
       setResumeRelayAfterSettings(Boolean(relayError && sourceResolution?.session_id && !active));
       if (!settingsReady || settingsError) void refreshProductSettings();
       void refreshMediaState();

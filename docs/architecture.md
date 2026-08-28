@@ -62,7 +62,7 @@ hold frame, but the source clock remains at the requested position until the
 UI explicitly resumes it. The default product flow uses that prepared state so
 copying and loading the address in VRChat cannot consume the beginning.
 `relay_status` reports
-starting, running, completed, stopped, or failed; running requires observed
+starting, running, draining, completed, stopped, or failed; running requires observed
 FFmpeg media progress, not merely a live operating-system process. VOD status
 also includes the current source position parsed from FFmpeg's progress stream
 and an explicit paused flag.
@@ -82,6 +82,13 @@ at that frozen or user-selected position with monotonically continued bridge
 timestamps. A one-hour paused session is closed on the next backend status
 refresh; normal application polling enforces that cutoff while the app remains
 open. `stop_relay` still closes the outer publisher explicitly.
+
+When a VOD producer reaches its natural end, Rust freezes the reported source
+position and swaps in the same hold-frame producer used by pause. The session
+enters `draining` while the outer publisher and playback URL remain live for
+five minutes, allowing downstream VRChat playback buffers to finish before the
+publisher is released. A user stop or a newly generated source still releases
+that hold immediately.
 
 `retarget_relay` owns the complete part/position replacement workflow. It
 loads the target and resolves fresh Bilibili media while the current content
