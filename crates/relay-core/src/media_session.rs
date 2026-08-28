@@ -82,7 +82,7 @@ impl MediaSessionStore {
             RelayError::new("ffmpeg_missing", "No usable FFmpeg executable was found")
         })?;
         let ingest_url = validate_relay_target(&target)?;
-        let session = self.sessions.get_mut(session_id).ok_or_else(|| {
+        let session = self.sessions.get(session_id).ok_or_else(|| {
             RelayError::new(
                 "media_session_not_found",
                 "Media session expired or does not exist; resolve the source again",
@@ -93,6 +93,16 @@ impl MediaSessionStore {
             session.duration_seconds,
             session.input.is_live,
         )?;
+        // A single configured ingest target cannot safely accept two local
+        // publishers. Enforce that invariant in the core so a stale UI session
+        // cannot leave the previous FFmpeg process competing with the new one.
+        self.suspend_other_relays(session_id);
+        let session = self.sessions.get_mut(session_id).ok_or_else(|| {
+            RelayError::new(
+                "media_session_not_found",
+                "Media session expired or does not exist; resolve the source again",
+            )
+        })?;
         if let Some(mut process) = session.process.take() {
             if let Some(position) = process.position_seconds() {
                 session.position_seconds = Some(position);
@@ -192,6 +202,24 @@ impl MediaSessionStore {
 
     pub fn shutdown(&mut self) {
         self.sessions.clear();
+    }
+
+    fn suspend_other_relays(&mut self, active_session_id: &str) {
+        for (session_id, session) in &mut self.sessions {
+            if session_id == active_session_id || session.process.is_none() {
+                continue;
+            }
+            if let Some(mut process) = session.process.take() {
+                if let Some(position) = process.position_seconds() {
+                    session.position_seconds = Some(position);
+                }
+                process.stop();
+            }
+            session.overlay = None;
+            session.stage = RelayStage::Stopped;
+            session.diagnostic = None;
+            session.expires_at = Instant::now() + SESSION_TTL;
+        }
     }
 
     fn cleanup_expired(&mut self) {
