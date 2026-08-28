@@ -1528,7 +1528,11 @@ function Result({
               disabled={playbackUpdating !== null}
               showTransport={showTransport}
               playing={isReference ? !playbackPaused : relayActive && !playbackPaused}
-              transportBusy={playbackToggling || playbackUpdating !== null}
+              transportBusy={
+                playbackToggling
+                || playbackUpdating !== null
+                || relayStatus?.stage === "starting"
+              }
               onTogglePlayback={onTogglePlayback}
               palette={palette}
             />
@@ -1650,6 +1654,10 @@ function resultStatusLabel(
   playbackPaused: boolean,
   danmaku: DanmakuVisibility,
 ): string {
+  if (playbackPaused && relay?.stage === "starting") return "· 正在准备播放地址";
+  if (playbackPaused && (relay?.position_seconds ?? 0) <= 0.05) {
+    return "· 已准备 · 打开地址后播放";
+  }
   if (playbackPaused) return "· 已暂停 · 可以继续播放";
   if (isReference) return "· 中继运行中 · 请保持软件运行";
   if (source?.routing.kind === "unavailable") return "· 当前无法生成地址";
@@ -3409,10 +3417,18 @@ export function AppSurface({
         }
         try {
           const options = configuredPlaybackOptions(danmaku, danmakuSettings);
-          const started = await getRelayWorker().startRelay(resolution.session_id, options);
+          const started = await getRelayWorker().startRelay(
+            resolution.session_id,
+            options,
+            0,
+            resolution.kind === "video",
+          );
           if (conversionEpoch.current === epoch) {
-            appliedPlaybackOptions.current = playbackOptionsSignature(options);
+            appliedPlaybackOptions.current = started.paused
+              ? null
+              : playbackOptionsSignature(options);
             setRelayStatus(started);
+            setPlaybackPaused(started.paused);
             if (started.position_seconds !== undefined) setPlaybackPosition(started.position_seconds);
           }
         } catch (error) {
@@ -3483,6 +3499,7 @@ export function AppSurface({
         effectivePart,
         options,
         effectiveStart,
+        playbackPaused,
       );
       if (playbackEpoch.current !== epoch) {
         await getRelayWorker().stopRelay(playback.relay.session_id).catch(() => undefined);
@@ -3493,10 +3510,12 @@ export function AppSurface({
       setPart(String(playback.resolution.selected_part ?? effectivePart));
       setPlaybackPosition(playback.relay.position_seconds ?? effectiveStart);
       setRelayStatus(playback.relay);
-      setPlaybackPaused(false);
+      setPlaybackPaused(playback.relay.paused);
       setRelayError(null);
       setPlaybackMessage(null);
-      appliedPlaybackOptions.current = playbackOptionsSignature(options);
+      appliedPlaybackOptions.current = playback.relay.paused
+        ? null
+        : playbackOptionsSignature(options);
     } catch (error) {
       if (playbackEpoch.current !== epoch) return;
       setPart(previousPart);
@@ -3541,26 +3560,6 @@ export function AppSurface({
       || !Number.isFinite(requestedPart)
       || nextPart === part
     ) return;
-    if (playbackPaused) {
-      const epoch = ++playbackEpoch.current;
-      setPlaybackUpdating("part");
-      setPlaybackMessage(null);
-      void getRelayWorker()
-        .resolveSource(sourceResolution.canonical_url, requestedPart)
-        .then((resolution) => {
-          if (playbackEpoch.current !== epoch) return;
-          setSourceResolution(resolution);
-          setPart(String(resolution.selected_part ?? requestedPart));
-          setPlaybackPosition(0);
-        })
-        .catch((error) => {
-          if (playbackEpoch.current === epoch) setPlaybackMessage(relayErrorMessage(error));
-        })
-        .finally(() => {
-          if (playbackEpoch.current === epoch) setPlaybackUpdating(null);
-        });
-      return;
-    }
     void retargetPlayback(requestedPart, 0, "part");
   };
 
@@ -3616,13 +3615,14 @@ export function AppSurface({
       || sourceResolution.routing.kind === "direct"
       || playbackToggling
       || playbackUpdating !== null
+      || relayStatus?.stage === "starting"
     ) return;
 
     setPlaybackToggling(true);
     setPlaybackMessage(null);
     setRelayError(null);
     try {
-      const active = relayStatus?.stage === "starting" || relayStatus?.stage === "running";
+      const active = relayStatus?.stage === "running";
       if (active && relayStatus) {
         const nextPaused = !relayStatus.paused;
         const options = configuredPlaybackOptions(danmaku, danmakuSettings);
@@ -3644,6 +3644,7 @@ export function AppSurface({
         sourceResolution.session_id,
         options,
         playbackPosition,
+        false,
       );
       appliedPlaybackOptions.current = playbackOptionsSignature(options);
       setRelayStatus(started);
@@ -3681,11 +3682,14 @@ export function AppSurface({
         resolution.session_id,
         options,
         playbackPosition,
+        resolution.kind === "video",
       );
       if (conversionEpoch.current !== epoch) return;
-      appliedPlaybackOptions.current = playbackOptionsSignature(options);
+      appliedPlaybackOptions.current = started.paused
+        ? null
+        : playbackOptionsSignature(options);
       setRelayStatus(started);
-      setPlaybackPaused(false);
+      setPlaybackPaused(started.paused);
       if (started.position_seconds !== undefined) setPlaybackPosition(started.position_seconds);
     } catch (error) {
       if (conversionEpoch.current === epoch) setRelayError(relayErrorMessage(error));

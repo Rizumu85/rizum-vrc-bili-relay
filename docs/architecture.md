@@ -56,7 +56,11 @@ become relay sessions. The UI receives the route decision, not private upstream
 credentials or temporary URLs.
 When a usable input is found, Rust retains it in a ten-minute media session and
 returns only the opaque session id. `start_relay` loads and validates the
-Rust-owned VRCDN target, then starts FFmpeg from that private session.
+Rust-owned VRCDN target, then starts FFmpeg from that private session. A VOD
+may start with `paused: true`: the publisher connects and sends the generated
+hold frame, but the source clock remains at the requested position until the
+UI explicitly resumes it. The default product flow uses that prepared state so
+copying and loading the address in VRChat cannot consume the beginning.
 `relay_status` reports
 starting, running, completed, stopped, or failed; running requires observed
 FFmpeg media progress, not merely a live operating-system process. VOD status
@@ -80,11 +84,14 @@ refresh; normal application polling enforces that cutoff while the app remains
 open. `stop_relay` still closes the outer publisher explicitly.
 
 `retarget_relay` owns the complete part/position replacement workflow. It
-loads the target and resolves fresh Bilibili media before suspending the
-current session, then starts a new short-lived session at the requested second.
-If the new FFmpeg process cannot launch, Rust attempts to resume the suspended
-session. React only supplies user intent and renders the resulting resolution
-and relay state.
+loads the target and resolves fresh Bilibili media while the current content
+continues, then transfers the existing outer publisher to the new private
+media session and replaces only its inner producer. Seeking, part changes, and
+danmaku updates therefore retain the same RTMP process, playback URL, and
+monotonic bridge timeline. A paused retarget transfers the live hold producer
+without starting the target source. If the target producer cannot launch,
+Rust restores the previous input and position through the same publisher;
+React only supplies user intent and renders the resulting state.
 
 Public VOD resolution also retains the Bilibili CID and duration inside the
 same private media session. When `options.danmaku.enabled` is true, Rust fetches
@@ -185,7 +192,7 @@ Network resolution uses a separate command so callers can inspect without I/O:
 Resolved media can then be published through its opaque session:
 
 ```json
-{"id":3,"type":"start_relay","session_id":"19c0-1","start_seconds":0,"options":{"danmaku":{"enabled":true}}}
+{"id":3,"type":"start_relay","session_id":"19c0-1","start_seconds":0,"paused":true,"options":{"danmaku":{"enabled":true}}}
 ```
 
 A VOD pause keeps that publisher connected; resume may use the position shown
@@ -200,7 +207,7 @@ A running Bilibili VOD can be replaced without exposing its temporary media
 URLs or duplicating the stop/start workflow in React:
 
 ```json
-{"id":6,"type":"retarget_relay","current_session_id":"19c0-1","source":"https://www.bilibili.com/video/BV1PGNQesEkG","requested_part":2,"start_seconds":15,"options":{"danmaku":{"enabled":true}}}
+{"id":6,"type":"retarget_relay","current_session_id":"19c0-1","source":"https://www.bilibili.com/video/BV1PGNQesEkG","requested_part":2,"start_seconds":15,"paused":false,"options":{"danmaku":{"enabled":true}}}
 ```
 
 The playback URL is an independent value copied from VRCDN. It is never
