@@ -5,13 +5,16 @@ const root = resolve(import.meta.dir, "..");
 const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as {
   version: string;
 };
-const releaseRoot = resolve(root, "release");
+// Build beside the canonical local Release. `release/` may be the executable
+// the user is actively running, so packaging must never clear or rewrite it.
+// Only the post-upload synchronization step replaces that directory.
+const packageRoot = resolve(root, "artifacts", "package");
 const packageName = `VRC-Bili-Relay-${manifest.version}-windows-x64`;
-const stage = resolve(releaseRoot, packageName);
-const archive = resolve(releaseRoot, `${packageName}.zip`);
+const stage = resolve(packageRoot, packageName);
+const archive = resolve(packageRoot, `${packageName}.zip`);
 
 run(["bun", "run", "build"]);
-rmSync(releaseRoot, { recursive: true, force: true });
+rmSync(packageRoot, { recursive: true, force: true });
 mkdirSync(resolve(stage, "assets"), { recursive: true });
 
 for (const source of [
@@ -28,7 +31,7 @@ for (const assetName of ["danmaku-preview-backdrop.png", "VRCBiliRelay.ico"]) {
   );
 }
 
-run(["tar", "-a", "-c", "-f", archive, "-C", releaseRoot, packageName]);
+run(["tar", "-a", "-c", "-f", archive, "-C", packageRoot, packageName]);
 
 console.log(`Created ${archive}`);
 
