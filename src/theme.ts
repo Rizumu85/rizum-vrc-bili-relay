@@ -6,6 +6,9 @@ export interface Palette {
   panelEdge: string;
   panelShadow: string;
   floatingShadow: string;
+  floatingSurface: string;
+  floatingEdge: string;
+  scrollbarThumb: string;
   ink: string;
   inkSoft: string;
   inkMuted: string;
@@ -52,6 +55,9 @@ export const PALETTES: Record<Appearance, Palette> = {
     panelEdge: "#FFFFFF6B",
     panelShadow: "#00000012",
     floatingShadow: "#0000001F",
+    floatingSurface: "#FEFEFE",
+    floatingEdge: "#E4E4E780",
+    scrollbarThumb: "#A1A1AA",
     ink: "#18181B",
     inkSoft: "#3F3F46",
     inkMuted: "#71717A",
@@ -83,6 +89,9 @@ export const PALETTES: Record<Appearance, Palette> = {
     panelEdge: "#FFFFFF12",
     panelShadow: "#00000057",
     floatingShadow: "#00000057",
+    floatingSurface: "#343437",
+    floatingEdge: "#FFFFFF12",
+    scrollbarThumb: "#A1A1AA",
     ink: "#F4F4F5",
     inkSoft: "#D4D4D8",
     inkMuted: "#A1A1AA",

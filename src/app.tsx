@@ -118,6 +118,24 @@ const REFERENCE_PARTS: PlaybackPart[] = [
   { value: "2", label: "P2 · 自动中继与播放器", duration: 754 },
   { value: "3", label: "P3 · 常见问题", duration: 318 },
 ] as const;
+const LONG_REFERENCE_PARTS: PlaybackPart[] = [
+  { value: "1", label: "P1 · 至冬 Snezhnaya", duration: 421 },
+  { value: "2", label: "P2 · 战斗曲1 冰湖的凯旋礼 Triumph on the Ice", duration: 754 },
+  { value: "3", label: "P3 · 战斗曲2", duration: 318 },
+  { value: "4", label: "P4 · 战斗曲3", duration: 296 },
+  { value: "5", label: "P5 · 战斗曲4 不灭衍生造物、火鸟「扎拉」战斗曲", duration: 382 },
+  { value: "6", label: "P6 · 战斗曲5 帕芙琳娜战斗曲", duration: 344 },
+  { value: "7", label: "P7 · 影城 靶场1", duration: 274 },
+  { value: "8", label: "P8 · 至冬堡 白天1 旋曜玉帛189", duration: 312 },
+  { value: "9", label: "P9 · 至冬堡 白天2", duration: 298 },
+  { value: "10", label: "P10 · 至冬堡 夜晚1", duration: 305 },
+  { value: "11", label: "P11 · 至冬堡 夜晚2", duration: 315 },
+  { value: "12", label: "P12 · 至冬堡 夜晚3", duration: 288 },
+  { value: "13", label: "P13 · 至冬堡 夜晚4", duration: 326 },
+] as const;
+const CAPTURE_REFERENCE_PARTS = process.env.VRC_BILI_RELAY_CAPTURE_LONG_PARTS === "1"
+  ? LONG_REFERENCE_PARTS
+  : REFERENCE_PARTS;
 const POSITION_BY_PART: Record<string, number> = { "1": 0, "2": 204, "3": 0 };
 const PLAYBACK_END_SEQUENCE: readonly PlaybackEndBehavior[] = ["pause", "next", "repeat"];
 const TRACK_WIDTH = 416;
@@ -890,7 +908,7 @@ function PartSelect({
           width: 368,
           height: menuHeight,
           maxHeight: 152,
-          backgroundColor: palette.panel,
+          backgroundColor: palette.floatingSurface,
         }}
       >
         <motion.div
@@ -904,8 +922,8 @@ function PartSelect({
             padding: 4,
             borderRadius: 10,
             borderWidth: 1,
-            borderColor: palette.panelEdge,
-            backgroundColor: palette.panel,
+            borderColor: palette.floatingEdge,
+            backgroundColor: palette.floatingSurface,
             overflow: "scroll",
             boxShadow: {
               offsetX: 0,
@@ -1692,7 +1710,7 @@ function Result({
           label: "P1",
           duration: sourceResolution.duration_seconds ?? 0,
         }]
-    : REFERENCE_PARTS;
+    : CAPTURE_REFERENCE_PARTS;
   const isLive = sourceResolution?.kind === "live";
   const showPlaybackControls = isReference || sourceResolution?.kind === "video";
   const showPartControl = isReference || parts.length > 1;
@@ -2428,7 +2446,7 @@ function CompactSelect<T extends string>({
           width,
           height: 132,
           maxHeight: 144,
-          backgroundColor: palette.panel,
+          backgroundColor: palette.floatingSurface,
         }}
       >
         <motion.div
@@ -2441,8 +2459,8 @@ function CompactSelect<T extends string>({
             padding: 4,
             borderRadius: 10,
             borderWidth: 1,
-            borderColor: palette.panelEdge,
-            backgroundColor: palette.panel,
+            borderColor: palette.floatingEdge,
+            backgroundColor: palette.floatingSurface,
             boxShadow: {
               offsetX: 0,
               offsetY: 16,

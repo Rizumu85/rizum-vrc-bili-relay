@@ -18,9 +18,15 @@ const MENU_WIDTH = 368;
 const MENU_ROW_HEIGHT = 31;
 const MENU_MAX_ROWS = 7;
 const MENU_PADDING = 4;
-const WINDOW_PADDING_X = 0;
-const WINDOW_PADDING_TOP = 0;
-const WINDOW_PADDING_BOTTOM = 0;
+// Keep the rounded panel away from the transparent native render-target edge.
+// Without this gutter, Windows composites its antialiased corner pixels against
+// the target matte and leaves a jagged grey fringe.
+const WINDOW_PADDING_X = 2;
+const WINDOW_PADDING_TOP = 2;
+const WINDOW_PADDING_BOTTOM = 2;
+const SCROLLBAR_INSET_Y = 7;
+const SCROLLBAR_HIT_WIDTH = 8;
+const SCROLLBAR_RIGHT_INSET = 6;
 
 const GWL_STYLE = -16;
 const GWL_EXSTYLE = -20;
@@ -320,24 +326,24 @@ function positionPopupWindow(
   const panelTop = canOpenBelow
     ? anchorBottom + panelGap
     : Math.max(workArea.top + 8, anchorTop - panelGap - panelHeightPhysical);
-  const desiredPanelLeft = Math.round(
+  const desiredWindowLeft = Math.round(
     Math.min(
       workArea.right - 8 - physicalWindowWidth,
-      Math.max(workArea.left + 8, panelLeft),
+      Math.max(workArea.left + 8, panelLeft - WINDOW_PADDING_X * scaleX),
     ),
   );
-  const desiredPanelTop = Math.round(panelTop);
+  const desiredWindowTop = Math.round(panelTop - WINDOW_PADDING_TOP * scaleY);
 
   user32.symbols.SetWindowPos(
     handle,
     null,
-    desiredPanelLeft,
-    desiredPanelTop,
+    desiredWindowLeft,
+    desiredWindowTop,
     physicalWindowWidth,
     physicalWindowHeight,
     SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
   );
-  alignPopupClientOrigin(handle, desiredPanelLeft, desiredPanelTop, physicalWindowWidth, physicalWindowHeight);
+  alignPopupClientOrigin(handle, desiredWindowLeft, desiredWindowTop, physicalWindowWidth, physicalWindowHeight);
   user32.symbols.ShowWindow(handle, SW_SHOW);
 }
 
@@ -496,6 +502,7 @@ function NativePartPopupSurface({
   const selectedIndex = Math.max(0, request.items.findIndex((item) => item.value === request.selectedValue));
   const [activeIndex, setActiveIndex] = useState(selectedIndex);
   const [scrollOffset, setScrollOffset] = useState(0);
+  const [scrollbarHovered, setScrollbarHovered] = useState(false);
   const scrollerId = useRef<number | null>(null);
   const trackId = useRef<number | null>(null);
   const visibleRows = Math.max(1, Math.min(MENU_MAX_ROWS, request.items.length));
@@ -503,10 +510,11 @@ function NativePartPopupSurface({
   const contentHeight = request.items.length * MENU_ROW_HEIGHT;
   const maxScroll = Math.max(0, contentHeight - viewportHeight);
   const panelHeight = viewportHeight + MENU_PADDING * 2;
+  const scrollbarHeight = Math.max(1, viewportHeight - SCROLLBAR_INSET_Y * 2);
   const thumbHeight = maxScroll > 0
-    ? Math.max(24, Math.round(viewportHeight * viewportHeight / contentHeight))
-    : viewportHeight;
-  const thumbTravel = Math.max(0, viewportHeight - thumbHeight);
+    ? Math.max(24, Math.round(scrollbarHeight * viewportHeight / contentHeight))
+    : scrollbarHeight;
+  const thumbTravel = Math.max(0, scrollbarHeight - thumbHeight);
   const thumbTop = maxScroll > 0 ? Math.round(scrollOffset / maxScroll * thumbTravel) : 0;
   const initialScroll = useMemo(
     () => Math.min(maxScroll, Math.max(0, selectedIndex * MENU_ROW_HEIGHT - Math.floor(visibleRows / 2) * MENU_ROW_HEIGHT)),
@@ -580,8 +588,9 @@ function NativePartPopupSurface({
           padding: MENU_PADDING,
           borderRadius: RADII.compactPanel,
           borderWidth: 1,
-          borderColor: request.palette.panelEdge,
-          backgroundColor: request.palette.panel,
+          borderColor: request.palette.floatingEdge,
+          backgroundColor: request.palette.floatingSurface,
+          overflow: "hidden",
         }}
       >
         <div
@@ -649,12 +658,14 @@ function NativePartPopupSurface({
             onMouseMove={(event) => {
               if (event.pressedButton === 0) setScrollFromTrack(event);
             }}
+            onMouseEnter={() => setScrollbarHovered(true)}
+            onMouseLeave={() => setScrollbarHovered(false)}
             style={{
               position: "absolute",
-              top: MENU_PADDING,
-              right: 1,
-              width: 10,
-              height: viewportHeight,
+              top: MENU_PADDING + SCROLLBAR_INSET_Y,
+              right: SCROLLBAR_RIGHT_INSET,
+              width: SCROLLBAR_HIT_WIDTH,
+              height: scrollbarHeight,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -664,23 +675,12 @@ function NativePartPopupSurface({
             <div
               style={{
                 position: "absolute",
-                top: 2,
-                width: 3,
-                height: viewportHeight - 4,
-                borderRadius: RADII.full,
-                backgroundColor: request.palette.surfaceDivider,
-                pointerEvents: "none",
-              }}
-            />
-            <div
-              style={{
-                position: "absolute",
                 top: thumbTop,
-                width: 4,
+                width: scrollbarHovered ? 3 : 2,
                 height: thumbHeight,
                 borderRadius: RADII.full,
-                backgroundColor: request.palette.caption,
-                opacity: 0.62,
+                backgroundColor: request.palette.scrollbarThumb,
+                opacity: scrollbarHovered ? 0.64 : 0.3,
                 pointerEvents: "none",
               }}
             />

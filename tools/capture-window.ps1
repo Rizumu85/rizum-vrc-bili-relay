@@ -16,6 +16,7 @@ param(
     [switch]$SaveSettings,
     [switch]$OpenDanmakuFont,
     [switch]$OpenPartSelect,
+    [switch]$LongPartList,
     [switch]$IncludePopup,
     [switch]$CyclePlaybackEndBehavior,
     [switch]$ShowPlaybackEndTooltip,
@@ -118,6 +119,9 @@ $startInfo.UseShellExecute = $false
 $startInfo.CreateNoWindow = $true
 $startInfo.EnvironmentVariables["VRC_BILI_RELAY_THEME"] = $Theme
 $startInfo.EnvironmentVariables["VRC_BILI_RELAY_SCENE"] = $Scene
+if ($LongPartList) {
+    $startInfo.EnvironmentVariables["VRC_BILI_RELAY_CAPTURE_LONG_PARTS"] = "1"
+}
 if ($Source) {
     $startInfo.EnvironmentVariables["VRC_BILI_RELAY_SOURCE"] = $Source
 }
