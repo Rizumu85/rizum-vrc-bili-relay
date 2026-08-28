@@ -4,6 +4,14 @@ import { resolve } from "node:path";
 const root = resolve(import.meta.dir, "..");
 const dist = resolve(root, "dist");
 
+run([
+  "powershell",
+  "-NoProfile",
+  "-ExecutionPolicy",
+  "Bypass",
+  "-File",
+  "tools/generate-app-icon.ps1",
+]);
 run(["bun", "run", "tools/generate-danmaku-backdrop.ts"]);
 mkdirSync(resolve(dist, "assets"), { recursive: true });
 copyFileSync(

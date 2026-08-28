@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "bun run tools/dev.ts",
     "generate:assets": "bun run tools/generate-danmaku-backdrop.ts",
+    "generate:icon": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/generate-app-icon.ps1",
     "build": "bun run tools/build.ts",
     "package:windows": "bun run tools/package-windows.ts",
     "build:worker": "cargo build --release --bin relay-worker",
