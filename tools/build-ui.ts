@@ -14,9 +14,17 @@ run([
   "bun",
   "build",
   "--compile",
+  "--windows-hide-console",
+  "--no-compile-autoload-dotenv",
+  "--windows-icon=assets/VRCBiliRelay.ico",
+  "--windows-title=VRC Bili Relay",
+  "--windows-publisher=Rizum",
+  "--windows-version=0.1.0.0",
+  "--windows-description=Convert Bilibili media into VRChat-compatible playback routes",
+  "--windows-copyright=Copyright © 2026 Rizum",
   "src/main.tsx",
   "--outfile",
-  "dist/vrc-bili-relay-gpuix.exe",
+  "dist/VRC-Bili-Relay.exe",
 ]);
 
 function run(command: string[]): void {
