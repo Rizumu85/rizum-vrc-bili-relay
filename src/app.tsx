@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type * as React from "react";
 import { motion, type EventPayload, type StyleDesc } from "@gpuix/react";
 import * as Select from "@gpuix/react/select";
+import * as Tooltip from "@gpuix/react/tooltip";
 import { basename, dirname, resolve } from "node:path";
 
 import { ICONS, type IconName } from "./icons";
@@ -858,44 +859,90 @@ function PlaybackEndButton({
   const nextValue = PLAYBACK_END_SEQUENCE[(currentIndex + 1) % PLAYBACK_END_SEQUENCE.length]
     ?? "pause";
   const active = value !== "pause";
+  const icon: IconName = value === "pause"
+    ? "repeatOff"
+    : value === "next"
+      ? "skipNext"
+      : "repeatOne";
+  const label = value === "pause"
+    ? "播完暂停 · 点击切换"
+    : value === "next"
+      ? "自动下一 P · 点击切换"
+      : "单集循环 · 点击切换";
   return (
-    <div
-      testId="playback-end-toggle"
-      tabIndex={disabled ? -1 : 0}
-      onClick={() => {
-        if (!disabled) onChange(nextValue);
-      }}
-      onKeyDown={(event) => {
-        if (!disabled && (event.key === "enter" || event.key === "space")) onChange(nextValue);
-      }}
-      style={{
-        width: 22,
-        height: 22,
-        marginRight: 7,
-        flexShrink: 0,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        borderRadius: 6,
-        cursor: disabled ? "default" : "pointer",
-        opacity: disabled ? 0.48 : 1,
-        userSelect: "none",
-        hover: disabled ? undefined : { backgroundColor: palette.surfaceHover },
-        active: disabled ? undefined : { backgroundColor: palette.surfaceActive },
-      }}
-    >
-      <MotionFade
-        key={value}
-        duration={MOTION.stateCrossfadeSeconds}
-        style={{ display: "flex", alignItems: "center", justifyContent: "center" }}
-      >
-        <Icon
-          name={value === "repeat" ? "repeatOne" : "repeat"}
-          size={13}
-          color={active ? palette.accentDanmaku : palette.caption}
-        />
-      </MotionFade>
-    </div>
+    <Tooltip.Provider delayDuration={520} skipDelayDuration={140} disableHoverableContent>
+      <Tooltip.Root>
+        <Tooltip.Trigger asChild>
+          <div
+            testId="playback-end-toggle"
+            tabIndex={disabled ? -1 : 0}
+            onClick={() => {
+              if (!disabled) onChange(nextValue);
+            }}
+            onKeyDown={(event) => {
+              if (!disabled && (event.key === "enter" || event.key === "space")) onChange(nextValue);
+            }}
+            style={{
+              width: 22,
+              height: 22,
+              marginRight: 7,
+              flexShrink: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: 6,
+              cursor: disabled ? "default" : "pointer",
+              opacity: disabled ? 0.48 : 1,
+              userSelect: "none",
+              hover: disabled ? undefined : { backgroundColor: palette.surfaceHover },
+              active: disabled ? undefined : { backgroundColor: palette.surfaceActive },
+            }}
+          >
+            <MotionFade
+              key={value}
+              duration={MOTION.stateCrossfadeSeconds}
+              style={{ display: "flex", alignItems: "center", justifyContent: "center" }}
+            >
+              <Icon
+                name={icon}
+                size={13}
+                color={active ? palette.accentDanmaku : palette.caption}
+              />
+            </MotionFade>
+          </div>
+        </Tooltip.Trigger>
+        {!disabled ? (
+          <Tooltip.Content
+            side="top"
+            align="center"
+            sideOffset={7}
+            style={{
+              paddingTop: 6,
+              paddingRight: 9,
+              paddingBottom: 6,
+              paddingLeft: 9,
+              borderRadius: 7,
+              borderWidth: 1,
+              borderColor: palette.panelEdge,
+              backgroundColor: palette.nestedStrong,
+              boxShadow: {
+                offsetX: 0,
+                offsetY: 8,
+                blurRadius: 22,
+                spreadRadius: 0,
+                color: palette.floatingShadow,
+              },
+              pointerEvents: "none",
+              userSelect: "none",
+            }}
+          >
+            <text style={{ color: palette.inkSoft, fontFamily: FONT_UI, fontSize: 11.5 }}>
+              {label}
+            </text>
+          </Tooltip.Content>
+        ) : null}
+      </Tooltip.Root>
+    </Tooltip.Provider>
   );
 }
 
