@@ -1602,7 +1602,7 @@ function Result({
                 width: "100%",
                 overflow: "hidden",
                 color: palette.inkSoft,
-                fontFamily: FONT_MONO,
+                fontFamily: canCopy ? FONT_MONO : FONT_UI,
                 fontSize: 11.5,
                 whiteSpace: "nowrap",
                 textOverflow: "ellipsis",
