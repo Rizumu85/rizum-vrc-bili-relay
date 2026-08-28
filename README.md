@@ -1,8 +1,9 @@
-# VRC Bili Relay — GPUIX + Rust experiment
+# VRC Bili Relay
 
-An isolated Windows architecture experiment that combines a thin React/GPUIX UI
-with a Rust product core. The existing WinUI 3 application remains a reference
-and fallback; this repository has no C# runtime dependency.
+A portable Windows utility that combines a thin React/GPUIX UI with a Rust
+product core. It converts supported Bilibili pages and media URLs into playback
+routes suitable for VRChat video players. The application has no installer and
+no C# runtime dependency.
 
 ```text
 React + TypeScript UI
@@ -130,18 +131,30 @@ bun run dev
 `bun run dev` builds the debug Rust worker first, then starts GPUIX with Bun HMR.
 Changing TSX or Rizum Glass values does not rebuild Rust.
 
-Build a standalone Windows distribution:
+Build the portable Windows distribution:
 
 ```powershell
 bun run build
 ```
 
-Keep both files from `dist/` in the same directory:
+Keep all files from `dist/` in the same directory:
 
 ```text
-vrc-bili-relay-gpuix.exe
+VRC-Bili-Relay.exe
 relay-worker.exe
+assets/
+LICENSE
 ```
+
+Create the versioned ZIP used by GitHub Releases:
+
+```powershell
+bun run package:windows
+```
+
+The archive is written to `release/`. Extract it anywhere and run
+`VRC-Bili-Relay.exe`; no installation or registry registration is required.
+The release is currently unsigned, so Windows may show a SmartScreen warning.
 
 ## Verification policy
 

@@ -1,9 +1,10 @@
-import { copyFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, mkdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
 const dist = resolve(root, "dist");
 
+rmSync(dist, { recursive: true, force: true });
 run(["cargo", "build", "--release", "--bin", "relay-worker"]);
 mkdirSync(dist, { recursive: true });
 copyFileSync(

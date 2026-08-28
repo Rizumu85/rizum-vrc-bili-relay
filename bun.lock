@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "vrc-bili-relay-gpuix-spike",
+      "name": "vrc-bili-relay",
       "dependencies": {
         "@gpuix/react": "0.5.1",
         "react": "^19.2.4",
