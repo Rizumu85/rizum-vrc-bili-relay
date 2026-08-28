@@ -123,8 +123,11 @@ data is preserved when unrelated settings change, and can be replaced or
 cleared explicitly. Relay commands load the plaintext inside Rust; they never
 carry or return it. FFmpeg is launched without a shell or console window. Its bounded
 diagnostic tail is scrubbed of the output URL and stream key before it can be
-returned. Replacing, stopping, or dropping a session kills and waits for its
-child process.
+returned. Replacing, stopping, or dropping a session shuts down and waits for its
+child process. Normal replacement first sends FFmpeg its `q` command and waits
+for a clean RTMP shutdown, allowing the ingest service to release the stream
+key before a seek, part switch, or resume starts the next publisher. A bounded
+timeout falls back to terminating the child when FFmpeg is unresponsive.
 On Windows, the worker also assigns each FFmpeg child to its own unnamed Job
 Object with `KILL_ON_JOB_CLOSE`. Normal cleanup still uses the explicit stop and
 wait path, while abrupt worker termination delegates final process recovery to

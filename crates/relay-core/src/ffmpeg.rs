@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -27,10 +27,12 @@ use crate::{MediaInput, RelayError};
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
+const GRACEFUL_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const LOG_LINE_LIMIT: usize = 24;
 
 pub(crate) struct FfmpegProcess {
     child: Child,
+    stdin: Option<ChildStdin>,
     #[cfg(windows)]
     _job: FfmpegJob,
     started_at: Instant,
@@ -59,7 +61,6 @@ impl FfmpegProcess {
         command
             .args([
                 "-hide_banner",
-                "-nostdin",
                 "-loglevel",
                 "warning",
                 "-nostats",
@@ -68,7 +69,7 @@ impl FfmpegProcess {
                 "-stats_period",
                 "0.5",
             ])
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -118,6 +119,7 @@ impl FfmpegProcess {
                 ));
             }
         };
+        let stdin = child.stdin.take();
         let stderr = Arc::new(Mutex::new(VecDeque::with_capacity(LOG_LINE_LIMIT)));
         if let Some(pipe) = child.stderr.take() {
             drain_stderr(
@@ -134,6 +136,7 @@ impl FfmpegProcess {
 
         Ok(Self {
             child,
+            stdin,
             #[cfg(windows)]
             _job: job,
             started_at: Instant::now(),
@@ -177,7 +180,23 @@ impl FfmpegProcess {
 
     pub fn stop(&mut self) {
         if self.child.try_wait().ok().flatten().is_none() {
-            let _ = self.child.kill();
+            if let Some(mut stdin) = self.stdin.take() {
+                let _ = stdin.write_all(b"q\n");
+                let _ = stdin.flush();
+            }
+            let deadline = Instant::now() + GRACEFUL_STOP_TIMEOUT;
+            loop {
+                match self.child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if Instant::now() < deadline => {
+                        thread::sleep(Duration::from_millis(25));
+                    }
+                    Ok(None) | Err(_) => {
+                        let _ = self.child.kill();
+                        break;
+                    }
+                }
+            }
         }
         let _ = self.child.wait();
     }
