@@ -116,50 +116,78 @@ const user32 = process.platform === "win32"
         args: [FFIType.uint32_t, FFIType.uint32_t, FFIType.ptr, FFIType.uint32_t],
         returns: FFIType.bool,
       },
-    } as const)
-  : null;
-
-const shell32 = process.platform === "win32"
-  ? dlopen("shell32.dll", {
-      ExtractIconExW: {
-        args: [FFIType.ptr, FFIType.int32_t, FFIType.ptr, FFIType.ptr, FFIType.uint32_t],
+      PrivateExtractIconsW: {
+        args: [
+          FFIType.ptr,
+          FFIType.int32_t,
+          FFIType.int32_t,
+          FFIType.int32_t,
+          FFIType.ptr,
+          FFIType.ptr,
+          FFIType.uint32_t,
+          FFIType.uint32_t,
+        ],
         returns: FFIType.uint32_t,
+      },
+      DestroyIcon: {
+        args: [FFIType.ptr],
+        returns: FFIType.bool,
       },
     } as const)
   : null;
 
 const productWindowIconHandles: bigint[] = [];
+let productWindowIconDpi = 0;
 
 export function setProductWindowIconFromExecutable(): boolean {
-  if (!user32 || !shell32) return false;
+  if (!user32) return false;
   if (process.execPath.toLowerCase().endsWith("\\bun.exe")) return false;
   const handle = findCurrentProcessWindow();
   if (!handle) return false;
 
-  const executablePath = Buffer.from(`${process.execPath}\0`, "utf16le");
-  const largeIcons = new BigUint64Array(1);
-  const smallIcons = new BigUint64Array(1);
-  const extracted = shell32.symbols.ExtractIconExW(
-    ptr(executablePath),
-    0,
-    ptr(largeIcons),
-    ptr(smallIcons),
-    1,
-  );
-  if (extracted === 0) return false;
+  const dpi = user32.symbols.GetDpiForWindow(handle) || 96;
+  if (dpi === productWindowIconDpi && productWindowIconHandles.length > 0) return true;
 
-  const largeIcon = largeIcons[0] ?? 0n;
-  const smallIcon = smallIcons[0] ?? 0n;
-  if (largeIcon !== 0n) {
-    user32.symbols.SendMessageW(handle, WM_SETICON, BigInt(ICON_BIG), largeIcon);
-    productWindowIconHandles.push(largeIcon);
-  }
+  const executablePath = Buffer.from(`${process.execPath}\0`, "utf16le");
+  const taskbarSize = Math.max(16, Math.round(24 * dpi / 96));
+  const titleBarSize = Math.max(16, Math.round(16 * dpi / 96));
+  const largeIcon = extractProductIcon(executablePath, taskbarSize);
+  const smallIcon = extractProductIcon(executablePath, titleBarSize);
+  if (largeIcon === 0n && smallIcon === 0n) return false;
+
+  const staleIcons = productWindowIconHandles.splice(0);
   if (smallIcon !== 0n) {
     user32.symbols.SendMessageW(handle, WM_SETICON, BigInt(ICON_SMALL), smallIcon);
     user32.symbols.SendMessageW(handle, WM_SETICON, BigInt(ICON_SMALL2), smallIcon);
     productWindowIconHandles.push(smallIcon);
   }
-  return largeIcon !== 0n || smallIcon !== 0n;
+  // GPUIX's window class lets the small-icon assignment replace the large
+  // slot as a fallback. Assign ICON_BIG last so the taskbar keeps its exact
+  // DPI-sized HICON instead of upscaling the title-bar icon.
+  if (largeIcon !== 0n) {
+    user32.symbols.SendMessageW(handle, WM_SETICON, BigInt(ICON_BIG), largeIcon);
+    productWindowIconHandles.push(largeIcon);
+  }
+  productWindowIconDpi = dpi;
+  for (const staleIcon of staleIcons) user32.symbols.DestroyIcon(staleIcon);
+  return true;
+}
+
+function extractProductIcon(executablePath: Buffer, size: number): bigint {
+  if (!user32) return 0n;
+  const icons = new BigUint64Array(1);
+  const iconIds = new Uint32Array(1);
+  const extracted = user32.symbols.PrivateExtractIconsW(
+    ptr(executablePath),
+    0,
+    size,
+    size,
+    ptr(icons),
+    ptr(iconIds),
+    1,
+    0,
+  );
+  return extracted > 0 ? (icons[0] ?? 0n) : 0n;
 }
 
 export function beginProductWindowDrag(): boolean {

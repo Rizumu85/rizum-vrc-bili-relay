@@ -12,7 +12,9 @@ $tileSize = 1150
 # Fluent app icons use a 2 px exterior curve on the 48x48 construction grid.
 # 52.25 px is the exact equivalent on this 1254 px source canvas.
 $cornerRadius = 52.25
-$iconSizes = @(16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 128, 256)
+# 18px and 27px cover this product's 112.5% Windows environment without
+# asking the shell to resample the 16/20px and 24/30px neighbours.
+$iconSizes = @(16, 18, 20, 24, 27, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 128, 256)
 
 function Set-RoundedTileAlpha {
     param(
