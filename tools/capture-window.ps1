@@ -16,6 +16,7 @@ param(
     [switch]$SaveSettings,
     [switch]$OpenDanmakuFont,
     [switch]$OpenPartSelect,
+    [switch]$IncludePopup,
     [switch]$CyclePlaybackEndBehavior,
     [switch]$FocusSource,
     [switch]$DragSelectSourceInside,
@@ -48,6 +49,17 @@ public static class GpuixWindowCapture
     [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+
     [DllImport("user32.dll")]
     public static extern bool ShowWindow(IntPtr hWnd, int command);
 
@@ -62,6 +74,30 @@ public static class GpuixWindowCapture
 
     [DllImport("user32.dll")]
     public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+
+    public static RECT GetVisibleProcessBounds(uint targetProcessId)
+    {
+        RECT union = new RECT { Left = int.MaxValue, Top = int.MaxValue, Right = int.MinValue, Bottom = int.MinValue };
+        EnumWindows((window, _) =>
+        {
+            uint processId;
+            RECT rectangle;
+            if (IsWindowVisible(window)
+                && GetWindowThreadProcessId(window, out processId) != 0
+                && processId == targetProcessId
+                && GetWindowRect(window, out rectangle)
+                && rectangle.Right > rectangle.Left
+                && rectangle.Bottom > rectangle.Top)
+            {
+                union.Left = Math.Min(union.Left, rectangle.Left);
+                union.Top = Math.Min(union.Top, rectangle.Top);
+                union.Right = Math.Max(union.Right, rectangle.Right);
+                union.Bottom = Math.Max(union.Bottom, rectangle.Bottom);
+            }
+            return true;
+        }, IntPtr.Zero);
+        return union;
+    }
 }
 "@
 
@@ -110,7 +146,8 @@ try {
     [GpuixWindowCapture]::ShowWindow($windowHandle, 1) | Out-Null
     [GpuixWindowCapture]::SetForegroundWindow($windowHandle) | Out-Null
     # Keep the product surface unobscured while CopyFromScreen reads its pixels.
-    [GpuixWindowCapture]::SetWindowPos($windowHandle, [IntPtr](-1), 96, 96, 0, 0, 0x0013) | Out-Null
+    $captureZOrder = if ($IncludePopup) { [IntPtr]::Zero } else { [IntPtr](-1) }
+    [GpuixWindowCapture]::SetWindowPos($windowHandle, $captureZOrder, 96, 96, 0, 0, 0x0013) | Out-Null
     Start-Sleep -Milliseconds $SettleMilliseconds
     $rectangle = New-Object GpuixWindowCapture+RECT
     [GpuixWindowCapture]::GetWindowRect($windowHandle, [ref]$rectangle) | Out-Null
@@ -268,19 +305,29 @@ try {
     }
 
     [GpuixWindowCapture]::GetWindowRect($windowHandle, [ref]$rectangle) | Out-Null
-    $width = $rectangle.Right - $rectangle.Left
-    $height = $rectangle.Bottom - $rectangle.Top
-
     # Keep hover-only fills out of reference captures unless a probe explicitly
     # needs them. The pointer can otherwise remain over a caption button after
     # an earlier interaction and make the shared title-bar band look unbalanced.
-    [GpuixWindowCapture]::SetCursorPos($rectangle.Left - 16, $rectangle.Bottom + 16) | Out-Null
-    Start-Sleep -Milliseconds 250
+    if (-not $IncludePopup) {
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left - 16, $rectangle.Bottom + 16) | Out-Null
+        Start-Sleep -Milliseconds 250
+    }
+    else {
+        Start-Sleep -Milliseconds 60
+    }
+
+    $captureRectangle = if ($IncludePopup) {
+        [GpuixWindowCapture]::GetVisibleProcessBounds([uint32]$process.Id)
+    } else {
+        $rectangle
+    }
+    $width = $captureRectangle.Right - $captureRectangle.Left
+    $height = $captureRectangle.Bottom - $captureRectangle.Top
 
     $bitmap = New-Object System.Drawing.Bitmap $width, $height
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     try {
-        $graphics.CopyFromScreen($rectangle.Left, $rectangle.Top, 0, 0, (New-Object System.Drawing.Size $width, $height))
+        $graphics.CopyFromScreen($captureRectangle.Left, $captureRectangle.Top, 0, 0, (New-Object System.Drawing.Size $width, $height))
         $bitmap.Save($resolvedOutput, [System.Drawing.Imaging.ImageFormat]::Png)
     }
     finally {

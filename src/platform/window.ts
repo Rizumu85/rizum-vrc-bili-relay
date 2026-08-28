@@ -55,6 +55,14 @@ const user32 = process.platform === "win32"
         args: [FFIType.ptr, FFIType.ptr],
         returns: FFIType.uint32_t,
       },
+      GetWindowTextLengthW: {
+        args: [FFIType.ptr],
+        returns: FFIType.int32_t,
+      },
+      GetWindowTextW: {
+        args: [FFIType.ptr, FFIType.ptr, FFIType.int32_t],
+        returns: FFIType.int32_t,
+      },
       IsWindowVisible: {
         args: [FFIType.ptr],
         returns: FFIType.bool,
@@ -501,6 +509,7 @@ function findCurrentProcessWindow(): ReturnType<typeof ptr> | bigint | null {
       const owner = new Uint32Array(1);
       user32.symbols.GetWindowThreadProcessId(candidate, ptr(owner));
       if (owner[0] !== process.pid) return true;
+      if (readWindowTitle(candidate) !== PRODUCT_WINDOW_TITLE) return true;
       handle = candidate;
       return false;
     },
@@ -515,4 +524,14 @@ function findCurrentProcessWindow(): ReturnType<typeof ptr> | bigint | null {
     callback.close();
   }
   return handle;
+}
+
+function readWindowTitle(candidate: ReturnType<typeof ptr> | bigint): string {
+  if (!user32) return "";
+  const length = user32.symbols.GetWindowTextLengthW(candidate);
+  if (length <= 0) return "";
+  const buffer = new Uint16Array(length + 1);
+  const copied = user32.symbols.GetWindowTextW(candidate, ptr(buffer), buffer.length);
+  if (copied <= 0) return "";
+  return Buffer.from(buffer.buffer, 0, copied * 2).toString("utf16le");
 }

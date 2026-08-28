@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type * as React from "react";
-import { motion, type EventPayload, type StyleDesc } from "@gpuix/react";
+import { motion, useGpuixRequired, type EventPayload, type StyleDesc } from "@gpuix/react";
 import * as Select from "@gpuix/react/select";
 import * as Tooltip from "@gpuix/react/tooltip";
 import { basename, dirname, resolve } from "node:path";
@@ -42,6 +42,12 @@ import {
   setProductWindowClientSize,
   unregisterProductWindowTextInput,
 } from "./platform/window";
+import {
+  disposeNativePartPopup,
+  hideNativePartPopup,
+  showNativePartPopup,
+  supportsNativePartPopup,
+} from "./platform/native-part-popup";
 
 export type Scene = "idle" | "loading" | "error" | "ready-vod" | "settings" | "danmaku";
 type DanmakuVisibility = "shown" | "hidden";
@@ -718,8 +724,117 @@ function PartSelect({
   disabled: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const renderer = useGpuixRequired() as ReturnType<typeof useGpuixRequired> & {
+    getElementBounds(elementId: number): number[] | null;
+    getWindowSize(): { width: number; height: number };
+  };
+  const triggerId = useRef<number | null>(null);
+  const nativePopup = supportsNativePartPopup();
   const selected = parts.find((entry) => entry.value === part) ?? parts[0];
-  const menuHeight = Math.min(152, parts.length * 31 + 8);
+  const menuHeight = Math.min(132, Math.max(1, Math.min(4, parts.length)) * 31 + 8);
+
+  useEffect(() => () => {
+    if (nativePopup) hideNativePartPopup();
+  }, [nativePopup]);
+
+  useEffect(() => {
+    if (disabled && open && nativePopup) {
+      hideNativePartPopup();
+      setOpen(false);
+    }
+  }, [disabled, nativePopup, open]);
+
+  const closePopup = () => {
+    if (nativePopup) hideNativePartPopup();
+    setOpen(false);
+  };
+
+  const openPopup = () => {
+    if (disabled) return;
+    if (open) {
+      closePopup();
+      return;
+    }
+    if (!nativePopup) {
+      setOpen(true);
+      return;
+    }
+    const elementId = triggerId.current;
+    const bounds = elementId === null ? null : renderer.getElementBounds(elementId);
+    if (!bounds || bounds.length < 4) return;
+    setOpen(true);
+    const shown = showNativePartPopup({
+      items: parts.map(({ value, label }) => ({ value, label })),
+      selectedValue: part,
+      palette,
+      anchorBounds: [bounds[0], bounds[1], bounds[2], bounds[3]],
+      mainWindowSize: renderer.getWindowSize(),
+      onSelect: (value) => {
+        setPart(value);
+        setOpen(false);
+      },
+      onDismiss: () => setOpen(false),
+    });
+    if (!shown) setOpen(false);
+  };
+
+  if (nativePopup) {
+    return (
+      <div style={{ flexGrow: 1, minWidth: 0, opacity: disabled ? 0.62 : 1 }}>
+        <div
+          ref={(instance) => {
+            triggerId.current = instance?.id ?? null;
+          }}
+          testId="part-select"
+          tabIndex={disabled ? -1 : 0}
+          onClick={openPopup}
+          onKeyDown={(event) => {
+            if (event.key === "escape") closePopup();
+            if (event.key === "enter" || event.key === "space" || event.key === "down" || event.key === "up") {
+              openPopup();
+            }
+          }}
+          style={{
+            width: "100%",
+            height: 33,
+            display: "flex",
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            paddingLeft: 11,
+            paddingRight: 10,
+            borderRadius: RADII.control,
+            borderWidth: 1,
+            borderColor: open ? palette.surfaceLine : palette.panelEdge,
+            backgroundColor: open ? palette.surfaceHover : palette.surface,
+            cursor: disabled ? "default" : "pointer",
+            userSelect: "none",
+            hover: disabled ? undefined : { backgroundColor: palette.surfaceHover },
+            active: disabled ? undefined : { backgroundColor: palette.surfaceActive },
+          }}
+        >
+          <text
+            style={{
+              minWidth: 0,
+              flexGrow: 1,
+              overflow: "hidden",
+              paddingRight: 4,
+              color: palette.inkSoft,
+              fontFamily: FONT_UI,
+              fontSize: 13,
+              whiteSpace: "nowrap",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {selected?.label ?? "P1"}
+          </text>
+          <Icon name={open ? "chevronUp" : "chevron"} size={10} color={open ? palette.inkMuted : palette.caption} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <Select.Root
       value={part}
@@ -3281,6 +3396,7 @@ export function AppSurface({
     if (windowClosing.current) return;
     windowClosing.current = true;
     const finish = () => {
+      disposeNativePartPopup();
       closeProductWindow();
       setTimeout(() => process.exit(0), 0);
     };
