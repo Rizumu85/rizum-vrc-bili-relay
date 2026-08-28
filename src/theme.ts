@@ -56,7 +56,7 @@ export const PALETTES: Record<Appearance, Palette> = {
     panelShadow: "#00000012",
     floatingShadow: "#0000001F",
     floatingSurface: "#FEFEFE",
-    floatingEdge: "#E4E4E780",
+    floatingEdge: "#FEFEFE",
     scrollbarThumb: "#A1A1AA",
     ink: "#18181B",
     inkSoft: "#3F3F46",
