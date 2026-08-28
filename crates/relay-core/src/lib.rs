@@ -19,7 +19,7 @@ use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 use settings::SettingsStore;
 
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -45,6 +45,8 @@ pub enum Command {
         #[serde(default)]
         start_seconds: f64,
         #[serde(default)]
+        paused: bool,
+        #[serde(default)]
         options: PlaybackOptions,
     },
     RetargetRelay {
@@ -53,6 +55,8 @@ pub enum Command {
         requested_part: u32,
         #[serde(default)]
         start_seconds: f64,
+        #[serde(default)]
+        paused: bool,
         #[serde(default)]
         options: PlaybackOptions,
     },
@@ -603,6 +607,7 @@ impl RelayCore {
             Command::StartRelay {
                 session_id,
                 start_seconds,
+                paused,
                 options,
             } => {
                 let mut target = self.settings.relay_target(start_seconds)?;
@@ -610,16 +615,27 @@ impl RelayCore {
                 let ffmpeg_path = self.ffmpeg.executable_path().ok_or_else(|| {
                     RelayError::new("ffmpeg_missing", "No usable FFmpeg executable was found")
                 })?;
-                let (overlay, normalized_start) = self.prepare_danmaku_overlay(
-                    &session_id,
-                    &options.danmaku,
-                    target.start_seconds,
-                )?;
+                let (overlay, normalized_start) = if paused {
+                    let (_, normalized_start) = self
+                        .sessions
+                        .playback_context(&session_id, target.start_seconds)?;
+                    (None, normalized_start)
+                } else {
+                    self.prepare_danmaku_overlay(
+                        &session_id,
+                        &options.danmaku,
+                        target.start_seconds,
+                    )?
+                };
                 target.start_seconds = normalized_start;
                 Ok(Reply::RelayState {
-                    relay: self
-                        .sessions
-                        .start(&session_id, target, Some(&ffmpeg_path), overlay)?,
+                    relay: self.sessions.start(
+                        &session_id,
+                        target,
+                        Some(&ffmpeg_path),
+                        overlay,
+                        paused,
+                    )?,
                 })
             }
             Command::RetargetRelay {
@@ -627,6 +643,7 @@ impl RelayCore {
                 source,
                 requested_part,
                 start_seconds,
+                paused,
                 options,
             } => {
                 let mut target = self.settings.relay_target(start_seconds)?;
@@ -642,59 +659,40 @@ impl RelayCore {
                         "Selected video part cannot be relayed",
                     )
                 })?;
-                let (next_overlay, normalized_start) = self.prepare_danmaku_overlay(
-                    &next_session_id,
-                    &options.danmaku,
-                    target.start_seconds,
-                )?;
+                let (next_overlay, normalized_start) = if paused {
+                    let (_, normalized_start) = self
+                        .sessions
+                        .playback_context(&next_session_id, target.start_seconds)?;
+                    (None, normalized_start)
+                } else {
+                    self.prepare_danmaku_overlay(
+                        &next_session_id,
+                        &options.danmaku,
+                        target.start_seconds,
+                    )?
+                };
                 target.start_seconds = normalized_start;
-                let suspended = current_session_id
+                let current_active = current_session_id
                     .as_deref()
-                    .and_then(|session_id| self.sessions.suspend(session_id));
-                let restoration_required = suspended
-                    .as_ref()
-                    .is_some_and(|previous| previous.was_active);
-                match self.sessions.start(
-                    &next_session_id,
-                    target.clone(),
-                    Some(&ffmpeg_path),
-                    next_overlay,
-                ) {
-                    Ok(relay) => Ok(Reply::PlaybackState { resolution, relay }),
-                    Err(mut error) => {
-                        let restored = if let (Some(previous_session_id), Some(previous)) =
-                            (current_session_id.as_deref(), suspended)
-                            && previous.was_active
-                        {
-                            let mut resume_target = target;
-                            resume_target.start_seconds = previous.position_seconds.unwrap_or(0.0);
-                            self.prepare_danmaku_overlay(
-                                previous_session_id,
-                                &options.danmaku,
-                                resume_target.start_seconds,
-                            )
-                            .and_then(|(overlay, normalized_start)| {
-                                resume_target.start_seconds = normalized_start;
-                                self.sessions.start(
-                                    previous_session_id,
-                                    resume_target,
-                                    Some(&ffmpeg_path),
-                                    overlay,
-                                )
-                            })
-                            .is_ok()
-                        } else {
-                            !restoration_required
-                        };
-                        if !restored {
-                            error.code = "retarget_restore_failed";
-                            error
-                                .message
-                                .push_str("; the previous relay could not be restored");
-                        }
-                        Err(error)
-                    }
-                }
+                    .is_some_and(|session_id| self.sessions.is_active(session_id));
+                let relay = if current_active {
+                    self.sessions.switch(
+                        current_session_id.as_deref().expect("active session id"),
+                        &next_session_id,
+                        target,
+                        next_overlay,
+                        paused,
+                    )?
+                } else {
+                    self.sessions.start(
+                        &next_session_id,
+                        target,
+                        Some(&ffmpeg_path),
+                        next_overlay,
+                        paused,
+                    )?
+                };
+                Ok(Reply::PlaybackState { resolution, relay })
             }
             Command::RelayStatus { session_id } => Ok(Reply::RelayState {
                 relay: self.sessions.status(&session_id)?,

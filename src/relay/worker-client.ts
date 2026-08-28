@@ -91,9 +91,10 @@ export class RelayWorkerClient {
     sessionId: string,
     options: PlaybackOptions,
     startSeconds = 0,
+    paused = false,
   ): Promise<RelayStatus> {
     return this.relayRequest(
-      { type: "start_relay", session_id: sessionId, start_seconds: startSeconds, options },
+      { type: "start_relay", session_id: sessionId, start_seconds: startSeconds, paused, options },
       30_000,
     );
   }
@@ -104,6 +105,7 @@ export class RelayWorkerClient {
     requestedPart: number,
     options: PlaybackOptions,
     startSeconds: number,
+    paused = false,
   ): Promise<{ resolution: SourceResolution; relay: RelayStatus }> {
     await this.health();
     const reply = await this.request(
@@ -113,6 +115,7 @@ export class RelayWorkerClient {
         source,
         requested_part: requestedPart,
         start_seconds: startSeconds,
+        paused,
         options,
       },
       50_000,

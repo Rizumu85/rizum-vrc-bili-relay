@@ -29,11 +29,6 @@ struct MediaSession {
     diagnostic: Option<String>,
 }
 
-pub(crate) struct SuspendedSession {
-    pub was_active: bool,
-    pub position_seconds: Option<f64>,
-}
-
 impl MediaSessionStore {
     pub fn new() -> Self {
         Self {
@@ -72,12 +67,20 @@ impl MediaSessionStore {
         resolved.resolution
     }
 
+    pub fn is_active(&mut self, session_id: &str) -> bool {
+        self.cleanup_expired();
+        self.sessions
+            .get(session_id)
+            .is_some_and(|session| session.process.is_some())
+    }
+
     pub fn start(
         &mut self,
         session_id: &str,
         target: RelayTarget,
         ffmpeg_path: Option<&str>,
         overlay: Option<DanmakuOverlay>,
+        start_paused: bool,
     ) -> Result<RelayStatus, RelayError> {
         self.cleanup_expired();
         let ffmpeg_path = ffmpeg_path.ok_or_else(|| {
@@ -118,6 +121,7 @@ impl MediaSessionStore {
             &ingest_url,
             &target.stream_key,
             start_seconds,
+            start_paused,
             overlay.as_ref(),
         )
         .inspect_err(|error| {
@@ -129,10 +133,136 @@ impl MediaSessionStore {
         session.stage = RelayStage::Starting;
         session.playback_url = Some(target.playback_url);
         session.position_seconds = (!session.input.is_live).then_some(start_seconds);
-        session.paused = false;
+        session.paused = start_paused;
         session.diagnostic = None;
         session.expires_at = Instant::now() + SESSION_TTL;
         Ok(status_for(session_id, session))
+    }
+
+    pub fn switch(
+        &mut self,
+        current_session_id: &str,
+        next_session_id: &str,
+        target: RelayTarget,
+        overlay: Option<DanmakuOverlay>,
+        remain_paused: bool,
+    ) -> Result<RelayStatus, RelayError> {
+        self.cleanup_expired();
+        validate_relay_target(&target)?;
+        if current_session_id == next_session_id {
+            return Err(RelayError::new(
+                "invalid_relay_switch",
+                "The current and target media sessions must be different",
+            ));
+        }
+
+        let mut current = self.sessions.remove(current_session_id).ok_or_else(|| {
+            RelayError::new(
+                "media_session_not_found",
+                "Current media session expired or does not exist",
+            )
+        })?;
+        let mut next = match self.sessions.remove(next_session_id) {
+            Some(session) => session,
+            None => {
+                self.sessions
+                    .insert(current_session_id.to_string(), current);
+                return Err(RelayError::new(
+                    "media_session_not_found",
+                    "Target media session expired or does not exist",
+                ));
+            }
+        };
+
+        let result = (|| {
+            let start_seconds = normalize_start(
+                target.start_seconds,
+                next.duration_seconds,
+                next.input.is_live,
+            )?;
+            let mut process = current.process.take().ok_or_else(|| {
+                RelayError::new(
+                    "relay_not_running",
+                    "The current relay is not active and cannot switch content in place",
+                )
+            })?;
+            let previous_position = process
+                .position_seconds()
+                .or(current.position_seconds)
+                .map(|position| clamp_position(position, current.duration_seconds))
+                .unwrap_or(0.0);
+            let previous_paused = process.is_paused();
+            let previous_overlay = current.overlay.take();
+
+            let switch_result = if remain_paused {
+                let pause_result = if process.is_paused() {
+                    Ok(())
+                } else {
+                    process.set_paused(
+                        true,
+                        &current.input,
+                        previous_position,
+                        previous_overlay.as_ref(),
+                    )
+                };
+                pause_result.and_then(|_| process.retarget_paused(&next.input, start_seconds))
+            } else {
+                process.switch_content(&next.input, start_seconds, overlay.as_ref())
+            };
+
+            if let Err(mut error) = switch_result {
+                let restored = if previous_paused {
+                    process.retarget_paused(&current.input, previous_position)
+                } else {
+                    process.switch_content(
+                        &current.input,
+                        previous_position,
+                        previous_overlay.as_ref(),
+                    )
+                }
+                .is_ok();
+                current.process = Some(process);
+                current.overlay = previous_overlay;
+                current.position_seconds = Some(previous_position);
+                current.stage = if restored {
+                    RelayStage::Running
+                } else {
+                    RelayStage::Failed
+                };
+                current.paused = previous_paused || !restored;
+                current.diagnostic = (!restored).then(|| error.message.clone());
+                current.expires_at = Instant::now() + SESSION_TTL;
+                if !restored {
+                    error.code = "retarget_restore_failed";
+                    error
+                        .message
+                        .push_str("; the previous relay could not be restored");
+                }
+                return Err(error);
+            }
+
+            let playback_url = current.playback_url.take().unwrap_or(target.playback_url);
+            current.position_seconds = Some(previous_position);
+            current.stage = RelayStage::Stopped;
+            current.paused = false;
+            current.diagnostic = None;
+            current.expires_at = Instant::now() + SESSION_TTL;
+
+            next.process = Some(process);
+            next.overlay = if remain_paused { None } else { overlay };
+            next.stage = RelayStage::Running;
+            next.playback_url = Some(playback_url);
+            next.position_seconds = (!next.input.is_live).then_some(start_seconds);
+            next.paused = remain_paused;
+            next.diagnostic = None;
+            next.expires_at = Instant::now() + SESSION_TTL;
+            Ok(status_for(next_session_id, &next))
+        })();
+
+        self.sessions
+            .insert(current_session_id.to_string(), current);
+        self.sessions.insert(next_session_id.to_string(), next);
+        result
     }
 
     pub fn playback_context(
@@ -216,12 +346,12 @@ impl MediaSessionStore {
     }
 
     pub fn stop(&mut self, session_id: &str) -> Result<RelayStatus, RelayError> {
-        self.suspend(session_id).ok_or_else(|| {
-            RelayError::new(
+        if !self.suspend(session_id) {
+            return Err(RelayError::new(
                 "media_session_not_found",
                 "Media session expired or does not exist; resolve the source again",
-            )
-        })?;
+            ));
+        }
         let session = self.sessions.get(session_id).ok_or_else(|| {
             RelayError::new(
                 "media_session_not_found",
@@ -231,10 +361,11 @@ impl MediaSessionStore {
         Ok(status_for(session_id, session))
     }
 
-    pub fn suspend(&mut self, session_id: &str) -> Option<SuspendedSession> {
+    fn suspend(&mut self, session_id: &str) -> bool {
         self.cleanup_expired();
-        let session = self.sessions.get_mut(session_id)?;
-        let was_active = session.process.is_some();
+        let Some(session) = self.sessions.get_mut(session_id) else {
+            return false;
+        };
         if let Some(mut process) = session.process.take() {
             if let Some(position) = process.position_seconds() {
                 session.position_seconds = Some(position);
@@ -246,10 +377,7 @@ impl MediaSessionStore {
         session.paused = false;
         session.diagnostic = None;
         session.expires_at = Instant::now() + SESSION_TTL;
-        Some(SuspendedSession {
-            was_active,
-            position_seconds: session.position_seconds,
-        })
+        true
     }
 
     pub fn shutdown(&mut self) {
@@ -352,7 +480,7 @@ fn refresh(session: &mut MediaSession) -> Result<(), RelayError> {
             session.process = None;
             session.overlay = None;
             // Preserve the transport intent so the UI can restart playback at
-            // the frozen position after the two-hour safety cutoff.
+            // the frozen position after the one-hour safety cutoff.
             session.paused = true;
             session.diagnostic = None;
             session.expires_at = Instant::now() + SESSION_TTL;

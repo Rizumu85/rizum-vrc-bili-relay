@@ -85,8 +85,15 @@ impl FfmpegProcess {
         ingest_url: &str,
         stream_key: &str,
         start_seconds: f64,
+        start_paused: bool,
         _overlay: Option<&DanmakuOverlay>,
     ) -> Result<Self, RelayError> {
+        if start_paused && input.is_live {
+            return Err(RelayError::new(
+                "pause_not_supported",
+                "Live streams cannot start paused",
+            ));
+        }
         let port = reserve_udp_port()?;
         let udp_input = format!("udp://127.0.0.1:{port}?fifo_size=1000000&overrun_nonfatal=1");
         let udp_output = format!("udp://127.0.0.1:{port}?pkt_size=1316");
@@ -110,9 +117,9 @@ impl FfmpegProcess {
             udp_output,
             timeline_offset_seconds: 0.0,
             content_start_seconds: start_seconds,
-            paused_position_seconds: None,
-            paused_at: None,
-            awaiting_content_start: true,
+            paused_position_seconds: start_paused.then_some(start_seconds),
+            paused_at: start_paused.then(Instant::now),
+            awaiting_content_start: !start_paused,
             is_live: input.is_live,
         })
     }
@@ -253,6 +260,64 @@ impl FfmpegProcess {
         }
     }
 
+    pub fn switch_content(
+        &mut self,
+        input: &MediaInput,
+        requested_start_seconds: f64,
+        overlay: Option<&DanmakuOverlay>,
+    ) -> Result<(), RelayError> {
+        self.stop_producer_and_advance_timeline();
+        self.content_start_seconds = requested_start_seconds;
+        self.paused_position_seconds = Some(requested_start_seconds);
+        self.paused_at = Some(Instant::now());
+        self.awaiting_content_start = false;
+        self.is_live = input.is_live;
+
+        let started = self
+            .spawn_content_producer(input, requested_start_seconds, overlay)
+            .and_then(|_| self.wait_for_producer_output());
+        match started {
+            Ok(()) => {
+                self.paused_position_seconds = None;
+                self.paused_at = None;
+                Ok(())
+            }
+            Err(error) => {
+                if let Some(mut producer) = self.producer.take() {
+                    producer.stop();
+                }
+                let _ = self.spawn_hold_producer();
+                self.paused_position_seconds = Some(requested_start_seconds);
+                self.paused_at = Some(Instant::now());
+                Err(error)
+            }
+        }
+    }
+
+    pub fn retarget_paused(
+        &mut self,
+        input: &MediaInput,
+        requested_start_seconds: f64,
+    ) -> Result<(), RelayError> {
+        if input.is_live {
+            return Err(RelayError::new(
+                "pause_not_supported",
+                "Live streams cannot remain paused while changing content",
+            ));
+        }
+        if !self.is_paused() {
+            return Err(RelayError::new(
+                "relay_not_paused",
+                "The relay must be paused before changing paused content",
+            ));
+        }
+        self.content_start_seconds = requested_start_seconds;
+        self.paused_position_seconds = Some(requested_start_seconds);
+        self.awaiting_content_start = false;
+        self.is_live = false;
+        Ok(())
+    }
+
     pub fn stop(&mut self) {
         // Stop the publisher first while the producer is still sending data.
         // That lets FFmpeg finish the FLV/RTMP session instead of being stuck
@@ -326,6 +391,38 @@ impl FfmpegProcess {
     fn replace_producer_with_hold(&mut self) -> Result<(), RelayError> {
         self.stop_producer_and_advance_timeline();
         self.spawn_hold_producer()
+    }
+
+    fn wait_for_producer_output(&mut self) -> Result<(), RelayError> {
+        loop {
+            let poll = self
+                .producer
+                .as_mut()
+                .ok_or_else(|| {
+                    RelayError::new(
+                        "ffmpeg_start_failed",
+                        "FFmpeg media producer disappeared while switching content",
+                    )
+                })?
+                .poll(true)?;
+            match poll {
+                ChildPoll::Alive { stable: true } => return Ok(()),
+                ChildPoll::Alive { stable: false } => {
+                    thread::sleep(Duration::from_millis(25));
+                }
+                ChildPoll::Exited { diagnostic, .. } => {
+                    return Err(RelayError::new(
+                        "ffmpeg_start_failed",
+                        if diagnostic.is_empty() {
+                            "FFmpeg media producer exited before sending the selected position"
+                                .to_string()
+                        } else {
+                            diagnostic
+                        },
+                    ));
+                }
+            }
+        }
     }
 }
 
