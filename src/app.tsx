@@ -1087,7 +1087,6 @@ function PlaybackEndButton({
         <div
           testId="playback-end-tooltip"
           style={{
-            width: 126,
             position: "absolute",
             right: -4,
             bottom: 29,
