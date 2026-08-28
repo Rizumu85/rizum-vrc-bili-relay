@@ -75,7 +75,7 @@ probe and connection setup from consuming the beginning of a video.
 still frame and silence continue across the existing RTMP connection, while
 the reported VOD position remains frozen. Resume starts a fresh inner producer
 at that frozen or user-selected position with monotonically continued bridge
-timestamps. A two-hour paused session is closed on the next backend status
+timestamps. A one-hour paused session is closed on the next backend status
 refresh; normal application polling enforces that cutoff while the app remains
 open. `stop_relay` still closes the outer publisher explicitly.
 

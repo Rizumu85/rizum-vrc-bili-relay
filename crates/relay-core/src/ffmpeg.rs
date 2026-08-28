@@ -29,7 +29,7 @@ const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Appl
      (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const GRACEFUL_STOP_TIMEOUT: Duration = Duration::from_secs(2);
-const PAUSE_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
+const PAUSE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const STREAM_SWITCH_GAP_SECONDS: f64 = 0.050;
 const LOG_LINE_LIMIT: usize = 24;
 
