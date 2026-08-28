@@ -11,7 +11,6 @@ The product uses a thin presentation module and a deep Rust module.
 | Product decisions and media workflow | `relay-core` in Rust |
 | Process seam | `relay-worker` + `src/relay/worker-client.ts` |
 | Media codecs and container conversion | external FFmpeg process |
-| Legacy reference implementation | WinUI/C#, outside this repository |
 
 Changing the UI must stay on the Bun HMR path. Do not move layout values,
 Rizum Glass tokens, copy, or motion into Rust. Conversely, React must not decide

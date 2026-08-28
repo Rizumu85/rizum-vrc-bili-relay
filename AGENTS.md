@@ -1,24 +1,19 @@
 # Repository Rules
 
 This repository is the released GPUIX + Rust implementation of VRC Bili Relay.
-The architecture began as an isolated experiment, and its UI feasibility gate was
-accepted on 2026-08-27. The existing WinUI/C# solution remains a reference and
-fallback; it is not a runtime dependency of this repository.
 
 ## Verification policy
 
 - Only benchmark test suites may be executed.
 - Do not run unit, integration, end-to-end, snapshot, smoke, acceptance, or visual-regression test suites.
-- Do not add or invoke generic `test`, `vitest`, `jest`, `playwright`, `cargo test`, or `dotnet test` commands.
+- Do not add or invoke generic `test`, `vitest`, `jest`, `playwright`, or `cargo test` commands.
 - Builds, TypeScript type checks, linting, manual application launches, and screenshot capture are permitted verification commands only when they do not invoke a test runner.
 - Benchmark entry points must live under `benchmarks/`, use a `.bench.ts` or `.bench.tsx` suffix, and report measurements without disguising functional assertions as benchmarks.
 
 ## Scope
 
-- Keep this repository independent from the existing WinUI solution.
 - Treat `design/reference-contract.json` and the approved images under `design/reference/` as the UI source of truth.
 - Do not copy the browser presentation canvas into the product window. The GPUIX window is the product surface.
-- Do not import or invoke the C# product services. New product logic belongs in the Rust core.
 - GPUIX is pre-1.0. Verify unfamiliar APIs against the pinned `@gpuix/react` dependency instead of inferring them from DOM or GPUI names.
 
 ## Product architecture
