@@ -14,6 +14,7 @@ This repository is the released GPUIX + Rust implementation of VRC Bili Relay.
 
 - After creating or replacing a GitHub Release asset, copy that exact uploaded ZIP into `release/` and expand it there so the convenient local portable build matches the public artifact.
 - Verify the local archive SHA-256 against the uploaded asset. Do not treat `dist/` as the formal local Release, and do not rebuild a second archive with different bytes for `release/`.
+- Do not close the user's running formal build while editing, compiling, packaging, uploading, or verifying a replacement. Only after the new uploaded artifact and its checksum are ready, gracefully close the canonical `release/` executable immediately before replacing its files. Allow its relay worker and FFmpeg children to exit, replace from the exact verified archive, then relaunch the formal build if it was running before the update. The user has authorized this narrowly timed interruption even during an active relay; do not create duplicate pending-update folders unless graceful replacement genuinely fails.
 
 ## Scope
 
