@@ -16,6 +16,7 @@ param(
     [switch]$SaveSettings,
     [switch]$OpenDanmakuFont,
     [switch]$OpenPartSelect,
+    [switch]$CyclePlaybackEndBehavior,
     [switch]$FocusSource,
     [switch]$DragSelectSourceInside,
     [switch]$DragSelectSourceOutside,
@@ -227,6 +228,17 @@ try {
         }
         $scale = $width / $logicalWidth
         [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](276 * $scale), $rectangle.Top + [int](262 * $scale)) | Out-Null
+        [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 500
+    }
+
+    if ($CyclePlaybackEndBehavior) {
+        if ($Scene -ne "ready-vod") {
+            throw "CyclePlaybackEndBehavior requires -Scene ready-vod."
+        }
+        $scale = $width / $logicalWidth
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](385 * $scale), $rectangle.Top + [int](330 * $scale)) | Out-Null
         [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
         [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
         Start-Sleep -Milliseconds 500

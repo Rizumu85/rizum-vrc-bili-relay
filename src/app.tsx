@@ -70,7 +70,8 @@ type DanmakuFont = "microsoft-yahei" | "noto-sans-sc" | "source-han-sans" | "sim
 type DanmakuWeight = "regular" | "bold";
 type DanmakuOutline = "heavy" | "outline" | "shadow";
 type DanmakuFilter = "rolling" | "fixed" | "colored" | "advanced";
-type PlaybackUpdate = "part" | "seek" | "danmaku" | null;
+type PlaybackEndBehavior = "pause" | "repeat" | "next";
+type PlaybackUpdate = "part" | "seek" | "danmaku" | "completion" | null;
 type MediaComponentState =
   | "checking"
   | "external"
@@ -112,6 +113,7 @@ const REFERENCE_PARTS: PlaybackPart[] = [
   { value: "3", label: "P3 · 常见问题", duration: 318 },
 ] as const;
 const POSITION_BY_PART: Record<string, number> = { "1": 0, "2": 204, "3": 0 };
+const PLAYBACK_END_SEQUENCE: readonly PlaybackEndBehavior[] = ["pause", "next", "repeat"];
 const TRACK_WIDTH = 416;
 const THEME_OPTIONS = [
   { value: "system", label: "跟随系统" },
@@ -841,6 +843,62 @@ function PartSelect({
   );
 }
 
+function PlaybackEndButton({
+  value,
+  onChange,
+  disabled,
+  palette,
+}: {
+  value: PlaybackEndBehavior;
+  onChange: (value: PlaybackEndBehavior) => void;
+  disabled: boolean;
+  palette: Palette;
+}) {
+  const currentIndex = PLAYBACK_END_SEQUENCE.indexOf(value);
+  const nextValue = PLAYBACK_END_SEQUENCE[(currentIndex + 1) % PLAYBACK_END_SEQUENCE.length]
+    ?? "pause";
+  const active = value !== "pause";
+  return (
+    <div
+      testId="playback-end-toggle"
+      tabIndex={disabled ? -1 : 0}
+      onClick={() => {
+        if (!disabled) onChange(nextValue);
+      }}
+      onKeyDown={(event) => {
+        if (!disabled && (event.key === "enter" || event.key === "space")) onChange(nextValue);
+      }}
+      style={{
+        width: 22,
+        height: 22,
+        marginRight: 7,
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: 6,
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.48 : 1,
+        userSelect: "none",
+        hover: disabled ? undefined : { backgroundColor: palette.surfaceHover },
+        active: disabled ? undefined : { backgroundColor: palette.surfaceActive },
+      }}
+    >
+      <MotionFade
+        key={value}
+        duration={MOTION.stateCrossfadeSeconds}
+        style={{ display: "flex", alignItems: "center", justifyContent: "center" }}
+      >
+        <Icon
+          name={value === "repeat" ? "repeatOne" : "repeat"}
+          size={13}
+          color={active ? palette.accentTeal : palette.caption}
+        />
+      </MotionFade>
+    </div>
+  );
+}
+
 function SeekControl({
   duration,
   position,
@@ -852,6 +910,8 @@ function SeekControl({
   playing,
   transportBusy,
   onTogglePlayback,
+  endBehavior,
+  onEndBehaviorChange,
   palette,
 }: {
   duration: number;
@@ -864,6 +924,8 @@ function SeekControl({
   playing: boolean;
   transportBusy: boolean;
   onTogglePlayback: () => void;
+  endBehavior: PlaybackEndBehavior;
+  onEndBehaviorChange: (value: PlaybackEndBehavior) => void;
   palette: Palette;
 }) {
   const [dragging, setDragging] = useState(false);
@@ -1017,6 +1079,14 @@ function SeekControl({
           {formatPlaybackTime(visiblePosition)}
         </text>
         <div style={{ flexGrow: 1 }} />
+        {showTransport ? (
+          <PlaybackEndButton
+            value={endBehavior}
+            onChange={onEndBehaviorChange}
+            disabled={transportBusy}
+            palette={palette}
+          />
+        ) : null}
         <text style={{ color: palette.caption, fontFamily: FONT_MONO, fontSize: 11.5 }}>
           {formatPlaybackTime(duration)}
         </text>
@@ -1358,6 +1428,8 @@ function Result({
   playbackPaused,
   playbackToggling,
   onTogglePlayback,
+  playbackEndBehavior,
+  onPlaybackEndBehaviorChange,
   danmaku,
   onDanmakuChange,
   onOpenDanmaku,
@@ -1380,6 +1452,8 @@ function Result({
   playbackPaused: boolean;
   playbackToggling: boolean;
   onTogglePlayback: () => void;
+  playbackEndBehavior: PlaybackEndBehavior;
+  onPlaybackEndBehaviorChange: (value: PlaybackEndBehavior) => void;
   danmaku: DanmakuVisibility;
   onDanmakuChange: (value: DanmakuVisibility) => void;
   onOpenDanmaku: () => void;
@@ -1542,6 +1616,8 @@ function Result({
                 || relayStatus?.stage === "starting"
               }
               onTogglePlayback={onTogglePlayback}
+              endBehavior={playbackEndBehavior}
+              onEndBehaviorChange={onPlaybackEndBehaviorChange}
               palette={palette}
             />
           </div>
@@ -1673,6 +1749,7 @@ function resultStatusLabel(
   if (playbackUpdating === "part") return "· 正在切换分 P";
   if (playbackUpdating === "seek") return "· 正在跳转";
   if (playbackUpdating === "danmaku") return "· 正在更新弹幕";
+  if (playbackUpdating === "completion") return "· 正在继续播放";
   if (playbackMessage) return `· ${playbackMessage}`;
   if (relayError && !relay) return "· 需要完成设置";
   if (
@@ -3119,6 +3196,7 @@ export function AppSurface({
   const [playbackMessage, setPlaybackMessage] = useState<string | null>(null);
   const [playbackPaused, setPlaybackPaused] = useState(false);
   const [playbackToggling, setPlaybackToggling] = useState(false);
+  const [playbackEndBehavior, setPlaybackEndBehavior] = useState<PlaybackEndBehavior>("pause");
   const [seekInteractionActive, setSeekInteractionActive] = useState(false);
   const [danmaku, setDanmaku] = useState<DanmakuVisibility>("shown");
   const [danmakuSettings, setDanmakuSettings] = useState<DanmakuSettings>(DEFAULT_DANMAKU_SETTINGS);
@@ -3137,6 +3215,7 @@ export function AppSurface({
   const windowClosing = useRef(false);
   const conversionEpoch = useRef(0);
   const playbackEpoch = useRef(0);
+  const completionActionSession = useRef<string | null>(null);
   const appliedPlaybackOptions = useRef<string | null>(null);
   const sceneBeforeConversion = useRef<Scene>(initialScene);
   const resolvedAppearance: Appearance =
@@ -3411,6 +3490,7 @@ export function AppSurface({
     setPlaybackMessage(null);
     setPlaybackPaused(false);
     setSeekInteractionActive(false);
+    completionActionSession.current = null;
     appliedPlaybackOptions.current = null;
     setSource(normalizedSource);
     setScene("loading");
@@ -3466,6 +3546,7 @@ export function AppSurface({
     startSeconds: number,
     update: Exclude<PlaybackUpdate, null>,
     options = configuredPlaybackOptions(danmaku, danmakuSettings),
+    remainPaused = playbackPaused,
   ) => {
     const previousResolution = sourceResolution;
     const canRetarget = previousResolution?.kind === "video"
@@ -3518,7 +3599,7 @@ export function AppSurface({
         effectivePart,
         options,
         effectiveStart,
-        playbackPaused,
+        remainPaused,
       );
       if (playbackEpoch.current !== epoch) {
         await getRelayWorker().stopRelay(playback.relay.session_id).catch(() => undefined);
@@ -3549,7 +3630,9 @@ export function AppSurface({
             ? "切换失败 · 原内容仍在播放"
             : update === "seek"
               ? "跳转失败 · 原内容仍在播放"
-              : "弹幕更新失败 · 原内容仍在播放",
+              : update === "danmaku"
+                ? "弹幕更新失败 · 原内容仍在播放"
+                : "播完处理失败 · 结束画面仍会保持",
         );
       } else {
         setRelayStatus(null);
@@ -3559,13 +3642,83 @@ export function AppSurface({
             ? "切换失败 · 请重试"
             : update === "seek"
               ? "跳转失败 · 请重试"
-              : "弹幕更新失败 · 请重试",
+              : update === "danmaku"
+                ? "弹幕更新失败 · 请重试"
+                : "播完处理失败 · 请重试",
         );
       }
     } finally {
       if (playbackEpoch.current === epoch) setPlaybackUpdating(null);
     }
   };
+
+  useEffect(() => {
+    if (relayStatus?.stage !== "draining") {
+      completionActionSession.current = null;
+      return;
+    }
+    if (
+      completionActionSession.current === relayStatus.session_id
+      || sourceResolution?.kind !== "video"
+      || sourceResolution.routing.kind === "direct"
+      || playbackUpdating !== null
+      || playbackToggling
+    ) return;
+
+    const completionSession = relayStatus.session_id;
+    completionActionSession.current = completionSession;
+    const options = configuredPlaybackOptions(danmaku, danmakuSettings);
+    const currentPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
+    const orderedParts = [...(sourceResolution.parts ?? [])]
+      .sort((left, right) => left.page - right.page);
+    const currentIndex = orderedParts.findIndex((entry) => entry.page === currentPart);
+    const nextPart = currentIndex >= 0 ? orderedParts[currentIndex + 1] : undefined;
+    const shouldAdvance = playbackEndBehavior === "next" && nextPart !== undefined;
+
+    if (playbackEndBehavior === "repeat" || shouldAdvance) {
+      void retargetPlayback(
+        shouldAdvance ? nextPart.page : currentPart,
+        0,
+        "completion",
+        options,
+        false,
+      );
+      return;
+    }
+
+    const pauseAtCompletion = async () => {
+      setPlaybackToggling(true);
+      setPlaybackMessage(null);
+      setRelayError(null);
+      try {
+        const completionPosition = relayStatus.position_seconds
+          ?? sourceResolution.duration_seconds
+          ?? playbackPosition;
+        const updated = await getRelayWorker().setRelayPaused(
+          completionSession,
+          true,
+          options,
+          completionPosition,
+        );
+        setRelayStatus(updated);
+        setPlaybackPosition(updated.position_seconds ?? completionPosition);
+        setPlaybackPaused(updated.paused);
+        appliedPlaybackOptions.current = null;
+      } catch (error) {
+        setRelayError(relayErrorMessage(error));
+        setPlaybackMessage("播完暂停失败 · 结束画面仍会保持");
+      } finally {
+        setPlaybackToggling(false);
+      }
+    };
+    void pauseAtCompletion();
+  }, [
+    relayStatus?.stage,
+    relayStatus?.session_id,
+    playbackEndBehavior,
+    playbackUpdating,
+    playbackToggling,
+  ]);
 
   const changePart = (nextPart: string) => {
     if (sourceResolution === null) {
@@ -3650,11 +3803,22 @@ export function AppSurface({
       if (active && relayStatus) {
         const nextPaused = !relayStatus.paused;
         const options = configuredPlaybackOptions(danmaku, danmakuSettings);
+        const selectedPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
+        const selectedDuration = sourceResolution.parts
+          ?.find((entry) => entry.page === selectedPart)
+          ?.duration_seconds
+          ?? sourceResolution.duration_seconds
+          ?? 0;
+        const requestedPosition = !nextPaused
+          && selectedDuration > 0
+          && playbackPosition >= selectedDuration - 1
+            ? 0
+            : playbackPosition;
         const updated = await getRelayWorker().setRelayPaused(
           relayStatus.session_id,
           nextPaused,
           options,
-          playbackPosition,
+          requestedPosition,
         );
         if (!nextPaused) appliedPlaybackOptions.current = playbackOptionsSignature(options);
         setRelayStatus(updated);
@@ -3900,6 +4064,8 @@ export function AppSurface({
                 playbackPaused={playbackPaused}
                 playbackToggling={playbackToggling}
                 onTogglePlayback={() => void togglePlayback()}
+                playbackEndBehavior={playbackEndBehavior}
+                onPlaybackEndBehaviorChange={setPlaybackEndBehavior}
                 danmaku={danmaku}
                 onDanmakuChange={changeDanmakuVisibility}
                 onOpenDanmaku={() => showSubview("danmaku")}
