@@ -28,6 +28,7 @@ export interface Palette {
   accentTeal: string;
   accentViolet: string;
   accentRose: string;
+  accentDanmaku: string;
   focus: string;
 }
 
@@ -73,6 +74,7 @@ export const PALETTES: Record<Appearance, Palette> = {
     accentTeal: "#2DD4BF",
     accentViolet: "#A78BFA",
     accentRose: "#FB7185",
+    accentDanmaku: "#F59E0B",
     focus: "#2DD4BF38",
   },
   dark: {
@@ -103,6 +105,7 @@ export const PALETTES: Record<Appearance, Palette> = {
     accentTeal: "#2DD4BF",
     accentViolet: "#A78BFA",
     accentRose: "#FB7185",
+    accentDanmaku: "#FBBF24",
     focus: "#2DD4BF2E",
   },
 };

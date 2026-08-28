@@ -1549,7 +1549,7 @@ function Result({
           }}
         >
           <div style={{ flexGrow: 1, display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <StatusDot color={danmaku === "shown" ? palette.accentTeal : palette.surfaceLine} />
+            <StatusDot color={danmaku === "shown" ? palette.accentDanmaku : palette.surfaceLine} />
             <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 13 }}>弹幕</text>
           </div>
           <Segmented
