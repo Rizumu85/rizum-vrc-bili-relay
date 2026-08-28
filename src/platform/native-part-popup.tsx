@@ -18,12 +18,6 @@ const MENU_WIDTH = 368;
 const MENU_ROW_HEIGHT = 31;
 const MENU_MAX_ROWS = 7;
 const MENU_PADDING = 4;
-// Keep the rounded panel away from the transparent native render-target edge.
-// Without this gutter, Windows composites its antialiased corner pixels against
-// the target matte and leaves a jagged grey fringe.
-const WINDOW_PADDING_X = 2;
-const WINDOW_PADDING_TOP = 2;
-const WINDOW_PADDING_BOTTOM = 2;
 const SCROLLBAR_INSET_Y = 7;
 const SCROLLBAR_HIT_WIDTH = 8;
 const SCROLLBAR_RIGHT_INSET = 6;
@@ -144,12 +138,36 @@ const user32 = process.platform === "win32"
         ],
         returns: FFIType.bool,
       },
+      SetWindowRgn: {
+        args: [FFIType.u64, FFIType.u64, FFIType.int32_t],
+        returns: FFIType.int32_t,
+      },
       ShowWindow: {
         args: [FFIType.ptr, FFIType.int32_t],
         returns: FFIType.bool,
       },
       PostMessageW: {
         args: [FFIType.ptr, FFIType.uint32_t, FFIType.u64, FFIType.i64],
+        returns: FFIType.bool,
+      },
+    } as const)
+  : null;
+
+const gdi32 = process.platform === "win32"
+  ? dlopen("gdi32.dll", {
+      CreateRoundRectRgn: {
+        args: [
+          FFIType.int32_t,
+          FFIType.int32_t,
+          FFIType.int32_t,
+          FFIType.int32_t,
+          FFIType.int32_t,
+          FFIType.int32_t,
+        ],
+        returns: FFIType.u64,
+      },
+      DeleteObject: {
+        args: [FFIType.u64],
         returns: FFIType.bool,
       },
     } as const)
@@ -230,11 +248,10 @@ function ensurePopupRenderer(): void {
   renderer.init({
     title: POPUP_WINDOW_TITLE,
     appName: "VRC Bili Relay",
-    width: MENU_WIDTH + WINDOW_PADDING_X * 2,
-    height: MENU_ROW_HEIGHT * MENU_MAX_ROWS + MENU_PADDING * 2
-      + WINDOW_PADDING_TOP + WINDOW_PADDING_BOTTOM,
-    minWidth: MENU_WIDTH + WINDOW_PADDING_X * 2,
-    minHeight: MENU_ROW_HEIGHT + MENU_PADDING * 2 + WINDOW_PADDING_TOP + WINDOW_PADDING_BOTTOM,
+    width: MENU_WIDTH,
+    height: MENU_ROW_HEIGHT * MENU_MAX_ROWS + MENU_PADDING * 2,
+    minWidth: MENU_WIDTH,
+    minHeight: MENU_ROW_HEIGHT + MENU_PADDING * 2,
     resizable: false,
     transparent: true,
     titlebarTransparent: true,
@@ -309,8 +326,8 @@ function positionPopupWindow(
   const [anchorX, anchorY, anchorWidth, anchorHeight] = request.anchorBounds;
   const visibleRows = Math.max(1, Math.min(MENU_MAX_ROWS, request.items.length));
   const panelHeight = visibleRows * MENU_ROW_HEIGHT + MENU_PADDING * 2;
-  const logicalWindowWidth = MENU_WIDTH + WINDOW_PADDING_X * 2;
-  const logicalWindowHeight = panelHeight + WINDOW_PADDING_TOP + WINDOW_PADDING_BOTTOM;
+  const logicalWindowWidth = MENU_WIDTH;
+  const logicalWindowHeight = panelHeight;
   const physicalWindowWidth = Math.round(logicalWindowWidth * scaleX);
   const physicalWindowHeight = Math.round(logicalWindowHeight * scaleY);
   // GPUIX 0.5.1 already reports horizontal element origins in physical
@@ -329,10 +346,10 @@ function positionPopupWindow(
   const desiredWindowLeft = Math.round(
     Math.min(
       workArea.right - 8 - physicalWindowWidth,
-      Math.max(workArea.left + 8, panelLeft - WINDOW_PADDING_X * scaleX),
+      Math.max(workArea.left + 8, panelLeft),
     ),
   );
-  const desiredWindowTop = Math.round(panelTop - WINDOW_PADDING_TOP * scaleY);
+  const desiredWindowTop = Math.round(panelTop);
 
   user32.symbols.SetWindowPos(
     handle,
@@ -344,7 +361,22 @@ function positionPopupWindow(
     SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
   );
   alignPopupClientOrigin(handle, desiredWindowLeft, desiredWindowTop, physicalWindowWidth, physicalWindowHeight);
+  setRoundedPopupRegion(handle, physicalWindowWidth, physicalWindowHeight, scaleY);
   user32.symbols.ShowWindow(handle, SW_SHOW);
+}
+
+function setRoundedPopupRegion(handle: WindowHandle, width: number, height: number, scale: number): void {
+  if (!user32 || !gdi32) return;
+  // GPUIX 0.5.1 antialiases React radii against a black matte on transparent
+  // Windows render targets. Clip an opaque rectangular surface at the HWND
+  // boundary instead, so no partially transparent dark fringe is composited.
+  const diameter = Math.max(2, Math.round(RADII.compactPanel * 2 * scale));
+  const region = gdi32.symbols.CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter);
+  if (!region) return;
+  const applied = user32.symbols.SetWindowRgn(handleValue(handle), region, 1);
+  if (applied === 0) {
+    gdi32.symbols.DeleteObject(region);
+  }
 }
 
 function alignPopupClientOrigin(
@@ -581,12 +613,12 @@ function NativePartPopupSurface({
       <div
         style={{
           position: "absolute",
-          left: WINDOW_PADDING_X,
-          top: WINDOW_PADDING_TOP,
+          left: 0,
+          top: 0,
           width: MENU_WIDTH,
           height: panelHeight,
           padding: MENU_PADDING,
-          borderRadius: RADII.compactPanel,
+          borderRadius: 0,
           borderWidth: 1,
           borderColor: request.palette.floatingEdge,
           backgroundColor: request.palette.floatingSurface,
