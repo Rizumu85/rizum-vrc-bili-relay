@@ -975,7 +975,7 @@ function PlaybackEndButton({
     ?? "pause";
   const active = value !== "pause";
   const icon: IconName = value === "pause"
-    ? "repeatOff"
+    ? "pause"
     : value === "next"
       ? "skipNext"
       : "repeatOne";
