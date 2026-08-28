@@ -25,6 +25,7 @@ struct MediaSession {
     playback_url: Option<String>,
     position_seconds: Option<f64>,
     duration_seconds: Option<f64>,
+    paused: bool,
     diagnostic: Option<String>,
 }
 
@@ -63,6 +64,7 @@ impl MediaSessionStore {
                     playback_url: None,
                     position_seconds,
                     duration_seconds,
+                    paused: false,
                     diagnostic: None,
                 },
             );
@@ -127,6 +129,7 @@ impl MediaSessionStore {
         session.stage = RelayStage::Starting;
         session.playback_url = Some(target.playback_url);
         session.position_seconds = (!session.input.is_live).then_some(start_seconds);
+        session.paused = false;
         session.diagnostic = None;
         session.expires_at = Instant::now() + SESSION_TTL;
         Ok(status_for(session_id, session))
@@ -164,6 +167,54 @@ impl MediaSessionStore {
         Ok(status_for(session_id, session))
     }
 
+    pub fn set_paused(
+        &mut self,
+        session_id: &str,
+        paused: bool,
+        requested_start: f64,
+        overlay: Option<DanmakuOverlay>,
+    ) -> Result<RelayStatus, RelayError> {
+        self.cleanup_expired();
+        let session = self.sessions.get_mut(session_id).ok_or_else(|| {
+            RelayError::new(
+                "media_session_not_found",
+                "Media session expired or does not exist; resolve the source again",
+            )
+        })?;
+        let start_seconds = normalize_start(
+            requested_start,
+            session.duration_seconds,
+            session.input.is_live,
+        )?;
+        let process = session.process.as_mut().ok_or_else(|| {
+            RelayError::new(
+                "relay_not_running",
+                "The relay is not running and cannot be paused or resumed",
+            )
+        })?;
+        process.set_paused(
+            paused,
+            &session.input,
+            start_seconds,
+            if paused {
+                session.overlay.as_ref()
+            } else {
+                overlay.as_ref()
+            },
+        )?;
+        if let Some(position) = process.position_seconds() {
+            session.position_seconds = Some(clamp_position(position, session.duration_seconds));
+        }
+        if !paused {
+            session.overlay = overlay;
+        }
+        session.paused = paused;
+        session.stage = RelayStage::Running;
+        session.diagnostic = None;
+        session.expires_at = Instant::now() + SESSION_TTL;
+        Ok(status_for(session_id, session))
+    }
+
     pub fn stop(&mut self, session_id: &str) -> Result<RelayStatus, RelayError> {
         self.suspend(session_id).ok_or_else(|| {
             RelayError::new(
@@ -192,6 +243,7 @@ impl MediaSessionStore {
         }
         session.overlay = None;
         session.stage = RelayStage::Stopped;
+        session.paused = false;
         session.diagnostic = None;
         session.expires_at = Instant::now() + SESSION_TTL;
         Some(SuspendedSession {
@@ -217,6 +269,7 @@ impl MediaSessionStore {
             }
             session.overlay = None;
             session.stage = RelayStage::Stopped;
+            session.paused = false;
             session.diagnostic = None;
             session.expires_at = Instant::now() + SESSION_TTL;
         }
@@ -252,7 +305,7 @@ fn refresh(session: &mut MediaSession) -> Result<(), RelayError> {
         let Some(process) = session.process.as_mut() else {
             return Ok(());
         };
-        let poll = process.poll()?;
+        let poll = process.poll(&session.input, session.overlay.as_ref())?;
         if let Some(position) = process.position_seconds() {
             session.position_seconds = Some(clamp_position(position, session.duration_seconds));
         }
@@ -291,6 +344,17 @@ fn refresh(session: &mut MediaSession) -> Result<(), RelayError> {
             session.diagnostic = (!diagnostic.is_empty()).then_some(diagnostic);
             session.process = None;
             session.overlay = None;
+            session.paused = false;
+            session.expires_at = Instant::now() + SESSION_TTL;
+        }
+        ProcessPoll::PauseExpired => {
+            session.stage = RelayStage::Stopped;
+            session.process = None;
+            session.overlay = None;
+            // Preserve the transport intent so the UI can restart playback at
+            // the frozen position after the two-hour safety cutoff.
+            session.paused = true;
+            session.diagnostic = None;
             session.expires_at = Instant::now() + SESSION_TTL;
         }
     }
@@ -303,6 +367,7 @@ fn status_for(session_id: &str, session: &MediaSession) -> RelayStatus {
         stage: session.stage.clone(),
         playback_url: session.playback_url.clone(),
         position_seconds: session.position_seconds,
+        paused: session.paused,
         danmaku_events: session.overlay.as_ref().map(DanmakuOverlay::event_count),
         diagnostic: session.diagnostic.clone(),
     }

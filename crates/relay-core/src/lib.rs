@@ -19,7 +19,7 @@ use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 use settings::SettingsStore;
 
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -58,6 +58,14 @@ pub enum Command {
     },
     RelayStatus {
         session_id: String,
+    },
+    SetRelayPaused {
+        session_id: String,
+        paused: bool,
+        #[serde(default)]
+        start_seconds: f64,
+        #[serde(default)]
+        options: PlaybackOptions,
     },
     StopRelay {
         session_id: String,
@@ -426,6 +434,7 @@ pub struct RelayStatus {
     pub playback_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position_seconds: Option<f64>,
+    pub paused: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub danmaku_events: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -690,6 +699,26 @@ impl RelayCore {
             Command::RelayStatus { session_id } => Ok(Reply::RelayState {
                 relay: self.sessions.status(&session_id)?,
             }),
+            Command::SetRelayPaused {
+                session_id,
+                paused,
+                start_seconds,
+                options,
+            } => {
+                let (overlay, normalized_start) = if paused {
+                    (None, start_seconds)
+                } else {
+                    self.prepare_danmaku_overlay(&session_id, &options.danmaku, start_seconds)?
+                };
+                Ok(Reply::RelayState {
+                    relay: self.sessions.set_paused(
+                        &session_id,
+                        paused,
+                        normalized_start,
+                        overlay,
+                    )?,
+                })
+            }
             Command::StopRelay { session_id } => Ok(Reply::RelayState {
                 relay: self.sessions.stop(&session_id)?,
             }),
