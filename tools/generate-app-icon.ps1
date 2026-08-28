@@ -15,11 +15,19 @@ $cornerRadius = 207
 $iconSizes = @(16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 128, 256)
 
 function Set-RoundedTileAlpha {
-    param([System.Drawing.Bitmap]$Bitmap)
+    param(
+        [System.Drawing.Bitmap]$Bitmap,
+        [int]$SamplesPerAxis = 1
+    )
 
-    if ($Bitmap.Width -ne 1254 -or $Bitmap.Height -ne 1254) {
-        throw "The app icon master must remain 1254x1254 pixels."
+    if ($Bitmap.Width -ne $Bitmap.Height) {
+        throw "App icon layers must remain square."
     }
+
+    $scale = $Bitmap.Width / 1254.0
+    $scaledInset = [int][Math]::Round($tileInset * $scale)
+    $scaledTileSize = [int][Math]::Round($tileSize * $scale)
+    $scaledRadius = [Math]::Max(1, [int][Math]::Round($cornerRadius * $scale))
 
     $rectangle = New-Object System.Drawing.Rectangle 0, 0, $Bitmap.Width, $Bitmap.Height
     $data = $Bitmap.LockBits(
@@ -32,13 +40,13 @@ function Set-RoundedTileAlpha {
         $bytes = New-Object byte[] ($stride * $Bitmap.Height)
         [Runtime.InteropServices.Marshal]::Copy($data.Scan0, $bytes, 0, $bytes.Length)
 
-        $near = $tileInset
-        $far = $tileInset + $tileSize - 1
+        $near = $scaledInset
+        $far = $scaledInset + $scaledTileSize - 1
         $centers = @(
-            [double[]]@(($near + $cornerRadius), ($near + $cornerRadius), $near, $near),
-            [double[]]@(($far - $cornerRadius + 1), ($near + $cornerRadius), ($far - $cornerRadius + 1), $near),
-            [double[]]@(($near + $cornerRadius), ($far - $cornerRadius + 1), $near, ($far - $cornerRadius + 1)),
-            [double[]]@(($far - $cornerRadius + 1), ($far - $cornerRadius + 1), ($far - $cornerRadius + 1), ($far - $cornerRadius + 1))
+            [double[]]@(($near + $scaledRadius), ($near + $scaledRadius), $near, $near),
+            [double[]]@(($far - $scaledRadius + 1), ($near + $scaledRadius), ($far - $scaledRadius + 1), $near),
+            [double[]]@(($near + $scaledRadius), ($far - $scaledRadius + 1), $near, ($far - $scaledRadius + 1)),
+            [double[]]@(($far - $scaledRadius + 1), ($far - $scaledRadius + 1), ($far - $scaledRadius + 1), ($far - $scaledRadius + 1))
         )
 
         foreach ($corner in $centers) {
@@ -46,12 +54,29 @@ function Set-RoundedTileAlpha {
             $centerY = [double]$corner[1]
             $startX = [int]$corner[2]
             $startY = [int]$corner[3]
-            for ($y = $startY; $y -lt $startY + $cornerRadius; $y += 1) {
-                $dy = ($y + 0.5) - $centerY
-                for ($x = $startX; $x -lt $startX + $cornerRadius; $x += 1) {
-                    $dx = ($x + 0.5) - $centerX
-                    $distance = [Math]::Sqrt($dx * $dx + $dy * $dy)
-                    $coverage = [Math]::Max(0.0, [Math]::Min(1.0, $cornerRadius + 0.5 - $distance))
+            for ($y = $startY; $y -lt $startY + $scaledRadius; $y += 1) {
+                for ($x = $startX; $x -lt $startX + $scaledRadius; $x += 1) {
+                    if ($SamplesPerAxis -le 1) {
+                        $dx = ($x + 0.5) - $centerX
+                        $dy = ($y + 0.5) - $centerY
+                        $distance = [Math]::Sqrt($dx * $dx + $dy * $dy)
+                        $coverage = [Math]::Max(0.0, [Math]::Min(1.0, $scaledRadius + 0.5 - $distance))
+                    }
+                    else {
+                        $inside = 0
+                        for ($sampleY = 0; $sampleY -lt $SamplesPerAxis; $sampleY += 1) {
+                            $samplePositionY = $y + (($sampleY + 0.5) / $SamplesPerAxis)
+                            $dy = $samplePositionY - $centerY
+                            for ($sampleX = 0; $sampleX -lt $SamplesPerAxis; $sampleX += 1) {
+                                $samplePositionX = $x + (($sampleX + 0.5) / $SamplesPerAxis)
+                                $dx = $samplePositionX - $centerX
+                                if (($dx * $dx + $dy * $dy) -le ($scaledRadius * $scaledRadius)) {
+                                    $inside += 1
+                                }
+                            }
+                        }
+                        $coverage = $inside / [double]($SamplesPerAxis * $SamplesPerAxis)
+                    }
                     $offset = $y * $stride + $x * 4 + 3
                     $maskAlpha = [byte][Math]::Round(255 * $coverage)
                     $bytes[$offset] = [byte][Math]::Min($bytes[$offset], $maskAlpha)
@@ -60,6 +85,64 @@ function Set-RoundedTileAlpha {
         }
 
         [Runtime.InteropServices.Marshal]::Copy($bytes, 0, $data.Scan0, $bytes.Length)
+    }
+    finally {
+        $Bitmap.UnlockBits($data)
+    }
+}
+
+function Set-SmallLayerSharpness {
+    param(
+        [System.Drawing.Bitmap]$Bitmap,
+        [double]$Amount
+    )
+
+    if ($Amount -le 0) {
+        return
+    }
+
+    $rectangle = New-Object System.Drawing.Rectangle 0, 0, $Bitmap.Width, $Bitmap.Height
+    $data = $Bitmap.LockBits(
+        $rectangle,
+        [System.Drawing.Imaging.ImageLockMode]::ReadWrite,
+        [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+    )
+    try {
+        $stride = [Math]::Abs($data.Stride)
+        $bytes = New-Object byte[] ($stride * $Bitmap.Height)
+        [Runtime.InteropServices.Marshal]::Copy($data.Scan0, $bytes, 0, $bytes.Length)
+        $result = [byte[]]$bytes.Clone()
+
+        for ($y = 1; $y -lt $Bitmap.Height - 1; $y += 1) {
+            for ($x = 1; $x -lt $Bitmap.Width - 1; $x += 1) {
+                $offset = $y * $stride + $x * 4
+                if ($bytes[$offset + 3] -lt 224) {
+                    continue
+                }
+
+                $neighbors = @(($offset - 4), ($offset + 4), ($offset - $stride), ($offset + $stride))
+                if (
+                    $bytes[$neighbors[0] + 3] -lt 224 -or
+                    $bytes[$neighbors[1] + 3] -lt 224 -or
+                    $bytes[$neighbors[2] + 3] -lt 224 -or
+                    $bytes[$neighbors[3] + 3] -lt 224
+                ) {
+                    continue
+                }
+
+                for ($channel = 0; $channel -lt 3; $channel += 1) {
+                    $average = 0.0
+                    foreach ($neighbor in $neighbors) {
+                        $average += $bytes[$neighbor + $channel]
+                    }
+                    $average /= $neighbors.Count
+                    $value = $bytes[$offset + $channel] + $Amount * ($bytes[$offset + $channel] - $average)
+                    $result[$offset + $channel] = [byte][Math]::Round([Math]::Max(0, [Math]::Min(255, $value)))
+                }
+            }
+        }
+
+        [Runtime.InteropServices.Marshal]::Copy($result, 0, $data.Scan0, $result.Length)
     }
     finally {
         $Bitmap.UnlockBits($data)
@@ -88,6 +171,12 @@ function Convert-ToPngBytes {
             $graphics.Dispose()
         }
 
+        # Explorer requests discrete 16-96 px icon layers. Rasterize the mask on
+        # each target grid instead of shrinking the antialiased 1254 px edge.
+        Set-RoundedTileAlpha -Bitmap $target -SamplesPerAxis 8
+        $sharpness = if ($Size -le 40) { 0.5 } elseif ($Size -le 64) { 0.25 } else { 0.0 }
+        Set-SmallLayerSharpness -Bitmap $target -Amount $sharpness
+
         $stream = New-Object IO.MemoryStream
         try {
             $target.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
@@ -105,16 +194,19 @@ function Convert-ToPngBytes {
 $sourceBytes = [IO.File]::ReadAllBytes([IO.Path]::GetFullPath($SourcePngPath))
 $sourceStream = New-Object IO.MemoryStream (,$sourceBytes)
 $source = [System.Drawing.Bitmap]::FromStream($sourceStream)
-try {
-    $master = $source.Clone(
-        (New-Object System.Drawing.Rectangle 0, 0, $source.Width, $source.Height),
-        [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
-    )
-}
-finally {
+if ($source.Width -ne 1254 -or $source.Height -ne 1254) {
     $source.Dispose()
     $sourceStream.Dispose()
+    throw "The app icon master must remain 1254x1254 pixels."
 }
+$original = $source.Clone(
+    (New-Object System.Drawing.Rectangle 0, 0, $source.Width, $source.Height),
+    [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+)
+$master = $source.Clone(
+    (New-Object System.Drawing.Rectangle 0, 0, $source.Width, $source.Height),
+    [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+)
 
 try {
     Set-RoundedTileAlpha -Bitmap $master
@@ -130,7 +222,7 @@ try {
         }
     }
 
-    $images = @($iconSizes | ForEach-Object { Convert-ToPngBytes -Source $master -Size $_ })
+    $images = @($iconSizes | ForEach-Object { Convert-ToPngBytes -Source $original -Size $_ })
     $stream = New-Object IO.MemoryStream
     $writer = New-Object IO.BinaryWriter $stream
     try {
@@ -165,6 +257,9 @@ try {
 }
 finally {
     $master.Dispose()
+    $original.Dispose()
+    $source.Dispose()
+    $sourceStream.Dispose()
 }
 
-Write-Output "Generated $PngPath and $IcoPath with a $cornerRadius px optical corner radius."
+Write-Output "Generated $PngPath and target-rasterized $IcoPath with a $cornerRadius px optical corner radius."
