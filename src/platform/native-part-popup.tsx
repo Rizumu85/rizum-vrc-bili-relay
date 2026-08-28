@@ -16,7 +16,7 @@ import { PRODUCT_WINDOW_TITLE } from "./window";
 const POPUP_WINDOW_TITLE = "VRC Bili Relay · Parts";
 const MENU_WIDTH = 368;
 const MENU_ROW_HEIGHT = 31;
-const MENU_MAX_ROWS = 6;
+const MENU_MAX_ROWS = 7;
 const MENU_PADDING = 4;
 const WINDOW_PADDING_X = 0;
 const WINDOW_PADDING_TOP = 0;
