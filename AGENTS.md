@@ -10,6 +10,11 @@ This repository is the released GPUIX + Rust implementation of VRC Bili Relay.
 - Builds, TypeScript type checks, linting, manual application launches, and screenshot capture are permitted verification commands only when they do not invoke a test runner.
 - Benchmark entry points must live under `benchmarks/`, use a `.bench.ts` or `.bench.tsx` suffix, and report measurements without disguising functional assertions as benchmarks.
 
+## Release synchronization
+
+- After creating or replacing a GitHub Release asset, copy that exact uploaded ZIP into `release/` and expand it there so the convenient local portable build matches the public artifact.
+- Verify the local archive SHA-256 against the uploaded asset. Do not treat `dist/` as the formal local Release, and do not rebuild a second archive with different bytes for `release/`.
+
 ## Scope
 
 - Treat `design/reference-contract.json` and the approved images under `design/reference/` as the UI source of truth.
