@@ -1469,7 +1469,7 @@ function Result({
       }}
     >
       <div style={{ height: 17, display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <StatusDot color={palette.accentViolet} />
+        <StatusDot color={palette.accentDanmaku} />
         <text style={{ color: palette.inkMuted, fontFamily: FONT_SERIF, fontSize: 13, fontWeight: 600 }}>
           {isReference || relayRunning || directReady ? "VRChat 播放地址" : "媒体路由"}
         </text>
@@ -1549,7 +1549,7 @@ function Result({
           }}
         >
           <div style={{ flexGrow: 1, display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <StatusDot color={danmaku === "shown" ? palette.accentDanmaku : palette.surfaceLine} />
+            <StatusDot color={danmaku === "shown" ? palette.accentViolet : palette.surfaceLine} />
             <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 13 }}>弹幕</text>
           </div>
           <Segmented
@@ -1590,7 +1590,7 @@ function Result({
           <Icon
             name="link"
             size={11}
-            color={sourceResolution?.routing.kind === "unavailable" ? palette.accentViolet : palette.accentTeal}
+            color={palette.accentRose}
           />
           <MotionFade
             key={output}
@@ -3791,7 +3791,7 @@ export function AppSurface({
       ) : (
         <div style={{ flexGrow: 1, minHeight: 0, paddingTop: 17, paddingRight: 26, paddingBottom: 16, paddingLeft: 26 }}>
           <div style={{ height: 17, display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <StatusDot color={palette.accentRose} />
+            <StatusDot color={palette.accentTeal} />
             <text style={{ color: palette.inkMuted, fontFamily: FONT_SERIF, fontSize: 13, fontWeight: 600 }}>
               视频链接
             </text>
@@ -3804,7 +3804,7 @@ export function AppSurface({
               label="生成地址"
               palette={palette}
               icon="play"
-              iconColor={palette.accentRose}
+              iconColor={palette.accentTeal}
               onClick={() => void convert()}
               disabled={!source.trim() || scene === "loading" || playbackUpdating !== null}
               testId="convert-source"
