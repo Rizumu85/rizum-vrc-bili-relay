@@ -745,6 +745,7 @@ function PartSelect({
   const [open, setOpen] = useState(false);
   const renderer = useGpuixRequired() as ReturnType<typeof useGpuixRequired> & {
     getElementBounds(elementId: number): number[] | null;
+    getWindowId(): number;
     getWindowSize(): { width: number; height: number };
   };
   const triggerId = useRef<number | null>(null);
@@ -786,6 +787,7 @@ function PartSelect({
       items: parts.map(({ value, label }) => ({ value, label })),
       selectedValue: part,
       palette,
+      parentWindowId: renderer.getWindowId(),
       anchorBounds: [bounds[0], bounds[1], bounds[2], bounds[3]],
       mainWindowSize: renderer.getWindowSize(),
       onSelect: (value) => {

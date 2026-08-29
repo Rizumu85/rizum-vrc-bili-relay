@@ -1,0 +1,15 @@
+{
+  "name": "@gpuix/native",
+  "version": "0.5.1-rizum.1",
+  "license": "Apache-2.0",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "browser": "browser.mjs",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "browser.mjs",
+    "gpuix-native.win32-x64-msvc.node",
+    "LICENSE"
+  ]
+}
