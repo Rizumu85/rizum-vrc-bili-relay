@@ -1,0 +1,1 @@
+{"version":3,"file":"use-gpuix.d.ts","sourceRoot":"","sources":["../../src/hooks/use-gpuix.ts"],"names":[],"mappings":"AACA,OAAO,KAAK,EAAE,cAAc,EAAE,MAAM,kBAAkB,CAAA;AAEtD,MAAM,WAAW,iBAAiB;IAChC,QAAQ,EAAE,cAAc,GAAG,IAAI,CAAA;CAChC;AAED,eAAO,MAAM,YAAY,4CAEvB,CAAA;AAEF;;GAEG;AACH,wBAAgB,QAAQ,IAAI,iBAAiB,CAE5C;AAED;;GAEG;AACH,wBAAgB,gBAAgB,IAAI,cAAc,CAMjD"}

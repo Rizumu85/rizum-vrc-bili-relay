@@ -1,5 +1,7 @@
 node_modules/
 dist/
+!vendor/gpuix-react/dist/
+!vendor/gpuix-react/dist/**
 release/
 artifacts/
 target/

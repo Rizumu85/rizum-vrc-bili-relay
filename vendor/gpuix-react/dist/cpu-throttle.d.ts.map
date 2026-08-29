@@ -1,0 +1,1 @@
+{"version":3,"file":"cpu-throttle.d.ts","sourceRoot":"","sources":["../src/cpu-throttle.ts"],"names":[],"mappings":"AAEA,eAAO,MAAM,iBAAiB,mDAAoD,CAAA;AAElF,MAAM,MAAM,cAAc,GAAG,CAAC,OAAO,iBAAiB,CAAC,CAAC,MAAM,CAAC,CAAA;AAS/D,wBAAgB,kBAAkB,IAAI,cAAc,GAAG,IAAI,CAS1D;AAED,uFAAuF;AACvF,wBAAgB,0BAA0B,IAAI,cAAc,GAAG,IAAI,CAmBlE"}
