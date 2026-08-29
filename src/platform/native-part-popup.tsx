@@ -18,7 +18,8 @@ const MENU_WIDTH = 368;
 const MENU_ROW_HEIGHT = 31;
 const MENU_MAX_ROWS = 7;
 const MENU_PADDING = 4;
-const SCROLLBAR_INSET_Y = 7;
+const SCROLLBAR_EDGE_INSET = 7;
+const SCROLLBAR_MIN_THUMB_HEIGHT = 28;
 const SCROLLBAR_HIT_WIDTH = 8;
 const SCROLLBAR_RIGHT_INSET = 6;
 
@@ -573,9 +574,15 @@ function NativePartPopupSurface({
   const contentHeight = request.items.length * MENU_ROW_HEIGHT;
   const maxScroll = Math.max(0, contentHeight - viewportHeight);
   const panelHeight = viewportHeight + MENU_PADDING * 2;
-  const scrollbarHeight = Math.max(1, viewportHeight - SCROLLBAR_INSET_Y * 2);
+  // The scrollbar's endpoint inset is measured from the popup edge. Adding
+  // MENU_PADDING here again made the thumb sit too far from the first and last
+  // option backgrounds, especially at the scroll limits.
+  const scrollbarHeight = Math.max(1, panelHeight - SCROLLBAR_EDGE_INSET * 2);
   const thumbHeight = maxScroll > 0
-    ? Math.max(24, Math.round(scrollbarHeight * viewportHeight / contentHeight))
+    ? Math.max(
+        SCROLLBAR_MIN_THUMB_HEIGHT,
+        Math.round(scrollbarHeight * viewportHeight / contentHeight),
+      )
     : scrollbarHeight;
   const thumbTravel = Math.max(0, scrollbarHeight - thumbHeight);
   const thumbTop = maxScroll > 0 ? Math.round(scrollOffset / maxScroll * thumbTravel) : 0;
@@ -725,7 +732,7 @@ function NativePartPopupSurface({
             onMouseLeave={() => setScrollbarHovered(false)}
             style={{
               position: "absolute",
-              top: MENU_PADDING + SCROLLBAR_INSET_Y,
+              top: SCROLLBAR_EDGE_INSET,
               right: SCROLLBAR_RIGHT_INSET,
               width: SCROLLBAR_HIT_WIDTH,
               height: scrollbarHeight,
