@@ -33,12 +33,12 @@ const SW_HIDE = 0;
 const SW_SHOW = 5;
 const SWP_NOACTIVATE = 0x0010;
 const SWP_FRAMECHANGED = 0x0020;
-const SWP_SHOWWINDOW = 0x0040;
 const WM_CLOSE = 0x0010;
 const MONITOR_DEFAULTTONEAREST = 0x00000002;
 const VK_LBUTTON = 0x01;
 const DWMWA_NCRENDERING_POLICY = 2;
 const DWMNCRP_DISABLED = 1;
+const DWMWA_CLOAK = 13;
 const DWMWA_WINDOW_CORNER_PREFERENCE = 33;
 const DWMWCP_DONOTROUND = 1;
 const DWMWA_BORDER_COLOR = 34;
@@ -188,6 +188,7 @@ let popupHandle: WindowHandle | null = null;
 let popupRequest: NativePartPopupRequest | null = null;
 let outsidePointerPoll: ReturnType<typeof setInterval> | null = null;
 let leftMouseWasDown = false;
+let popupRevealTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function supportsNativePartPopup(): boolean {
   return process.platform === "win32" && user32 !== null;
@@ -229,7 +230,11 @@ export function showNativePartPopup(request: NativePartPopupRequest): boolean {
 export function hideNativePartPopup(): void {
   popupRequest = null;
   stopOutsidePointerPoll();
-  if (popupHandle && user32) user32.symbols.ShowWindow(popupHandle, SW_HIDE);
+  cancelPopupReveal();
+  if (popupHandle && user32) {
+    setPopupCloaked(popupHandle, true);
+    user32.symbols.ShowWindow(popupHandle, SW_HIDE);
+  }
   if (popupRoot) flushSync(() => popupRoot?.render(null));
 }
 
@@ -260,7 +265,10 @@ function ensurePopupRenderer(): void {
   popupRenderer = renderer;
   popupRoot = createRoot(renderer);
   popupHandle = findWindowByTitle(POPUP_WINDOW_TITLE, false);
-  if (popupHandle && user32) user32.symbols.ShowWindow(popupHandle, SW_HIDE);
+  if (popupHandle && user32) {
+    setPopupCloaked(popupHandle, true);
+    user32.symbols.ShowWindow(popupHandle, SW_HIDE);
+  }
 }
 
 function dismissNativePartPopup(): void {
@@ -304,6 +312,28 @@ function disableNativePopupDecoration(handle: WindowHandle): void {
     ptr(borderColor),
     borderColor.byteLength,
   );
+}
+
+function setPopupCloaked(handle: WindowHandle, cloaked: boolean): void {
+  if (!dwmapi) return;
+  const value = new Uint32Array([cloaked ? 1 : 0]);
+  dwmapi.symbols.DwmSetWindowAttribute(handle, DWMWA_CLOAK, ptr(value), value.byteLength);
+}
+
+function cancelPopupReveal(): void {
+  if (popupRevealTimer) clearTimeout(popupRevealTimer);
+  popupRevealTimer = null;
+}
+
+function revealPopupWhenReady(handle: WindowHandle): void {
+  cancelPopupReveal();
+  // Keep the already-visible HWND compositor-cloaked for one frame after the
+  // synchronous React commit, region application, and final client alignment.
+  popupRevealTimer = setTimeout(() => {
+    popupRevealTimer = null;
+    if (!popupRequest || popupHandle !== handle) return;
+    setPopupCloaked(handle, false);
+  }, 16);
 }
 
 function positionPopupWindow(
@@ -358,11 +388,12 @@ function positionPopupWindow(
     desiredWindowTop,
     physicalWindowWidth,
     physicalWindowHeight,
-    SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+    SWP_NOACTIVATE | SWP_FRAMECHANGED,
   );
   alignPopupClientOrigin(handle, desiredWindowLeft, desiredWindowTop, physicalWindowWidth, physicalWindowHeight);
   setRoundedPopupRegion(handle, physicalWindowWidth, physicalWindowHeight, scaleY);
   user32.symbols.ShowWindow(handle, SW_SHOW);
+  revealPopupWhenReady(handle);
 }
 
 function setRoundedPopupRegion(handle: WindowHandle, width: number, height: number, scale: number): void {
@@ -402,7 +433,7 @@ function alignPopupClientOrigin(
     desiredClientTop - insetY,
     width,
     height,
-    SWP_NOACTIVATE | SWP_SHOWWINDOW,
+    SWP_NOACTIVATE,
   );
 }
 
