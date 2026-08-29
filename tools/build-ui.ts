@@ -37,7 +37,7 @@ run([
   "--windows-title=VRC Bili Relay",
   "--windows-publisher=Rizum",
   `--windows-version=${windowsVersion}`,
-  "--windows-description=Convert Bilibili media into VRChat-compatible playback routes",
+  "--windows-description=VRC Bili Relay",
   "--windows-copyright=Copyright © 2026 Rizum",
   "src/main.tsx",
   "--outfile",
