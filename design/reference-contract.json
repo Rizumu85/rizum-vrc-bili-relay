@@ -121,6 +121,7 @@
         "mediaRowSizing": "Prototype rhythm: 18px section separation and 14px inset above the media status; 30px compact status row and 44px when download action, progress, or error detail is present",
         "secretField": "Masked by default with a compact trailing eye action; saved plaintext is requested from Rust only after explicit reveal",
         "accountPopover": "The QR login popover is bounded to the 188px account column: 170px content width, 10px inset, a 116px QR well, and compact status/footer copy. It must remain inside the product panel at every settings height.",
+        "accountLogout": "When a Bilibili account is authenticated, the account heading reserves one 24px trailing icon action aligned with the heading line. The standard door-and-arrow glyph stays neutral, uses the shared 8px control radius and quiet hover/active surfaces, and exposes the content-sized tooltip `退出登录` after the shared delay or immediately on keyboard focus. Activating it clears the persisted Bilibili session through the trusted relay service and returns the stable account region to guest state; no accent fill or permanent confirmation is used for this reversible action.",
         "connectionStatus": "A compact worker-health status follows the playback address after the prototype's 10px field close plus 2px status offset, then retains 18px before the media section; it reports checking, available, or unavailable without duplicating local-persistence copy",
         "controlRadius": 8,
         "desktopReferenceIntrinsicWidth": 480,

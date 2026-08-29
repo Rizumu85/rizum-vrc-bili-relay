@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type * as React from "react";
 import { motion, useGpuixRequired, type EventPayload, type StyleDesc } from "@gpuix/react";
 import * as Select from "@gpuix/react/select";
+import * as Tooltip from "@gpuix/react/tooltip";
 import { basename, dirname, resolve } from "node:path";
 
 import { ICONS, type IconName } from "./icons";
@@ -467,6 +468,60 @@ function IconButton({
         <Icon name={name} size={14.5} color={color ?? palette.inkMuted} />
       )}
     </div>
+  );
+}
+
+function LogoutIconButton({
+  palette,
+  disabled,
+  onClick,
+  onTooltipChange,
+}: {
+  palette: Palette;
+  disabled: boolean;
+  onClick: () => void;
+  onTooltipChange: (visible: boolean) => void;
+}) {
+  const activate = () => {
+    if (disabled) return;
+    onTooltipChange(false);
+    onClick();
+  };
+
+  return (
+    <Tooltip.Root
+      delayDuration={MOTION.tooltipDelayMs}
+      disableHoverableContent
+      onOpenChange={(visible) => onTooltipChange(!disabled && visible)}
+      style={{ width: 24, height: 24, flexShrink: 0 }}
+    >
+      <Tooltip.Trigger asChild>
+        <div
+          testId="退出登录"
+          tabIndex={disabled ? -1 : 0}
+          onClick={activate}
+          onKeyDown={(event) => {
+            if (event.key === "enter" || event.key === "space") activate();
+          }}
+          style={{
+            width: 24,
+            height: 24,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: RADII.control,
+            color: palette.inkMuted,
+            cursor: disabled ? "default" : "pointer",
+            opacity: disabled ? 0.42 : 1,
+            userSelect: "none",
+            hover: disabled ? undefined : { backgroundColor: palette.surfaceHover },
+            active: disabled ? undefined : { backgroundColor: palette.surfaceActive },
+          }}
+        >
+          <Icon name="logout" size={13.5} color={palette.inkMuted} />
+        </div>
+      </Tooltip.Trigger>
+    </Tooltip.Root>
   );
 }
 
@@ -2087,33 +2142,50 @@ function hasActivePublisher(relay: RelayStatus | null | undefined): boolean {
 function SectionHeading({
   title,
   subtitle,
+  action,
   compact = false,
   flush = false,
   palette,
 }: {
   title: string;
   subtitle?: string;
+  action?: React.ReactNode;
   compact?: boolean;
   flush?: boolean;
   palette: Palette;
 }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: flush ? 0 : compact ? 9 : 12 }}>
-      <text
-        style={{
-          color: palette.inkMuted,
-          fontFamily: FONT_SERIF,
-          fontSize: 13,
-          fontWeight: 600,
-          lineHeight: 17,
-        }}
-      >
-        {title}
-      </text>
-      {subtitle ? (
-        <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 11.5, lineHeight: 15 }}>
-          {subtitle}
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: 6,
+        marginBottom: flush ? 0 : compact ? 9 : 12,
+      }}
+    >
+      <div style={{ minWidth: 0, flexGrow: 1, display: "flex", flexDirection: "column", gap: 3 }}>
+        <text
+          style={{
+            color: palette.inkMuted,
+            fontFamily: FONT_SERIF,
+            fontSize: 13,
+            fontWeight: 600,
+            lineHeight: 17,
+          }}
+        >
+          {title}
         </text>
+        {subtitle ? (
+          <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 11.5, lineHeight: 15, lineClamp: 1 }}>
+            {subtitle}
+          </text>
+        ) : null}
+      </div>
+      {action ? (
+        <div style={{ width: 24, height: 24, flexShrink: 0, marginTop: -3 }}>
+          {action}
+        </div>
       ) : null}
     </div>
   );
@@ -3044,6 +3116,7 @@ function SettingsView({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [secretInputVersion, setSecretInputVersion] = useState(0);
   const [accountPopoverOpen, setAccountPopoverOpen] = useState(false);
+  const [logoutTooltipVisible, setLogoutTooltipVisible] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const accountAuthenticated = bilibiliAuth?.stage === "authenticated";
   const accountPending = bilibiliAuth?.stage === "waiting" || bilibiliAuth?.stage === "scanned";
@@ -3070,7 +3143,11 @@ function SettingsView({
   );
 
   useEffect(() => {
-    if (accountAuthenticated) setAccountPopoverOpen(false);
+    if (accountAuthenticated) {
+      setAccountPopoverOpen(false);
+    } else {
+      setLogoutTooltipVisible(false);
+    }
   }, [accountAuthenticated]);
 
   useEffect(() => {
@@ -3281,6 +3358,16 @@ function SettingsView({
                   ? "本机登录信息无法读取，请重新扫码"
                   : "未登录时最高 480P"
             }
+            action={
+              accountAuthenticated ? (
+                <LogoutIconButton
+                  palette={palette}
+                  disabled={bilibiliAuthBusy}
+                  onClick={onLogoutBilibili}
+                  onTooltipChange={setLogoutTooltipVisible}
+                />
+              ) : undefined
+            }
             compact
             palette={palette}
           />
@@ -3301,6 +3388,46 @@ function SettingsView({
             width={170}
             palette={palette}
           />
+          {logoutTooltipVisible && accountAuthenticated && !bilibiliAuthBusy ? (
+            <div
+              style={{
+                position: "absolute",
+                right: 0,
+                top: 26,
+                pointerEvents: "none",
+                userSelect: "none",
+              }}
+            >
+              <motion.div
+                initial={REDUCED_MOTION ? false : { opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={motionTransition(MOTION.stateCrossfadeSeconds)}
+                style={{
+                  height: 28,
+                  display: "flex",
+                  alignItems: "center",
+                  paddingLeft: 9,
+                  paddingRight: 9,
+                  borderRadius: RADII.control,
+                  borderWidth: 1,
+                  borderColor: palette.panelEdge,
+                  backgroundColor: palette.floatingSurface,
+                  boxShadow: {
+                    offsetX: 0,
+                    offsetY: 5,
+                    blurRadius: 14,
+                    spreadRadius: 0,
+                    color: palette.floatingShadow,
+                  },
+                  whiteSpace: "nowrap",
+                }}
+              >
+                <text style={{ color: palette.inkSoft, fontFamily: FONT_UI, fontSize: 11.5, lineHeight: 16 }}>
+                  退出登录
+                </text>
+              </motion.div>
+            </div>
+          ) : null}
         </div>
       </div>
 

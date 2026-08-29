@@ -22,6 +22,7 @@ export const ICONS = {
   reset: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5.2 8.2V4.8M5.2 8.2h3.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M6.1 7a7.6 7.6 0 1 1-1 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
   save: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5 4.5h11l3 3V19.5H5v-15Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 4.5v5h7v-5M8 19.5v-6h8v6" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>`,
   download: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 4v10m0 0 4-4m-4 4-4-4M5 19h14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  logout: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M10 5H6.5A1.5 1.5 0 0 0 5 6.5v11A1.5 1.5 0 0 0 6.5 19H10" stroke="currentColor" stroke-width="1.65" stroke-linecap="round"/><path d="M13.5 8.5 17 12l-3.5 3.5M9 12h8" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
 } as const;
 
 export type IconName = keyof typeof ICONS;

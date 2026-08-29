@@ -20,6 +20,7 @@ param(
     [switch]$IncludePopup,
     [switch]$CyclePlaybackEndBehavior,
     [switch]$ShowPlaybackEndTooltip,
+    [switch]$ShowLogoutTooltip,
     [switch]$DragSeekThumb,
     [switch]$FocusSource,
     [switch]$DragSelectSourceInside,
@@ -219,6 +220,15 @@ try {
         Start-Sleep -Seconds 4
     }
 
+    if ($ShowLogoutTooltip) {
+        if ($Scene -ne "settings") {
+            throw "ShowLogoutTooltip requires -Scene settings."
+        }
+        $scale = $width / $logicalWidth
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](482 * $scale), $rectangle.Top + [int](67 * $scale)) | Out-Null
+        Start-Sleep -Milliseconds 700
+    }
+
     if ($TypeSampleStreamKey) {
         $scale = $width / $logicalWidth
         [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](208 * $scale), $rectangle.Top + [int](114 * $scale)) | Out-Null
@@ -350,7 +360,7 @@ try {
     # Keep hover-only fills out of reference captures unless a probe explicitly
     # needs them. The pointer can otherwise remain over a caption button after
     # an earlier interaction and make the shared title-bar band look unbalanced.
-    if (-not $IncludePopup -and -not $ShowPlaybackEndTooltip) {
+    if (-not $IncludePopup -and -not $ShowPlaybackEndTooltip -and -not $ShowLogoutTooltip) {
         [GpuixWindowCapture]::SetCursorPos($rectangle.Left - 16, $rectangle.Bottom + 16) | Out-Null
         Start-Sleep -Milliseconds 250
     }
