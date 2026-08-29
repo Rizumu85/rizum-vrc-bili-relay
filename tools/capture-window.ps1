@@ -18,8 +18,7 @@ param(
     [switch]$OpenPartSelect,
     [switch]$LongPartList,
     [switch]$IncludePopup,
-    [switch]$CyclePlaybackEndBehavior,
-    [switch]$ShowPlaybackEndTooltip,
+    [switch]$OpenPlaybackEndSelect,
     [switch]$ShowLogoutTooltip,
     [switch]$DragSeekThumb,
     [switch]$FocusSource,
@@ -286,28 +285,15 @@ try {
         Start-Sleep -Milliseconds 500
     }
 
-    if ($CyclePlaybackEndBehavior) {
+    if ($OpenPlaybackEndSelect) {
         if ($Scene -ne "ready-vod") {
-            throw "CyclePlaybackEndBehavior requires -Scene ready-vod."
+            throw "OpenPlaybackEndSelect requires -Scene ready-vod."
         }
         $scale = $width / $logicalWidth
-        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](385 * $scale), $rectangle.Top + [int](330 * $scale)) | Out-Null
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](342 * $scale), $rectangle.Top + [int](330 * $scale)) | Out-Null
         [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
         [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
         Start-Sleep -Milliseconds 500
-        if ($ShowPlaybackEndTooltip) {
-            [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](300 * $scale), $rectangle.Top + [int](330 * $scale)) | Out-Null
-            Start-Sleep -Milliseconds 120
-        }
-    }
-
-    if ($ShowPlaybackEndTooltip) {
-        if ($Scene -ne "ready-vod") {
-            throw "ShowPlaybackEndTooltip requires -Scene ready-vod."
-        }
-        $scale = $width / $logicalWidth
-        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](385 * $scale), $rectangle.Top + [int](330 * $scale)) | Out-Null
-        Start-Sleep -Milliseconds 1500
     }
 
     if ($DragSeekThumb) {
@@ -360,7 +346,7 @@ try {
     # Keep hover-only fills out of reference captures unless a probe explicitly
     # needs them. The pointer can otherwise remain over a caption button after
     # an earlier interaction and make the shared title-bar band look unbalanced.
-    if (-not $IncludePopup -and -not $ShowPlaybackEndTooltip -and -not $ShowLogoutTooltip) {
+    if (-not $IncludePopup -and -not $OpenPlaybackEndSelect -and -not $ShowLogoutTooltip) {
         [GpuixWindowCapture]::SetCursorPos($rectangle.Left - 16, $rectangle.Bottom + 16) | Out-Null
         Start-Sleep -Milliseconds 250
     }

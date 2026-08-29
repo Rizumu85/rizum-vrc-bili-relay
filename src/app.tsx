@@ -62,7 +62,7 @@ export function sceneWindowHeight(
 ): number {
   if (scene === "idle" || scene === "loading") return 178;
   if (scene === "error") return 230;
-  if (scene === "ready-vod") return singlePartVideo ? 443 : 478;
+  if (scene === "ready-vod") return singlePartVideo ? 447 : 482;
   if (scene === "settings") return settingsExpanded ? 400 : 364;
   return 572;
 }
@@ -139,7 +139,16 @@ const CAPTURE_REFERENCE_PARTS = process.env.VRC_BILI_RELAY_CAPTURE_LONG_PARTS ==
   ? LONG_REFERENCE_PARTS
   : REFERENCE_PARTS;
 const POSITION_BY_PART: Record<string, number> = { "1": 0, "2": 204, "3": 0 };
-const PLAYBACK_END_SEQUENCE: readonly PlaybackEndBehavior[] = ["pause", "next", "repeat"];
+const PLAYBACK_END_OPTIONS: ReadonlyArray<{
+  value: PlaybackEndBehavior;
+  label: string;
+  compactLabel: string;
+  icon: IconName;
+}> = [
+  { value: "pause", label: "播完暂停", compactLabel: "播完：暂停", icon: "holdEnd" },
+  { value: "next", label: "自动下一 P", compactLabel: "播完：下一 P", icon: "skipNext" },
+  { value: "repeat", label: "单集循环", compactLabel: "播完：循环", icon: "repeatOne" },
+];
 const TRACK_WIDTH = 416;
 const THEME_OPTIONS = [
   { value: "system", label: "跟随系统" },
@@ -1072,7 +1081,7 @@ function PartSelect({
   );
 }
 
-function PlaybackEndButton({
+function PlaybackEndSelect({
   value,
   onChange,
   disabled,
@@ -1083,148 +1092,117 @@ function PlaybackEndButton({
   disabled: boolean;
   palette: Palette;
 }) {
-  const [tooltipVisible, setTooltipVisible] = useState(false);
-  const tooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const animateTooltip = useRef(false);
-  const currentIndex = PLAYBACK_END_SEQUENCE.indexOf(value);
-  const nextValue = PLAYBACK_END_SEQUENCE[(currentIndex + 1) % PLAYBACK_END_SEQUENCE.length]
-    ?? "pause";
-  const active = value !== "pause";
-  const icon: IconName = value === "pause"
-    ? "pause"
-    : value === "next"
-      ? "skipNext"
-      : "repeatOne";
-  const label = value === "pause"
-    ? "播完暂停 · 点击切换"
-    : value === "next"
-      ? "自动下一 P · 点击切换"
-      : "单集循环 · 点击切换";
-
-  const clearTooltipTimer = () => {
-    if (tooltipTimer.current !== null) {
-      clearTimeout(tooltipTimer.current);
-      tooltipTimer.current = null;
-    }
-  };
-  const showTooltipAfterDelay = () => {
-    if (disabled) return;
-    clearTooltipTimer();
-    tooltipTimer.current = setTimeout(() => {
-      tooltipTimer.current = null;
-      animateTooltip.current = true;
-      setTooltipVisible(true);
-    }, MOTION.tooltipDelayMs);
-  };
-  const hideTooltip = () => {
-    clearTooltipTimer();
-    animateTooltip.current = false;
-    setTooltipVisible(false);
-  };
-
-  useEffect(() => () => clearTooltipTimer(), []);
-  useEffect(() => {
-    if (disabled) hideTooltip();
-  }, [disabled]);
+  const [open, setOpen] = useState(false);
+  const selected = PLAYBACK_END_OPTIONS.find((option) => option.value === value)
+    ?? PLAYBACK_END_OPTIONS[0]!;
 
   return (
-    <div
-      style={{
-        width: 22,
-        height: 22,
-        marginRight: 7,
-        flexShrink: 0,
-        position: "relative",
-      }}
+    <Select.Root
+      value={value}
+      open={open}
+      onOpenChange={setOpen}
+      onValueChange={(next) => onChange(next as PlaybackEndBehavior)}
+      disabled={disabled}
+      style={{ width: 120, height: 26, marginRight: 8, flexShrink: 0, opacity: disabled ? 0.48 : 1 }}
     >
-      <div
-        testId="playback-end-toggle"
-        tabIndex={disabled ? -1 : 0}
-        onMouseEnter={showTooltipAfterDelay}
-        onMouseLeave={hideTooltip}
-        onFocus={() => {
-          if (!disabled) {
-            animateTooltip.current = false;
-            setTooltipVisible(true);
-          }
-        }}
-        onBlur={hideTooltip}
-        onClick={() => {
-          hideTooltip();
-          if (!disabled) onChange(nextValue);
-        }}
-        onKeyDown={(event) => {
-          if (!disabled && (event.key === "enter" || event.key === "space")) {
-            hideTooltip();
-            onChange(nextValue);
-          }
-        }}
-        style={{
-          width: 22,
-          height: 22,
+      <Select.Trigger
+        testId="playback-end-select"
+        style={({ open, disabled: selectDisabled }) => ({
+          width: 120,
+          height: 26,
           display: "flex",
+          flexDirection: "row",
           alignItems: "center",
-          justifyContent: "center",
-          borderRadius: 6,
-          cursor: disabled ? "default" : "pointer",
-          opacity: disabled ? 0.48 : 1,
+          justifyContent: "space-between",
+          gap: 5,
+          paddingLeft: 8,
+          paddingRight: 7,
+          borderRadius: 7,
+          borderWidth: 1,
+          borderColor: open ? palette.surfaceLine : palette.panelEdge,
+          backgroundColor: open ? palette.surfaceHover : palette.buttonSurface,
+          cursor: selectDisabled ? "default" : "pointer",
           userSelect: "none",
-          hover: disabled ? undefined : { backgroundColor: palette.surfaceHover },
-          active: disabled ? undefined : { backgroundColor: palette.surfaceActive },
-        }}
+          hover: selectDisabled ? undefined : { backgroundColor: palette.buttonHover, borderColor: palette.surfaceLine },
+          active: selectDisabled ? undefined : { backgroundColor: palette.surfaceActive },
+        })}
       >
-        <MotionFade
-          key={value}
-          duration={MOTION.stateCrossfadeSeconds}
-          style={{ display: "flex", alignItems: "center", justifyContent: "center" }}
-        >
-          <Icon
-            name={icon}
-            size={13}
-            color={active ? palette.accentDanmaku : palette.caption}
-          />
-        </MotionFade>
-      </div>
-      {tooltipVisible && !disabled ? (
-        <div
-          testId="playback-end-tooltip"
-          style={{
-            position: "absolute",
-            right: -4,
-            bottom: 29,
-            pointerEvents: "none",
-            userSelect: "none",
-          }}
-        >
-          <motion.div
-            initial={REDUCED_MOTION || !animateTooltip.current ? false : { opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={motionTransition(MOTION.stateCrossfadeSeconds)}
-            style={{
-              paddingTop: 6,
-              paddingRight: 9,
-              paddingBottom: 6,
-              paddingLeft: 9,
-              borderRadius: 7,
-              borderWidth: 1,
-              borderColor: palette.panelEdge,
-              backgroundColor: palette.nestedStrong,
-            }}
-          >
+        <div style={{ minWidth: 0, display: "flex", flexDirection: "row", alignItems: "center", gap: 5 }}>
+          <Icon name={selected.icon} size={11.5} color={palette.accentDanmaku} />
+          <Select.Value>
             <text
               style={{
-                color: palette.inkSoft,
+                color: palette.inkMuted,
                 fontFamily: FONT_UI,
                 fontSize: 11.5,
                 whiteSpace: "nowrap",
               }}
             >
-              {label}
+              {selected.compactLabel}
             </text>
-          </motion.div>
+          </Select.Value>
         </div>
-      ) : null}
-    </div>
+        <Icon name={open ? "chevronUp" : "chevron"} size={8.5} color={open ? palette.inkMuted : palette.caption} />
+      </Select.Trigger>
+      <Select.Content
+        side="top"
+        sideOffset={6}
+        style={{
+          width: 142,
+          height: 101,
+          maxHeight: 101,
+          backgroundColor: palette.floatingSurface,
+        }}
+      >
+        <motion.div
+          initial={REDUCED_MOTION ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={motionTransition(MOTION.selectEnterSeconds)}
+          style={{
+            position: "relative",
+            width: "100%",
+            height: "100%",
+            padding: 4,
+            borderRadius: 10,
+            borderWidth: 1,
+            borderColor: palette.floatingEdge,
+            backgroundColor: palette.floatingSurface,
+            boxShadow: {
+              offsetX: 0,
+              offsetY: 12,
+              blurRadius: 28,
+              spreadRadius: 0,
+              color: palette.floatingShadow,
+            },
+          }}
+        >
+          {PLAYBACK_END_OPTIONS.map((option) => (
+            <Select.Item
+              key={option.value}
+              value={option.value}
+              style={({ highlighted }) => ({
+                height: 31,
+                display: "flex",
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 7,
+                paddingLeft: 8,
+                paddingRight: 8,
+                borderRadius: 7,
+                cursor: "pointer",
+                backgroundColor: highlighted ? palette.segmentedTrack : "#00000000",
+              })}
+            >
+              <Icon name={option.icon} size={12} color={option.value === value ? palette.accentDanmaku : palette.caption} />
+              <text style={{ minWidth: 0, flexGrow: 1, color: palette.inkSoft, fontFamily: FONT_UI, fontSize: 12 }}>
+                {option.label}
+              </text>
+              {option.value === value ? <Icon name="check" size={9.5} color={palette.accentDanmaku} /> : null}
+            </Select.Item>
+          ))}
+        </motion.div>
+      </Select.Content>
+    </Select.Root>
   );
 }
 
@@ -1373,7 +1351,7 @@ function SeekControl({
       <div
         style={{
           width: TRACK_WIDTH,
-          height: 22,
+          height: showTransport ? 26 : 22,
           display: "flex",
           flexDirection: "row",
           alignItems: "center",
@@ -1435,7 +1413,7 @@ function SeekControl({
         </text>
         <div style={{ flexGrow: 1 }} />
         {showTransport ? (
-          <PlaybackEndButton
+          <PlaybackEndSelect
             value={endBehavior}
             onChange={onEndBehaviorChange}
             disabled={transportBusy}
