@@ -28,14 +28,19 @@ copyFileSync(
   resolve(root, "assets", "VRCBiliRelay.ico"),
   resolve(dist, "assets", "VRCBiliRelay.ico"),
 );
-copyFileSync(
-  resolve(root, "assets", "fonts", "MiSansVF.ttf"),
-  resolve(dist, "assets", "fonts", "MiSansVF.ttf"),
-);
-copyFileSync(
-  resolve(root, "assets", "fonts", "MiSans-License.pdf"),
-  resolve(dist, "assets", "fonts", "MiSans-License.pdf"),
-);
+for (const fontAssetName of [
+  "MiSansVF.ttf",
+  "MiSans-License.pdf",
+  "NotoSerifSC-VF.ttf",
+  "Noto-OFL.txt",
+  "CascadiaMono.ttf",
+  "Cascadia-OFL.txt",
+]) {
+  copyFileSync(
+    resolve(root, "assets", "fonts", fontAssetName),
+    resolve(dist, "assets", "fonts", fontAssetName),
+  );
+}
 run([
   "bun",
   "build",

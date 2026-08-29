@@ -3,7 +3,11 @@ import { basename, dirname, resolve } from "node:path";
 import { FFIType, dlopen, ptr } from "bun:ffi";
 
 const FR_PRIVATE = 0x10;
-const UI_FONT_FILE = "MiSansVF.ttf";
+const BUNDLED_FONT_FILES = [
+  "MiSansVF.ttf",
+  "NotoSerifSC-VF.ttf",
+  "CascadiaMono.ttf",
+] as const;
 
 const gdi32 = process.platform === "win32"
   ? dlopen("gdi32.dll", {
@@ -16,22 +20,31 @@ const gdi32 = process.platform === "win32"
 
 let registered = false;
 
-export function registerBundledUiFont(): boolean {
+export function registerBundledFonts(): boolean {
   if (registered) return true;
   if (!gdi32) return false;
 
-  const fontPath = resolveUiFontPath();
-  if (!existsSync(fontPath)) return false;
+  let allRegistered = true;
+  for (const fontFile of BUNDLED_FONT_FILES) {
+    const fontPath = resolveBundledFontPath(fontFile);
+    if (!existsSync(fontPath)) {
+      allRegistered = false;
+      continue;
+    }
 
-  const widePath = Buffer.from(`${fontPath}\0`, "utf16le");
-  registered = gdi32.symbols.AddFontResourceExW(ptr(widePath), FR_PRIVATE, null) > 0;
-  return registered;
+    const widePath = Buffer.from(`${fontPath}\0`, "utf16le");
+    if (gdi32.symbols.AddFontResourceExW(ptr(widePath), FR_PRIVATE, null) <= 0) {
+      allRegistered = false;
+    }
+  }
+  registered = allRegistered;
+  return allRegistered;
 }
 
-function resolveUiFontPath(): string {
+function resolveBundledFontPath(fontFile: string): string {
   const executableName = basename(process.execPath).toLowerCase();
   const root = executableName === "bun.exe"
     ? resolve(import.meta.dir, "..", "..")
     : dirname(process.execPath);
-  return resolve(root, "assets", "fonts", UI_FONT_FILE);
+  return resolve(root, "assets", "fonts", fontFile);
 }

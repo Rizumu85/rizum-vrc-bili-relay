@@ -26,7 +26,14 @@ for (const source of [
 ]) {
   copyFileSync(source, resolve(stage, basename(source)));
 }
-for (const fontAssetName of ["MiSansVF.ttf", "MiSans-License.pdf"]) {
+for (const fontAssetName of [
+  "MiSansVF.ttf",
+  "MiSans-License.pdf",
+  "NotoSerifSC-VF.ttf",
+  "Noto-OFL.txt",
+  "CascadiaMono.ttf",
+  "Cascadia-OFL.txt",
+]) {
   copyFileSync(
     resolve(root, "dist", "assets", "fonts", fontAssetName),
     resolve(stage, "assets", "fonts", fontAssetName),
