@@ -1,9 +1,13 @@
-import { closeSync, copyFileSync, mkdirSync, openSync, readSync, writeSync } from "node:fs";
+import { closeSync, copyFileSync, mkdirSync, openSync, readFileSync, readSync, writeSync } from "node:fs";
 import { resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
 const dist = resolve(root, "dist");
 const executable = resolve(dist, "VRC-Bili-Relay.exe");
+const productVersion = (JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as {
+  version: string;
+}).version;
+const windowsVersion = `${productVersion}.0`;
 
 run([
   "powershell",
@@ -32,7 +36,7 @@ run([
   "--windows-icon=assets/VRCBiliRelay.ico",
   "--windows-title=VRC Bili Relay",
   "--windows-publisher=Rizum",
-  "--windows-version=0.1.0.0",
+  `--windows-version=${windowsVersion}`,
   "--windows-description=Convert Bilibili media into VRChat-compatible playback routes",
   "--windows-copyright=Copyright © 2026 Rizum",
   "src/main.tsx",
