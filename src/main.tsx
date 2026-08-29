@@ -3,6 +3,7 @@ import { render } from "@gpuix/react";
 import { AppSurface, sceneWindowHeight, sceneWindowWidth, type Scene } from "./app";
 import {
   PRODUCT_WINDOW_TITLE,
+  setProductProcessIdentity,
   setProductWindowIconFromExecutable,
   setProductWindowPointerRenderer,
 } from "./platform/window";
@@ -26,6 +27,7 @@ const initialScene: Scene =
     ? requestedScene
     : "idle";
 
+setProductProcessIdentity();
 registerBundledFonts();
 
 render(

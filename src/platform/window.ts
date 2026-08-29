@@ -2,6 +2,7 @@ import { FFIType, JSCallback, dlopen, ptr } from "bun:ffi";
 import { dirname, resolve } from "node:path";
 
 export const PRODUCT_WINDOW_TITLE = "VRC Bili Relay";
+export const PRODUCT_APP_USER_MODEL_ID = "Rizum.VRCBiliRelay";
 
 const SWP_NOSIZE = 0x0001;
 const SWP_NOZORDER = 0x0004;
@@ -158,8 +159,23 @@ const user32 = process.platform === "win32"
     } as const)
   : null;
 
+const shell32 = process.platform === "win32"
+  ? dlopen("shell32.dll", {
+      SetCurrentProcessExplicitAppUserModelID: {
+        args: [FFIType.ptr],
+        returns: FFIType.int32_t,
+      },
+    } as const)
+  : null;
+
 const productWindowIconHandles: bigint[] = [];
 let productWindowIconDpi = 0;
+
+export function setProductProcessIdentity(): boolean {
+  if (!shell32) return false;
+  const appUserModelId = Buffer.from(`${PRODUCT_APP_USER_MODEL_ID}\0`, "utf16le");
+  return shell32.symbols.SetCurrentProcessExplicitAppUserModelID(ptr(appUserModelId)) === 0;
+}
 
 export function setProductWindowIconFromExecutable(): boolean {
   if (!user32) return false;
