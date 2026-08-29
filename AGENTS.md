@@ -16,6 +16,14 @@ This repository is the released GPUIX + Rust implementation of VRC Bili Relay.
 - Verify the local archive SHA-256 against the uploaded asset. Do not treat `dist/` as the formal local Release, and do not rebuild a second archive with different bytes for `release/`.
 - Do not close the user's running formal build while editing, compiling, packaging, uploading, or verifying a replacement. Only after the new uploaded artifact and its checksum are ready, gracefully close the canonical `release/` executable immediately before replacing its files. Allow its relay worker and FFmpeg children to exit, replace from the exact verified archive, then relaunch the formal build if it was running before the update. The user has authorized this narrowly timed interruption even during an active relay; do not create duplicate pending-update folders unless graceful replacement genuinely fails.
 
+## Upstream feedback
+
+- Before reporting or proposing GPUI, GPUIX, or other vendored-runtime changes, read that upstream repository's current contribution guide, agent rules, issue templates, and recent maintainer responses. Follow an issue-first policy whenever the upstream requests it; never open an unsolicited pull request against such a repository.
+- Prefix the title of every upstream issue or pull request containing agent-assisted work with `[AI-assisted]` or a more specific form such as `[AI-assisted proposal]`.
+- Group changes by one coherent user-facing capability. Split unrelated fixes and features into separate reports; when one capability spans GPUI and GPUIX, describe the layers separately and ask the maintainer how they want invited implementation pull requests divided.
+- Link exact proof-of-concept branches and commits, state what was actually verified, and distinguish a validated prototype from merge-ready code. Do not claim tests or platforms that were not exercised.
+- If an upstream invites a pull request, rebase and clean the branch first, follow its generated-file and changeset rules, and include every AI disclosure field or prompt transcript that its policy requires.
+
 ## Scope
 
 - Treat `design/reference-contract.json` and the approved images under `design/reference/` as the UI source of truth.
