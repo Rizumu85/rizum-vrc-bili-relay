@@ -62,7 +62,7 @@ export function sceneWindowHeight(
 ): number {
   if (scene === "idle" || scene === "loading") return 178;
   if (scene === "error") return 230;
-  if (scene === "ready-vod") return singlePartVideo ? 447 : 482;
+  if (scene === "ready-vod") return singlePartVideo ? 471 : 506;
   if (scene === "settings") return settingsExpanded ? 400 : 364;
   return 572;
 }
@@ -1882,7 +1882,7 @@ function Result({
       <div style={{ height: 17, display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
         <StatusDot color={palette.accentDanmaku} />
         <text style={{ color: palette.inkMuted, fontFamily: FONT_SERIF, fontSize: 13, fontWeight: 600 }}>
-          {isReference || relayRunning || directReady ? "VRChat 播放地址" : "媒体路由"}
+          播放控制
         </text>
         <div style={{ flexGrow: 1 }} />
         <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 11 }}>
@@ -1993,9 +1993,16 @@ function Result({
           borderColor: palette.surfaceDivider,
         }}
       >
+        <div style={{ height: 17, display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <StatusDot color={palette.accentRose} />
+          <text style={{ color: palette.inkMuted, fontFamily: FONT_SERIF, fontSize: 13, fontWeight: 600 }}>
+            VRChat 播放地址
+          </text>
+        </div>
         <div
           style={{
             minHeight: 32,
+            marginTop: 7,
             display: "flex",
             flexDirection: "row",
             alignItems: "center",

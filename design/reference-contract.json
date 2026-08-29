@@ -70,7 +70,8 @@
         "gap": 13
       },
       "tokens": {
-        "singlePartWindowHeight": 443,
+        "singlePartWindowHeight": 471,
+        "multiPartWindowHeight": 506,
         "inputHeight": 35,
         "nativeEditorHeight": 19,
         "nativeEditorOffsetY": -4,
@@ -78,9 +79,9 @@
         "controlRadius": 8,
         "resultSeparatorTop": 18,
         "resultSeparatorPadding": 16,
-        "runtimeSeparator": "The ready surface has three regions: source input, media routing with danmaku controls, and runtime output. Like the settings footer, the runtime row follows a quiet divider with 18px before and 14px after the line; no extra card or repeated section title is added. Its 32px minimum content box plus 2px vertical padding occupies 36px in GPUIX, and the content-sized window must preserve a separate 16px bottom safe area beneath that outer box.",
+        "runtimeSeparator": "The ready surface has three stable named regions: 视频链接, 播放控制 with danmaku controls, and VRChat 播放地址. The playback heading never changes with relay state; state remains in its trailing status copy. The runtime region follows a quiet divider with 18px before and 14px after the line, then uses the shared 17px section heading, a 7px heading-to-field gap, and no extra card. Its 32px minimum content box plus 2px vertical padding occupies 36px in GPUIX, and the content-sized window preserves a separate 16px bottom safe area beneath that outer box.",
         "runtimeTypography": "Resolved playback URLs use Cascadia Mono 11.5px. Chinese preparation, routing, completion, stopped, and failure messages in the same stable row use MiSans VF 11.5px so missing CJK glyphs never fall through the Latin monospace face into an incidental system serif.",
-        "sectionMarkers": "The ready surface follows one stable top-to-bottom marker sequence: source uses teal, media routing uses amber (#F59E0B in light appearance, #FBBF24 in dark appearance), danmaku uses violet, and runtime output uses rose. The Generate action icon matches the source marker. These colors identify content regions rather than transient health states; errors continue to be expressed by their local copy and action state.",
+        "sectionMarkers": "The ready surface follows one stable top-to-bottom marker sequence: 视频链接 uses teal, 播放控制 uses amber (#F59E0B in light appearance, #FBBF24 in dark appearance), 弹幕 uses violet, and VRChat 播放地址 uses rose. The Generate action icon matches the source marker, and the runtime link icon matches its section marker. These colors identify content regions rather than transient health states; errors continue to be expressed by their local copy and action state.",
         "seekVisualTrack": 2,
         "seekHitTarget": 28,
         "seekPointerOwnership": "The 2px track and 12px thumb are paint-only layers with pointer events disabled. Their shared 28px slider parent owns press, drag, release, hover cursor, and keyboard interaction, so pressing the visible thumb or the surrounding invisible hit target follows the same seek path.",
