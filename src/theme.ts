@@ -46,6 +46,11 @@ export const MOTION = {
   popoverEnterSeconds: 0.18,
   stateCrossfadeSeconds: 0.14,
   segmentedSeconds: 0.24,
+  loadingPulseSeconds: 0.24,
+  loadingPulseIdleOpacity: 0.28,
+  loadingPulseActiveOpacity: 0.85,
+  loadingReducedMotionOpacities: [0.45, 0.65, 0.85] as const,
+  tooltipDelayMs: 520,
 } as const;
 
 export const PALETTES: Record<Appearance, Palette> = {

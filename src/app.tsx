@@ -213,16 +213,18 @@ function MotionFade({
   children,
   style,
   duration = MOTION.surfaceEnterSeconds,
+  instant = false,
 }: {
   children: React.ReactNode;
   style?: StyleDesc;
   duration?: number;
+  instant?: boolean;
 }) {
   return (
     <motion.div
-      initial={REDUCED_MOTION ? false : { opacity: 0 }}
+      initial={REDUCED_MOTION || instant ? false : { opacity: 0 }}
       animate={{ opacity: 1 }}
-      transition={motionTransition(duration)}
+      transition={motionTransition(instant ? 0 : duration)}
       style={style}
     >
       {children}
@@ -989,6 +991,7 @@ function PlaybackEndButton({
 }) {
   const [tooltipVisible, setTooltipVisible] = useState(false);
   const tooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const animateTooltip = useRef(false);
   const currentIndex = PLAYBACK_END_SEQUENCE.indexOf(value);
   const nextValue = PLAYBACK_END_SEQUENCE[(currentIndex + 1) % PLAYBACK_END_SEQUENCE.length]
     ?? "pause";
@@ -1015,11 +1018,13 @@ function PlaybackEndButton({
     clearTooltipTimer();
     tooltipTimer.current = setTimeout(() => {
       tooltipTimer.current = null;
+      animateTooltip.current = true;
       setTooltipVisible(true);
-    }, 520);
+    }, MOTION.tooltipDelayMs);
   };
   const hideTooltip = () => {
     clearTooltipTimer();
+    animateTooltip.current = false;
     setTooltipVisible(false);
   };
 
@@ -1044,7 +1049,10 @@ function PlaybackEndButton({
         onMouseEnter={showTooltipAfterDelay}
         onMouseLeave={hideTooltip}
         onFocus={() => {
-          if (!disabled) setTooltipVisible(true);
+          if (!disabled) {
+            animateTooltip.current = false;
+            setTooltipVisible(true);
+          }
         }}
         onBlur={hideTooltip}
         onClick={() => {
@@ -1090,28 +1098,36 @@ function PlaybackEndButton({
             position: "absolute",
             right: -4,
             bottom: 29,
-            paddingTop: 6,
-            paddingRight: 9,
-            paddingBottom: 6,
-            paddingLeft: 9,
-            borderRadius: 7,
-            borderWidth: 1,
-            borderColor: palette.panelEdge,
-            backgroundColor: palette.nestedStrong,
             pointerEvents: "none",
             userSelect: "none",
           }}
         >
-          <text
+          <motion.div
+            initial={REDUCED_MOTION || !animateTooltip.current ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={motionTransition(MOTION.stateCrossfadeSeconds)}
             style={{
-              color: palette.inkSoft,
-              fontFamily: FONT_UI,
-              fontSize: 11.5,
-              whiteSpace: "nowrap",
+              paddingTop: 6,
+              paddingRight: 9,
+              paddingBottom: 6,
+              paddingLeft: 9,
+              borderRadius: 7,
+              borderWidth: 1,
+              borderColor: palette.panelEdge,
+              backgroundColor: palette.nestedStrong,
             }}
           >
-            {label}
-          </text>
+            <text
+              style={{
+                color: palette.inkSoft,
+                fontFamily: FONT_UI,
+                fontSize: 11.5,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {label}
+            </text>
+          </motion.div>
         </div>
       ) : null}
     </div>
@@ -1150,9 +1166,14 @@ function SeekControl({
   const [dragging, setDragging] = useState(false);
   const draggingRef = useRef(false);
   const positionRef = useRef(position);
+  const animateTransportIcon = useRef(true);
   const maximum = Math.max(0, duration - 1);
   const visiblePosition = Math.max(0, Math.min(maximum, position));
   positionRef.current = visiblePosition;
+
+  useEffect(() => {
+    animateTransportIcon.current = true;
+  }, [playing]);
 
   const updatePosition = (value: number) => {
     const next = Math.max(0, Math.min(maximum, Math.round(value)));
@@ -1269,10 +1290,16 @@ function SeekControl({
             testId="playback-toggle"
             tabIndex={transportBusy ? -1 : 0}
             onClick={() => {
-              if (!transportBusy) onTogglePlayback();
+              if (!transportBusy) {
+                animateTransportIcon.current = true;
+                onTogglePlayback();
+              }
             }}
             onKeyDown={(event) => {
-              if (!transportBusy && (event.key === "enter" || event.key === "space")) onTogglePlayback();
+              if (!transportBusy && (event.key === "enter" || event.key === "space")) {
+                animateTransportIcon.current = false;
+                onTogglePlayback();
+              }
             }}
             style={{
               width: 22,
@@ -1293,7 +1320,20 @@ function SeekControl({
               active: transportBusy ? undefined : { backgroundColor: palette.surfaceActive },
             }}
           >
-            <Icon name={playing ? "pause" : "play"} size={10} color={palette.inkMuted} />
+            <MotionFade
+              key={playing ? "pause" : "play"}
+              duration={MOTION.stateCrossfadeSeconds}
+              instant={!animateTransportIcon.current}
+              style={{
+                width: 10,
+                height: 10,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Icon name={playing ? "pause" : "play"} size={10} color={palette.inkMuted} />
+            </MotionFade>
           </div>
         ) : null}
         <text style={{ color: palette.caption, fontFamily: FONT_MONO, fontSize: 11.5 }}>
@@ -2718,31 +2758,45 @@ function DanmakuPreview({
   outline: DanmakuOutline;
   opacity: number;
 }) {
+  const discreteStyleKey = `${fontFamily}:${fontSize}:${fontWeight}:${outline}`;
   return (
     <>
       <DanmakuPreviewBackdrop />
-      <DanmakuPreviewLine
-        text="这条弹幕会显示在画面上"
-        top={13}
-        width={220}
-        staticRight={18}
-        fontFamily={fontFamily}
-        fontSize={fontSize}
-        fontWeight={fontWeight}
-        outline={outline}
-        opacity={opacity}
-      />
-      <DanmakuPreviewLine
-        text="VRChat 一起看"
-        top={42}
-        width={150}
-        staticRight={78}
-        fontFamily={fontFamily}
-        fontSize={Math.max(10, fontSize - 1)}
-        fontWeight={fontWeight}
-        outline={outline}
-        opacity={opacity}
-      />
+      <MotionFade
+        key={discreteStyleKey}
+        duration={MOTION.stateCrossfadeSeconds}
+        style={{
+          width: "100%",
+          height: "100%",
+          position: "absolute",
+          top: 0,
+          left: 0,
+          pointerEvents: "none",
+        }}
+      >
+        <DanmakuPreviewLine
+          text="这条弹幕会显示在画面上"
+          top={13}
+          width={220}
+          staticRight={18}
+          fontFamily={fontFamily}
+          fontSize={fontSize}
+          fontWeight={fontWeight}
+          outline={outline}
+          opacity={opacity}
+        />
+        <DanmakuPreviewLine
+          text="VRChat 一起看"
+          top={42}
+          width={150}
+          staticRight={78}
+          fontFamily={fontFamily}
+          fontSize={Math.max(10, fontSize - 1)}
+          fontWeight={fontWeight}
+          outline={outline}
+          opacity={opacity}
+        />
+      </MotionFade>
     </>
   );
 }
@@ -3355,17 +3409,32 @@ function SettingsView({
 }
 
 function Loading({ palette }: { palette: Palette }) {
+  const [phase, setPhase] = useState(0);
+
+  useEffect(() => {
+    if (REDUCED_MOTION) return;
+    const timer = setInterval(() => {
+      setPhase((current) => (current + 1) % 3);
+    }, MOTION.loadingPulseSeconds * 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const opacities = REDUCED_MOTION
+    ? MOTION.loadingReducedMotionOpacities
+    : ([0, 1, 2].map((index) => (
+        index === phase ? MOTION.loadingPulseActiveOpacity : MOTION.loadingPulseIdleOpacity
+      )) as readonly number[]);
+
   return (
     <div style={{ height: 32, display: "flex", flexDirection: "row", alignItems: "center", gap: 6 }}>
       <div style={{ display: "flex", flexDirection: "row", gap: 2 }}>
-        {[0.45, 0.65, 0.85].map((opacity, index) => (
+        {opacities.map((opacity, index) => (
           <motion.div
             key={index}
-            initial={REDUCED_MOTION ? false : { opacity: 0.2 }}
+            initial={false}
             animate={{ opacity }}
             transition={{
-              duration: REDUCED_MOTION ? 0 : MOTION.stateCrossfadeSeconds,
-              delay: REDUCED_MOTION ? 0 : index * 0.04,
+              duration: REDUCED_MOTION ? 0 : MOTION.loadingPulseSeconds,
               ease: MOTION.easeOut,
             }}
             style={{
