@@ -143,10 +143,15 @@ replaced by scanning again or removed by returning to guest mode.
 loads the existing `%LOCALAPPDATA%\VRC Bili Relay\settings.json` shape, accepts
 legacy playback-prefix data, validates bounded fields, writes through a synced
 temporary file, and keeps a recoverable backup during replacement. React gets
-host, playback URL, theme, and a `streamKeyStatus`; it never reads the file or
-receives the stored key or protected value. `windows_secret` wraps DPAPI without
-machine scope, so the protected key is bound to the current Windows user. A v1
-plaintext key is protected and atomically rewritten as v2 on first read.
+host, playback URL, theme, `streamKeyStatus`, danmaku preferences, and playback
+end behaviour; it never reads the file or receives the stored key or protected
+value. Preference updates are partial patches, so an immediate danmaku or end-
+behaviour save cannot overwrite connection settings being edited elsewhere.
+Source, selected part, position, and paused state remain session-only. The v3
+settings migration adds preference defaults while preserving connection and
+appearance values. `windows_secret` wraps DPAPI without machine scope, so the
+protected key is bound to the current Windows user. A v1 plaintext key is
+protected and atomically rewritten on first read.
 
 Temporary upstream URLs never cross into React. The stream key is supplied by
 the settings UI only when it changes, is persisted by Rust, and is represented

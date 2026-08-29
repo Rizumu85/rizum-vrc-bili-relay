@@ -19,7 +19,7 @@ use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 use settings::SettingsStore;
 
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 18;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -296,6 +296,8 @@ pub struct ProductSettings {
     pub playback_url: String,
     pub theme: ThemePreference,
     pub stream_key_status: StreamKeyStatus,
+    pub danmaku: DanmakuSettings,
+    pub playback_end_behavior: PlaybackEndBehavior,
 }
 
 impl Default for ProductSettings {
@@ -305,6 +307,8 @@ impl Default for ProductSettings {
             playback_url: String::new(),
             theme: ThemePreference::System,
             stream_key_status: StreamKeyStatus::Missing,
+            danmaku: default_danmaku_preferences(),
+            playback_end_behavior: PlaybackEndBehavior::Pause,
         }
     }
 }
@@ -318,14 +322,30 @@ pub enum StreamKeyStatus {
     Unavailable,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlaybackEndBehavior {
+    #[default]
+    Pause,
+    Repeat,
+    Next,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsUpdate {
-    pub host: String,
-    pub playback_url: String,
-    pub theme: ThemePreference,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub playback_url: Option<String>,
+    #[serde(default)]
+    pub theme: Option<ThemePreference>,
     #[serde(default)]
     pub stream_key: Option<String>,
+    #[serde(default)]
+    pub danmaku: Option<DanmakuSettings>,
+    #[serde(default)]
+    pub playback_end_behavior: Option<PlaybackEndBehavior>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
@@ -364,6 +384,13 @@ impl Default for DanmakuSettings {
             outline: DanmakuOutline::Heavy,
             hidden_types: vec![DanmakuFilter::Advanced],
         }
+    }
+}
+
+pub(crate) fn default_danmaku_preferences() -> DanmakuSettings {
+    DanmakuSettings {
+        enabled: true,
+        ..DanmakuSettings::default()
     }
 }
 

@@ -6,12 +6,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ProductSettings, RelayError, RelayTarget, SettingsUpdate, StreamKeyStatus, ThemePreference,
-    windows_secret,
+    DanmakuSettings, PlaybackEndBehavior, ProductSettings, RelayError, RelayTarget, SettingsUpdate,
+    StreamKeyStatus, ThemePreference, default_danmaku_preferences, windows_secret,
 };
 
 const SETTINGS_FILE: &str = "settings.json";
-const SETTINGS_VERSION: u32 = 2;
+const SETTINGS_VERSION: u32 = 3;
 const MAX_SETTINGS_BYTES: u64 = 128 * 1024;
 const MAX_PROTECTED_KEY_BYTES: usize = 32 * 1024;
 const LEGACY_PLAYBACK_PREFIX: &str = "https://stream.vrcdn.live/play/";
@@ -94,6 +94,8 @@ struct StoredSettings {
     stream_key: StreamKeySecret,
     playback_url: String,
     theme: ThemePreference,
+    danmaku: DanmakuSettings,
+    playback_end_behavior: PlaybackEndBehavior,
 }
 
 impl Default for StoredSettings {
@@ -103,6 +105,8 @@ impl Default for StoredSettings {
             stream_key: StreamKeySecret::Missing,
             playback_url: String::new(),
             theme: ThemePreference::System,
+            danmaku: default_danmaku_preferences(),
+            playback_end_behavior: PlaybackEndBehavior::Pause,
         }
     }
 }
@@ -114,6 +118,8 @@ impl StoredSettings {
             playback_url: self.playback_url.clone(),
             theme: self.theme,
             stream_key_status: self.stream_key.status(),
+            danmaku: self.danmaku.clone(),
+            playback_end_behavior: self.playback_end_behavior,
         }
     }
 
@@ -137,6 +143,8 @@ struct SettingsFile {
     #[serde(alias = "playbackPrefix", alias = "playback_prefix")]
     playback_url: String,
     theme: ThemePreference,
+    danmaku: DanmakuSettings,
+    playback_end_behavior: PlaybackEndBehavior,
 }
 
 impl Default for SettingsFile {
@@ -148,6 +156,8 @@ impl Default for SettingsFile {
             protected_key: None,
             playback_url: String::new(),
             theme: ThemePreference::System,
+            danmaku: default_danmaku_preferences(),
+            playback_end_behavior: PlaybackEndBehavior::Pause,
         }
     }
 }
@@ -166,6 +176,8 @@ struct SettingsDocument<'a> {
     protected_key: Option<&'a str>,
     playback_url: &'a str,
     theme: ThemePreference,
+    danmaku: &'a DanmakuSettings,
+    playback_end_behavior: PlaybackEndBehavior,
 }
 
 impl SettingsStore {
@@ -187,15 +199,20 @@ impl SettingsStore {
     }
 
     pub fn save(&self, update: SettingsUpdate) -> Result<ProductSettings, RelayError> {
+        let current = self.load_private()?;
         let stream_key = match update.stream_key {
             Some(key) => StreamKeySecret::from_plaintext(key)?,
-            None => self.load_private()?.stream_key,
+            None => current.stream_key,
         };
         let stored = normalize_and_validate(StoredSettings {
-            host: update.host,
+            host: update.host.unwrap_or(current.host),
             stream_key,
-            playback_url: update.playback_url,
-            theme: update.theme,
+            playback_url: update.playback_url.unwrap_or(current.playback_url),
+            theme: update.theme.unwrap_or(current.theme),
+            danmaku: update.danmaku.unwrap_or(current.danmaku),
+            playback_end_behavior: update
+                .playback_end_behavior
+                .unwrap_or(current.playback_end_behavior),
         })?;
         self.write(&stored)?;
         Ok(stored.public())
@@ -240,6 +257,8 @@ impl SettingsStore {
             protected_key: settings.stream_key.protected(),
             playback_url: &settings.playback_url,
             theme: settings.theme,
+            danmaku: &settings.danmaku,
+            playback_end_behavior: settings.playback_end_behavior,
         };
         let encoded = serde_json::to_vec_pretty(&document).map_err(|error| {
             RelayError::new(
@@ -336,6 +355,8 @@ fn read_settings(path: &Path) -> Result<Option<LoadedSettings>, RelayError> {
         stream_key,
         playback_url: file.playback_url,
         theme: file.theme,
+        danmaku: file.danmaku,
+        playback_end_behavior: file.playback_end_behavior,
     })?;
     Ok(Some(LoadedSettings {
         settings,
@@ -351,6 +372,7 @@ fn normalize_and_validate(mut settings: StoredSettings) -> Result<StoredSettings
     }
     validate_field("server", &settings.host, 2 * 1024)?;
     validate_field("playback URL", &settings.playback_url, 16 * 1024)?;
+    settings.danmaku.opacity = settings.danmaku.opacity.min(100);
     Ok(settings)
 }
 

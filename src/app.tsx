@@ -27,7 +27,9 @@ import {
   type BilibiliLoginQr,
   type FfmpegStatus,
   type HealthReply,
+  type PlaybackEndBehavior,
   type PlaybackOptions,
+  type ProtocolDanmakuSettings,
   type RelayStatus,
   type SourceResolution,
 } from "./relay/protocol";
@@ -77,7 +79,6 @@ type DanmakuFont = "microsoft-yahei" | "noto-sans-sc" | "source-han-sans" | "sim
 type DanmakuWeight = "regular" | "bold";
 type DanmakuOutline = "heavy" | "outline" | "shadow";
 type DanmakuFilter = "rolling" | "fixed" | "colored" | "advanced";
-type PlaybackEndBehavior = "pause" | "repeat" | "next";
 type PlaybackUpdate = "part" | "seek" | "danmaku" | "completion" | null;
 type MediaComponentState =
   | "checking"
@@ -297,6 +298,42 @@ function configuredPlaybackOptions(
       hidden_types: settings.hiddenTypes,
     },
   };
+}
+
+function decodedDanmakuPreferences(settings: ProtocolDanmakuSettings): {
+  visibility: DanmakuVisibility;
+  settings: DanmakuSettings;
+} {
+  const font = {
+    microsoft_yahei: "microsoft-yahei",
+    noto_sans_sc: "noto-sans-sc",
+    source_han_sans: "source-han-sans",
+    simhei: "simhei",
+  } as const;
+  return {
+    visibility: settings.enabled ? "shown" : "hidden",
+    settings: {
+      size: settings.size,
+      area: settings.area,
+      speed: settings.speed,
+      opacity: settings.opacity,
+      font: font[settings.font],
+      weight: settings.weight,
+      outline: settings.outline,
+      hiddenTypes: [...settings.hidden_types],
+    },
+  };
+}
+
+function playbackPreferenceSignature(
+  visibility: DanmakuVisibility,
+  settings: DanmakuSettings,
+  endBehavior: PlaybackEndBehavior,
+): string {
+  return JSON.stringify({
+    danmaku: configuredPlaybackOptions(visibility, settings).danmaku,
+    playbackEndBehavior: endBehavior,
+  });
 }
 
 function playbackOptionsSignature(options: PlaybackOptions): string {
@@ -3605,6 +3642,7 @@ export function AppSurface({
     theme: initialThemePreference ?? DEFAULT_SETTINGS.theme,
   }));
   const [settingsReady, setSettingsReady] = useState(false);
+  const [preferencesReady, setPreferencesReady] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [source, setSource] = useState(
     initialSource ?? (initialScene === "ready-vod" ? SAMPLE_VIDEO : ""),
@@ -3637,6 +3675,13 @@ export function AppSurface({
   const completionActionSession = useRef<string | null>(null);
   const appliedPlaybackOptions = useRef<string | null>(null);
   const sceneBeforeConversion = useRef<Scene>(initialScene);
+  const preferencesHydrated = useRef(false);
+  const preferencesTouched = useRef(false);
+  const persistedPreferenceSignature = useRef<string | null>(null);
+  const preferenceSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const preferenceSaveQueue = useRef<Promise<void>>(Promise.resolve());
+  const danmakuRef = useRef<DanmakuVisibility>(danmaku);
+  const danmakuSettingsRef = useRef<DanmakuSettings>(danmakuSettings);
   const resolvedAppearance: Appearance =
     themePreference === "system" ? initialAppearance : themePreference;
   const palette = PALETTES[resolvedAppearance];
@@ -3681,6 +3726,33 @@ export function AppSurface({
     return relayWorker.current;
   };
 
+  const setDanmakuPreference = (next: DanmakuVisibility) => {
+    preferencesTouched.current = true;
+    danmakuRef.current = next;
+    setDanmaku(next);
+  };
+
+  const setDanmakuSettingsPreference: React.Dispatch<React.SetStateAction<DanmakuSettings>> = (
+    update,
+  ) => {
+    preferencesTouched.current = true;
+    setDanmakuSettings((current) => {
+      const next = typeof update === "function" ? update(current) : update;
+      danmakuSettingsRef.current = next;
+      return next;
+    });
+  };
+
+  const setPlaybackEndBehaviorPreference = (next: PlaybackEndBehavior) => {
+    preferencesTouched.current = true;
+    setPlaybackEndBehavior(next);
+  };
+
+  const currentPlaybackOptions = () => configuredPlaybackOptions(
+    danmakuRef.current,
+    danmakuSettingsRef.current,
+  );
+
   const applyProductSettings = (next: ProductSettings): ProductSettings => {
     const visible = initialThemePreference
       ? { ...next, theme: initialThemePreference }
@@ -3688,6 +3760,23 @@ export function AppSurface({
     setProductSettings(visible);
     setSettingsReady(true);
     if (!initialThemePreference) setThemePreference(visible.theme);
+    if (!preferencesHydrated.current) {
+      const decoded = decodedDanmakuPreferences(next.danmaku);
+      persistedPreferenceSignature.current = playbackPreferenceSignature(
+        decoded.visibility,
+        decoded.settings,
+        next.playbackEndBehavior,
+      );
+      if (!preferencesTouched.current) {
+        danmakuRef.current = decoded.visibility;
+        danmakuSettingsRef.current = decoded.settings;
+        setDanmaku(decoded.visibility);
+        setDanmakuSettings(decoded.settings);
+        setPlaybackEndBehavior(next.playbackEndBehavior);
+      }
+      preferencesHydrated.current = true;
+      setPreferencesReady(true);
+    }
     return visible;
   };
 
@@ -3779,6 +3868,44 @@ export function AppSurface({
       setMediaError(relayErrorMessage(error));
     }
   };
+
+  useEffect(() => {
+    if (!preferencesReady) return;
+    const options = configuredPlaybackOptions(danmaku, danmakuSettings);
+    const signature = playbackPreferenceSignature(
+      danmaku,
+      danmakuSettings,
+      playbackEndBehavior,
+    );
+    if (signature === persistedPreferenceSignature.current) return;
+    if (preferenceSaveTimer.current) clearTimeout(preferenceSaveTimer.current);
+    preferenceSaveTimer.current = setTimeout(() => {
+      preferenceSaveTimer.current = null;
+      preferenceSaveQueue.current = preferenceSaveQueue.current.then(async () => {
+        try {
+          const saved = await getRelayWorker().saveSettings({
+            danmaku: options.danmaku,
+            playbackEndBehavior,
+          });
+          persistedPreferenceSignature.current = signature;
+          setSettingsError(null);
+          setProductSettings(
+            initialThemePreference
+              ? { ...saved, theme: initialThemePreference }
+              : saved,
+          );
+        } catch (error) {
+          setSettingsError(relayErrorMessage(error));
+        }
+      });
+    }, 250);
+    return () => {
+      if (preferenceSaveTimer.current) {
+        clearTimeout(preferenceSaveTimer.current);
+        preferenceSaveTimer.current = null;
+      }
+    };
+  }, [preferencesReady, danmaku, danmakuSettings, playbackEndBehavior]);
 
   useEffect(() => {
     const startup = setTimeout(() => {
@@ -3935,7 +4062,7 @@ export function AppSurface({
           return;
         }
         try {
-          const options = configuredPlaybackOptions(danmaku, danmakuSettings);
+          const options = currentPlaybackOptions();
           const started = await getRelayWorker().startRelay(
             resolution.session_id,
             options,
@@ -3965,7 +4092,7 @@ export function AppSurface({
     requestedPart: number,
     startSeconds: number,
     update: Exclude<PlaybackUpdate, null>,
-    options = configuredPlaybackOptions(danmaku, danmakuSettings),
+    options = currentPlaybackOptions(),
     remainPaused = playbackPaused,
   ) => {
     const previousResolution = sourceResolution;
@@ -4087,7 +4214,7 @@ export function AppSurface({
 
     const completionSession = relayStatus.session_id;
     completionActionSession.current = completionSession;
-    const options = configuredPlaybackOptions(danmaku, danmakuSettings);
+    const options = currentPlaybackOptions();
     const currentPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
     const orderedParts = [...(sourceResolution.parts ?? [])]
       .sort((left, right) => left.page - right.page);
@@ -4165,7 +4292,7 @@ export function AppSurface({
 
   const changeDanmakuVisibility = (next: DanmakuVisibility) => {
     if (next === danmaku || playbackUpdating !== null) return;
-    setDanmaku(next);
+    setDanmakuPreference(next);
     const active = relayStatus?.stage === "starting" || relayStatus?.stage === "running";
     const supportsDanmaku = sourceResolution?.kind === "video" || sourceResolution?.kind === "live";
     if (!active || !supportsDanmaku || !sourceResolution) return;
@@ -4177,7 +4304,7 @@ export function AppSurface({
       requestedPart,
       isLive ? 0 : playbackPosition,
       "danmaku",
-      configuredPlaybackOptions(next, danmakuSettings),
+      configuredPlaybackOptions(next, danmakuSettingsRef.current),
     );
   };
 
@@ -4222,7 +4349,7 @@ export function AppSurface({
       const active = relayStatus?.stage === "running";
       if (active && relayStatus) {
         const nextPaused = !relayStatus.paused;
-        const options = configuredPlaybackOptions(danmaku, danmakuSettings);
+        const options = currentPlaybackOptions();
         const selectedPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
         const selectedDuration = sourceResolution.parts
           ?.find((entry) => entry.page === selectedPart)
@@ -4247,7 +4374,7 @@ export function AppSurface({
         return;
       }
       if (!playbackPaused || !sourceResolution.session_id) return;
-      const options = configuredPlaybackOptions(danmaku, danmakuSettings);
+      const options = currentPlaybackOptions();
       const started = await getRelayWorker().startRelay(
         sourceResolution.session_id,
         options,
@@ -4281,7 +4408,7 @@ export function AppSurface({
     const resolution = sourceResolution;
     if (!resolution?.session_id) return;
     const epoch = ++conversionEpoch.current;
-    const options = configuredPlaybackOptions(danmaku, danmakuSettings);
+    const options = currentPlaybackOptions();
     setRelayStatus(null);
     setRelayError(null);
     setPlaybackMessage("正在继续生成地址");
@@ -4332,7 +4459,7 @@ export function AppSurface({
       && relaySettingsReady(productSettings)
       && Boolean(sourceResolution?.session_id);
     const active = relayStatus?.stage === "starting" || relayStatus?.stage === "running";
-    const options = configuredPlaybackOptions(danmaku, danmakuSettings);
+    const options = currentPlaybackOptions();
     const shouldApplyDanmaku = scene === "danmaku"
       && active
       && (sourceResolution?.kind === "video" || sourceResolution?.kind === "live")
@@ -4404,9 +4531,9 @@ export function AppSurface({
           <DanmakuView
             palette={palette}
             visibility={danmaku}
-            setVisibility={setDanmaku}
+            setVisibility={setDanmakuPreference}
             settings={danmakuSettings}
-            setSettings={setDanmakuSettings}
+            setSettings={setDanmakuSettingsPreference}
           />
         </MotionFade>
       ) : (
@@ -4485,7 +4612,7 @@ export function AppSurface({
                 playbackToggling={playbackToggling}
                 onTogglePlayback={() => void togglePlayback()}
                 playbackEndBehavior={playbackEndBehavior}
-                onPlaybackEndBehaviorChange={setPlaybackEndBehavior}
+                onPlaybackEndBehaviorChange={setPlaybackEndBehaviorPreference}
                 danmaku={danmaku}
                 onDanmakuChange={changeDanmakuVisibility}
                 onOpenDanmaku={() => showSubview("danmaku")}
