@@ -82,6 +82,10 @@ export function showNativePartPopup(request: NativePartPopupRequest): boolean {
 
   const visibleRows = Math.max(1, Math.min(MENU_MAX_ROWS, request.items.length));
   const panelHeight = visibleRows * MENU_ROW_HEIGHT + MENU_PADDING * 2;
+  const parentHandle = findWindowByTitle(PRODUCT_WINDOW_TITLE);
+  const [parentScaleX] = parentHandle
+    ? readClientScale(parentHandle, request.mainWindowSize)
+    : [1, 1];
   const renderer = createRenderer();
   try {
     renderer.init({
@@ -97,7 +101,10 @@ export function showNativePartPopup(request: NativePartPopupRequest): boolean {
       focus: true,
       anchoredPopup: {
         parentWindowId: request.parentWindowId,
-        anchorX: request.anchorBounds[0],
+        // GPUIX currently reports the horizontal element origin in physical
+        // client pixels on Windows. GPUI's popup API consumes logical pixels,
+        // so normalize X once before the platform applies its DPI scale.
+        anchorX: request.anchorBounds[0] / parentScaleX,
         anchorY: request.anchorBounds[1],
         anchorWidth: request.anchorBounds[2],
         anchorHeight: request.anchorBounds[3],
@@ -207,13 +214,26 @@ function pointInsideAnchor(
     !user32.symbols.GetClientRect(mainHandle, ptr(client))
     || !user32.symbols.ClientToScreen(mainHandle, ptr(origin))
   ) return false;
-  const scaleX = (client[2] - client[0]) / Math.max(1, request.mainWindowSize.width);
-  const scaleY = (client[3] - client[1]) / Math.max(1, request.mainWindowSize.height);
+  const [scaleX, scaleY] = readClientScale(mainHandle, request.mainWindowSize, client);
   const [left, top, width, height] = request.anchorBounds;
-  return x >= origin[0] + left * scaleX
-    && x < origin[0] + (left + width) * scaleX
+  return x >= origin[0] + left
+    && x < origin[0] + left + width * scaleX
     && y >= origin[1] + top * scaleY
     && y < origin[1] + (top + height) * scaleY;
+}
+
+function readClientScale(
+  handle: WindowHandle,
+  logicalSize: { width: number; height: number },
+  knownClient?: Int32Array,
+): readonly [number, number] {
+  if (!user32) return [1, 1];
+  const client = knownClient ?? new Int32Array(4);
+  if (!knownClient && !user32.symbols.GetClientRect(handle, ptr(client))) return [1, 1];
+  return [
+    Math.max(0.01, (client[2] - client[0]) / Math.max(1, logicalSize.width)),
+    Math.max(0.01, (client[3] - client[1]) / Math.max(1, logicalSize.height)),
+  ];
 }
 
 function findWindowByTitle(title: string): WindowHandle | null {
