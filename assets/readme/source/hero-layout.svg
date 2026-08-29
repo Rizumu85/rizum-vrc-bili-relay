@@ -21,7 +21,7 @@
       <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#292530" flood-opacity="0.18"/>
     </filter>
     <clipPath id="window-clip">
-      <rect x="768" y="29" width="382" height="382" rx="14"/>
+      <rect x="785" y="24" width="365" height="390" rx="14"/>
     </clipPath>
   </defs>
 
@@ -45,26 +45,26 @@
           font-size="22">粘贴视频或直播链接，生成 VRChat 可以播放的地址。</text>
 
     <g id="route-preview" transform="translate(0 229)">
-      <path d="M20 28 H502" stroke="#E4E4E7" stroke-width="8" stroke-linecap="round"/>
-      <path d="M20 28 H502" stroke="url(#route)" stroke-width="3" stroke-linecap="round"/>
+      <path d="M20 28 H560" stroke="#E4E4E7" stroke-width="8" stroke-linecap="round"/>
+      <path d="M20 28 H560" stroke="url(#route)" stroke-width="3" stroke-linecap="round"/>
 
       <circle cx="20" cy="28" r="11" fill="#2DD4BF"/>
-      <circle cx="181" cy="28" r="11" fill="#F59E0B"/>
-      <circle cx="342" cy="28" r="11" fill="#A78BFA"/>
-      <circle cx="502" cy="28" r="11" fill="#FB7185"/>
+      <circle cx="200" cy="28" r="11" fill="#F59E0B"/>
+      <circle cx="380" cy="28" r="11" fill="#A78BFA"/>
+      <circle cx="560" cy="28" r="11" fill="#FB7185"/>
 
       <text x="0" y="61" dominant-baseline="hanging"
             fill="#49434D" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif"
             font-size="18" font-weight="600">视频链接</text>
-      <text x="140" y="61" dominant-baseline="hanging"
+      <text x="163" y="61" dominant-baseline="hanging"
             fill="#49434D" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif"
-            font-size="18" font-weight="600">媒体路由</text>
-      <text x="324" y="61" dominant-baseline="hanging"
+            font-size="18" font-weight="600">播放控制</text>
+      <text x="362" y="61" dominant-baseline="hanging"
             fill="#49434D" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif"
             font-size="18" font-weight="600">弹幕</text>
-      <text x="442" y="61" dominant-baseline="hanging"
+      <text x="468" y="61" dominant-baseline="hanging"
             fill="#49434D" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif"
-            font-size="18" font-weight="600">播放地址</text>
+            font-size="18" font-weight="600">VRChat 播放地址</text>
 
       <text x="0" y="101" dominant-baseline="hanging"
             fill="#8B8490" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
@@ -73,11 +73,11 @@
   </g>
 
   <g id="product-proof" filter="url(#window-shadow)">
-    <rect x="768" y="29" width="382" height="382" rx="14" fill="#FAFAFA"/>
+    <rect x="785" y="24" width="365" height="390" rx="14" fill="#FAFAFA"/>
     <g clip-path="url(#window-clip)">
-      <image x="768" y="29" width="382" height="382"
-             xlink:href="../app-ready-light.png" preserveAspectRatio="none"/>
+      <image x="785" y="24" width="365" height="390"
+             xlink:href="../app-ready-light.png" preserveAspectRatio="xMidYMid meet"/>
     </g>
-    <rect x="768.5" y="29.5" width="381" height="381" rx="13.5" fill="none" stroke="#D8D4D9"/>
+    <rect x="785.5" y="24.5" width="364" height="389" rx="13.5" fill="none" stroke="#D8D4D9"/>
   </g>
 </svg>
