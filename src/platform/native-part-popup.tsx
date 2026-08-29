@@ -371,8 +371,6 @@ function NativePartPopupSurface({
           height: panelHeight,
           padding: MENU_PADDING,
           borderRadius: RADII.compactPanel,
-          borderWidth: 1,
-          borderColor: request.palette.floatingEdge,
           backgroundColor: request.palette.floatingSurface,
           overflow: "hidden",
         }}
