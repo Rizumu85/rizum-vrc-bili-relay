@@ -1,4 +1,4 @@
-export const RELAY_PROTOCOL_VERSION = 18;
+export const RELAY_PROTOCOL_VERSION = 19;
 
 export type SourceKind = "video" | "live" | "media" | "short_link";
 export type RelayNextStep =
@@ -105,6 +105,7 @@ export interface FfmpegStatus {
 export type ThemePreference = "system" | "light" | "dark";
 export type StreamKeyStatus = "missing" | "available" | "unavailable";
 export type PlaybackEndBehavior = "pause" | "repeat" | "next";
+export type BilibiliAccessMode = "guest" | "account";
 
 export interface ProductSettings {
   host: string;
@@ -113,6 +114,7 @@ export interface ProductSettings {
   streamKeyStatus: StreamKeyStatus;
   danmaku: ProtocolDanmakuSettings;
   playbackEndBehavior: PlaybackEndBehavior;
+  bilibiliMode: BilibiliAccessMode;
 }
 
 export interface SettingsUpdate {
@@ -122,6 +124,7 @@ export interface SettingsUpdate {
   streamKey?: string;
   danmaku?: ProtocolDanmakuSettings;
   playbackEndBehavior?: PlaybackEndBehavior;
+  bilibiliMode?: BilibiliAccessMode;
 }
 
 export type BilibiliAuthStage =

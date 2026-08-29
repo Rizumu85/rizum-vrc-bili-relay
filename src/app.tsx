@@ -23,6 +23,7 @@ import {
   type ThemePreference,
 } from "./settings";
 import {
+  type BilibiliAccessMode,
   type BilibiliAuthStatus,
   type BilibiliLoginQr,
   type FfmpegStatus,
@@ -53,7 +54,6 @@ import {
 
 export type Scene = "idle" | "loading" | "error" | "ready-vod" | "settings" | "danmaku";
 type DanmakuVisibility = "shown" | "hidden";
-type LoginMode = "guest" | "account";
 
 export function sceneWindowHeight(
   scene: Scene,
@@ -3115,6 +3115,8 @@ function SettingsView({
   bilibiliAuth,
   bilibiliAuthError,
   bilibiliAuthBusy,
+  bilibiliMode,
+  onBilibiliModeChange,
   onBeginBilibiliLogin,
   onLogoutBilibili,
   storedSettings,
@@ -3131,6 +3133,8 @@ function SettingsView({
   bilibiliAuth: BilibiliAuthStatus | null;
   bilibiliAuthError: string | null;
   bilibiliAuthBusy: boolean;
+  bilibiliMode: BilibiliAccessMode;
+  onBilibiliModeChange: (value: BilibiliAccessMode) => void;
   onBeginBilibiliLogin: () => void;
   onLogoutBilibili: () => void;
   storedSettings: ProductSettings;
@@ -3157,7 +3161,9 @@ function SettingsView({
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const accountAuthenticated = bilibiliAuth?.stage === "authenticated";
   const accountPending = bilibiliAuth?.stage === "waiting" || bilibiliAuth?.stage === "scanned";
-  const loginMode: LoginMode = accountAuthenticated || accountPending ? "account" : "guest";
+  const loginMode: BilibiliAccessMode = accountAuthenticated || accountPending
+    ? bilibiliMode
+    : "guest";
   const streamKeyUnavailable = storedSettings.streamKeyStatus === "unavailable" && !keyDirty;
   const mediaCaption = mediaStateCaption(mediaState, mediaStatus);
   const mediaActionVisible =
@@ -3209,12 +3215,13 @@ function SettingsView({
     setSettings((current) => ({ ...current, theme }));
     setThemePreference(theme);
   };
-  const updateLogin = (next: LoginMode) => {
+  const updateLogin = (next: BilibiliAccessMode) => {
     if (next === "guest") {
       setAccountPopoverOpen(false);
-      if (bilibiliAuth && bilibiliAuth.stage !== "guest") onLogoutBilibili();
+      onBilibiliModeChange("guest");
       return;
     }
+    onBilibiliModeChange("account");
     if (accountAuthenticated) return;
     setAccountPopoverOpen(true);
     if (!accountPending) onBeginBilibiliLogin();
@@ -3805,6 +3812,15 @@ export function AppSurface({
     }
   };
 
+  const changeBilibiliAccessMode = (next: BilibiliAccessMode) => {
+    const previous = productSettings.bilibiliMode;
+    if (next === previous) return;
+    setProductSettings((current) => ({ ...current, bilibiliMode: next }));
+    void saveProductSettings({ bilibiliMode: next }).catch(() => {
+      setProductSettings((current) => ({ ...current, bilibiliMode: previous }));
+    });
+  };
+
   const refreshMediaState = async () => {
     setMediaStatus(null);
     setMediaError(null);
@@ -3852,6 +3868,7 @@ export function AppSurface({
     setBilibiliAuthError(null);
     try {
       applyBilibiliAuth(await getRelayWorker().logoutBilibili());
+      changeBilibiliAccessMode("guest");
     } catch (error) {
       setBilibiliAuthError(relayErrorMessage(error));
     } finally {
@@ -4515,6 +4532,8 @@ export function AppSurface({
             bilibiliAuth={bilibiliAuth}
             bilibiliAuthError={bilibiliAuthError}
             bilibiliAuthBusy={bilibiliAuthBusy}
+            bilibiliMode={productSettings.bilibiliMode}
+            onBilibiliModeChange={changeBilibiliAccessMode}
             onBeginBilibiliLogin={() => void beginBilibiliLogin()}
             onLogoutBilibili={() => void logoutBilibili()}
             storedSettings={productSettings}

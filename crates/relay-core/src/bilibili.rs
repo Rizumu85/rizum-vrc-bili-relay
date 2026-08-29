@@ -7,8 +7,9 @@ use url::Url;
 
 use crate::bilibili_auth::BilibiliAuthService;
 use crate::{
-    BilibiliAuthStatus, LiveStatus, MediaFormat, MediaInput, RelayError, ResolvedSource,
-    RouteDecision, RouteKind, RouteReason, SourceKind, SourceResolution, VideoPart, inspect_source,
+    BilibiliAccessMode, BilibiliAuthStatus, LiveStatus, MediaFormat, MediaInput, RelayError,
+    ResolvedSource, RouteDecision, RouteKind, RouteReason, SourceKind, SourceResolution, VideoPart,
+    inspect_source,
 };
 
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
@@ -17,10 +18,11 @@ const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Appl
 pub struct BilibiliClient {
     http: Client,
     auth: BilibiliAuthService,
+    access_mode: BilibiliAccessMode,
 }
 
 impl BilibiliClient {
-    pub fn new() -> Self {
+    pub fn new(access_mode: BilibiliAccessMode) -> Self {
         let http = Client::builder()
             .timeout(Duration::from_secs(20))
             .user_agent(BROWSER_USER_AGENT)
@@ -30,7 +32,12 @@ impl BilibiliClient {
         Self {
             auth: BilibiliAuthService::new(http.clone()),
             http,
+            access_mode,
         }
+    }
+
+    pub fn set_access_mode(&mut self, access_mode: BilibiliAccessMode) {
+        self.access_mode = access_mode;
     }
 
     pub fn auth_status(&self) -> BilibiliAuthStatus {
@@ -47,6 +54,12 @@ impl BilibiliClient {
 
     pub fn logout(&mut self) -> Result<BilibiliAuthStatus, RelayError> {
         self.auth.logout()
+    }
+
+    fn active_cookie(&self) -> Option<&str> {
+        (self.access_mode == BilibiliAccessMode::Account)
+            .then(|| self.auth.cookie())
+            .flatten()
     }
 
     pub fn resolve(
@@ -312,7 +325,7 @@ impl BilibiliClient {
                         cid,
                         duration_seconds: duration_seconds.max(1),
                         referer: referer.to_string(),
-                        cookie: self.auth.cookie().map(str::to_owned),
+                        cookie: self.active_cookie().map(str::to_owned),
                     },
                 )),
             },
@@ -376,7 +389,7 @@ impl BilibiliClient {
                     crate::live_danmaku::LiveDanmakuSource {
                         room_id: room_id.to_string(),
                         referer: referer.to_string(),
-                        cookie: self.auth.cookie().map(str::to_owned),
+                        cookie: self.active_cookie().map(str::to_owned),
                     },
                 )),
             },
@@ -390,7 +403,7 @@ impl BilibiliClient {
             .header(USER_AGENT, BROWSER_USER_AGENT)
             .header(ACCEPT, "application/json")
             .header(REFERER, referer);
-        if let Some(cookie) = self.auth.cookie() {
+        if let Some(cookie) = self.active_cookie() {
             request = request.header(COOKIE, cookie);
         }
         let response = request.send().map_err(|error| {

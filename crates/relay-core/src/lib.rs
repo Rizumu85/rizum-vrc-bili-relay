@@ -19,7 +19,7 @@ use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 use settings::SettingsStore;
 
-pub const PROTOCOL_VERSION: u32 = 18;
+pub const PROTOCOL_VERSION: u32 = 19;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -298,6 +298,7 @@ pub struct ProductSettings {
     pub stream_key_status: StreamKeyStatus,
     pub danmaku: DanmakuSettings,
     pub playback_end_behavior: PlaybackEndBehavior,
+    pub bilibili_mode: BilibiliAccessMode,
 }
 
 impl Default for ProductSettings {
@@ -309,6 +310,7 @@ impl Default for ProductSettings {
             stream_key_status: StreamKeyStatus::Missing,
             danmaku: default_danmaku_preferences(),
             playback_end_behavior: PlaybackEndBehavior::Pause,
+            bilibili_mode: BilibiliAccessMode::Account,
         }
     }
 }
@@ -331,6 +333,14 @@ pub enum PlaybackEndBehavior {
     Next,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BilibiliAccessMode {
+    Guest,
+    #[default]
+    Account,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsUpdate {
@@ -346,6 +356,8 @@ pub struct SettingsUpdate {
     pub danmaku: Option<DanmakuSettings>,
     #[serde(default)]
     pub playback_end_behavior: Option<PlaybackEndBehavior>,
+    #[serde(default)]
+    pub bilibili_mode: Option<BilibiliAccessMode>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
@@ -593,12 +605,17 @@ impl Default for RelayCore {
 
 impl RelayCore {
     pub fn new() -> Self {
+        let settings = SettingsStore::new();
+        let bilibili_mode = settings
+            .load()
+            .map(|settings| settings.bilibili_mode)
+            .unwrap_or_default();
         Self {
             ffmpeg: FfmpegManager::new(),
-            bilibili: BilibiliClient::new(),
+            bilibili: BilibiliClient::new(bilibili_mode),
             danmaku: DanmakuService::new(),
             sessions: MediaSessionStore::new(),
-            settings: SettingsStore::new(),
+            settings,
         }
     }
 
@@ -769,9 +786,11 @@ impl RelayCore {
             Command::RevealStreamKey => Ok(Reply::StreamKeyValue {
                 stream_key: self.settings.reveal_stream_key()?,
             }),
-            Command::SaveSettings { settings } => Ok(Reply::SettingsState {
-                settings: self.settings.save(settings)?,
-            }),
+            Command::SaveSettings { settings } => {
+                let settings = self.settings.save(settings)?;
+                self.bilibili.set_access_mode(settings.bilibili_mode);
+                Ok(Reply::SettingsState { settings })
+            }
             Command::Shutdown => {
                 self.ffmpeg.shutdown();
                 self.sessions.shutdown();
