@@ -35,7 +35,7 @@ export interface Palette {
   focus: string;
 }
 
-export const FONT_UI = "Noto Sans SC";
+export const FONT_UI = "MiSans VF";
 export const FONT_SERIF = "Noto Serif SC";
 export const FONT_MONO = "Cascadia Mono";
 

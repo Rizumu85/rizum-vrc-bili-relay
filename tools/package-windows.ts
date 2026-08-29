@@ -16,13 +16,21 @@ const archive = resolve(packageRoot, `${packageName}.zip`);
 run(["bun", "run", "build"]);
 rmSync(packageRoot, { recursive: true, force: true });
 mkdirSync(resolve(stage, "assets"), { recursive: true });
+mkdirSync(resolve(stage, "assets", "fonts"), { recursive: true });
 
 for (const source of [
   resolve(root, "dist", "VRC-Bili-Relay.exe"),
   resolve(root, "dist", "relay-worker.exe"),
   resolve(root, "LICENSE"),
+  resolve(root, "THIRD_PARTY_NOTICES.md"),
 ]) {
   copyFileSync(source, resolve(stage, basename(source)));
+}
+for (const fontAssetName of ["MiSansVF.ttf", "MiSans-License.pdf"]) {
+  copyFileSync(
+    resolve(root, "dist", "assets", "fonts", fontAssetName),
+    resolve(stage, "assets", "fonts", fontAssetName),
+  );
 }
 for (const assetName of ["danmaku-preview-backdrop.png", "VRCBiliRelay.ico"]) {
   copyFileSync(

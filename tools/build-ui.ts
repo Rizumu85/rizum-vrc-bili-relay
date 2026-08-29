@@ -19,6 +19,7 @@ run([
 ]);
 run(["bun", "run", "tools/generate-danmaku-backdrop.ts"]);
 mkdirSync(resolve(dist, "assets"), { recursive: true });
+mkdirSync(resolve(dist, "assets", "fonts"), { recursive: true });
 copyFileSync(
   resolve(root, "assets", "danmaku-preview-backdrop.png"),
   resolve(dist, "assets", "danmaku-preview-backdrop.png"),
@@ -26,6 +27,14 @@ copyFileSync(
 copyFileSync(
   resolve(root, "assets", "VRCBiliRelay.ico"),
   resolve(dist, "assets", "VRCBiliRelay.ico"),
+);
+copyFileSync(
+  resolve(root, "assets", "fonts", "MiSansVF.ttf"),
+  resolve(dist, "assets", "fonts", "MiSansVF.ttf"),
+);
+copyFileSync(
+  resolve(root, "assets", "fonts", "MiSans-License.pdf"),
+  resolve(dist, "assets", "fonts", "MiSans-License.pdf"),
 );
 run([
   "bun",

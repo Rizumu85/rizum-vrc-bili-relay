@@ -6,6 +6,7 @@ import {
   setProductWindowIconFromExecutable,
   setProductWindowPointerRenderer,
 } from "./platform/window";
+import { registerBundledUiFont } from "./platform/fonts";
 import type { ThemePreference } from "./settings";
 import type { Appearance } from "./theme";
 
@@ -24,6 +25,8 @@ const initialScene: Scene =
   || requestedScene === "danmaku"
     ? requestedScene
     : "idle";
+
+registerBundledUiFont();
 
 render(
   <AppSurface
