@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BilibiliAccessMode, DanmakuSettings, PlaybackEndBehavior, ProductSettings, RelayError,
-    RelayTarget, SettingsUpdate, StreamKeyStatus, ThemePreference, default_danmaku_preferences,
-    windows_secret,
+    BilibiliAccessMode, DanmakuSettings, PlaybackEndBehavior, PlaybackRate, ProductSettings,
+    RelayError, RelayTarget, SettingsUpdate, StreamKeyStatus, ThemePreference,
+    default_danmaku_preferences, windows_secret,
 };
 
 const SETTINGS_FILE: &str = "settings.json";
-const SETTINGS_VERSION: u32 = 4;
+const SETTINGS_VERSION: u32 = 5;
 const MAX_SETTINGS_BYTES: u64 = 128 * 1024;
 const MAX_PROTECTED_KEY_BYTES: usize = 32 * 1024;
 const LEGACY_PLAYBACK_PREFIX: &str = "https://stream.vrcdn.live/play/";
@@ -97,6 +97,7 @@ struct StoredSettings {
     theme: ThemePreference,
     danmaku: DanmakuSettings,
     playback_end_behavior: PlaybackEndBehavior,
+    playback_rate: PlaybackRate,
     bilibili_mode: BilibiliAccessMode,
 }
 
@@ -109,6 +110,7 @@ impl Default for StoredSettings {
             theme: ThemePreference::System,
             danmaku: default_danmaku_preferences(),
             playback_end_behavior: PlaybackEndBehavior::Pause,
+            playback_rate: PlaybackRate::Normal,
             bilibili_mode: BilibiliAccessMode::Account,
         }
     }
@@ -123,6 +125,7 @@ impl StoredSettings {
             stream_key_status: self.stream_key.status(),
             danmaku: self.danmaku.clone(),
             playback_end_behavior: self.playback_end_behavior,
+            playback_rate: self.playback_rate,
             bilibili_mode: self.bilibili_mode,
         }
     }
@@ -149,6 +152,7 @@ struct SettingsFile {
     theme: ThemePreference,
     danmaku: DanmakuSettings,
     playback_end_behavior: PlaybackEndBehavior,
+    playback_rate: PlaybackRate,
     bilibili_mode: BilibiliAccessMode,
 }
 
@@ -163,6 +167,7 @@ impl Default for SettingsFile {
             theme: ThemePreference::System,
             danmaku: default_danmaku_preferences(),
             playback_end_behavior: PlaybackEndBehavior::Pause,
+            playback_rate: PlaybackRate::Normal,
             bilibili_mode: BilibiliAccessMode::Account,
         }
     }
@@ -184,6 +189,7 @@ struct SettingsDocument<'a> {
     theme: ThemePreference,
     danmaku: &'a DanmakuSettings,
     playback_end_behavior: PlaybackEndBehavior,
+    playback_rate: PlaybackRate,
     bilibili_mode: BilibiliAccessMode,
 }
 
@@ -220,6 +226,7 @@ impl SettingsStore {
             playback_end_behavior: update
                 .playback_end_behavior
                 .unwrap_or(current.playback_end_behavior),
+            playback_rate: update.playback_rate.unwrap_or(current.playback_rate),
             bilibili_mode: update.bilibili_mode.unwrap_or(current.bilibili_mode),
         })?;
         self.write(&stored)?;
@@ -267,6 +274,7 @@ impl SettingsStore {
             theme: settings.theme,
             danmaku: &settings.danmaku,
             playback_end_behavior: settings.playback_end_behavior,
+            playback_rate: settings.playback_rate,
             bilibili_mode: settings.bilibili_mode,
         };
         let encoded = serde_json::to_vec_pretty(&document).map_err(|error| {
@@ -366,6 +374,7 @@ fn read_settings(path: &Path) -> Result<Option<LoadedSettings>, RelayError> {
         theme: file.theme,
         danmaku: file.danmaku,
         playback_end_behavior: file.playback_end_behavior,
+        playback_rate: file.playback_rate,
         bilibili_mode: file.bilibili_mode,
     })?;
     Ok(Some(LoadedSettings {

@@ -23,7 +23,7 @@ use windows_sys::Win32::System::JobObjects::{
 use crate::danmaku::{
     AUDIO_BITRATE_KBPS, DanmakuOverlay, OUTPUT_FPS, OUTPUT_HEIGHT, OUTPUT_WIDTH, VIDEO_BITRATE_KBPS,
 };
-use crate::{MediaInput, RelayError};
+use crate::{MediaInput, PlaybackRate, RelayError};
 
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
@@ -52,6 +52,7 @@ pub(crate) struct FfmpegProcess {
     completion_hold_started_at: Option<Instant>,
     awaiting_content_start: bool,
     is_live: bool,
+    playback_rate: PlaybackRate,
 }
 
 pub(crate) enum ProcessPoll {
@@ -92,6 +93,7 @@ impl FfmpegProcess {
         start_seconds: f64,
         start_paused: bool,
         _overlay: Option<&DanmakuOverlay>,
+        playback_rate: PlaybackRate,
     ) -> Result<Self, RelayError> {
         if start_paused && input.is_live {
             return Err(RelayError::new(
@@ -128,6 +130,7 @@ impl FfmpegProcess {
             completion_hold_started_at: None,
             awaiting_content_start: !start_paused,
             is_live: input.is_live,
+            playback_rate,
         })
     }
 
@@ -166,9 +169,12 @@ impl FfmpegProcess {
 
         if self.awaiting_content_start && publisher_stable {
             self.stop_producer_and_advance_timeline();
-            if let Err(error) =
-                self.spawn_content_producer(input, self.content_start_seconds, overlay)
-            {
+            if let Err(error) = self.spawn_content_producer(
+                input,
+                self.content_start_seconds,
+                overlay,
+                self.playback_rate,
+            ) {
                 let _ = self.spawn_hold_producer();
                 self.stop();
                 return Ok(ProcessPoll::Exited {
@@ -246,6 +252,7 @@ impl FfmpegProcess {
         input: &MediaInput,
         requested_start_seconds: f64,
         overlay: Option<&DanmakuOverlay>,
+        playback_rate: PlaybackRate,
     ) -> Result<(), RelayError> {
         if self.is_live {
             return Err(RelayError::new(
@@ -290,15 +297,26 @@ impl FfmpegProcess {
                     Ok(())
                 }
                 Err(error) => {
-                    let _ = self.spawn_content_producer(input, frozen_position, overlay);
+                    let _ = self.spawn_content_producer(
+                        input,
+                        frozen_position,
+                        overlay,
+                        self.playback_rate,
+                    );
                     Err(error)
                 }
             }
         } else {
             self.stop_producer_and_advance_timeline();
-            match self.spawn_content_producer(input, requested_start_seconds, overlay) {
+            match self.spawn_content_producer(
+                input,
+                requested_start_seconds,
+                overlay,
+                playback_rate,
+            ) {
                 Ok(()) => {
                     self.content_start_seconds = requested_start_seconds;
+                    self.playback_rate = playback_rate;
                     self.paused_position_seconds = None;
                     self.paused_at = None;
                     self.awaiting_content_start = false;
@@ -319,6 +337,7 @@ impl FfmpegProcess {
         input: &MediaInput,
         requested_start_seconds: f64,
         overlay: Option<&DanmakuOverlay>,
+        playback_rate: PlaybackRate,
     ) -> Result<(), RelayError> {
         self.clear_completion_hold();
         self.stop_producer_and_advance_timeline();
@@ -329,12 +348,13 @@ impl FfmpegProcess {
         self.is_live = input.is_live;
 
         let started = self
-            .spawn_content_producer(input, requested_start_seconds, overlay)
+            .spawn_content_producer(input, requested_start_seconds, overlay, playback_rate)
             .and_then(|_| self.wait_for_producer_output());
         match started {
             Ok(()) => {
                 self.paused_position_seconds = None;
                 self.paused_at = None;
+                self.playback_rate = playback_rate;
                 Ok(())
             }
             Err(error) => {
@@ -353,6 +373,7 @@ impl FfmpegProcess {
         &mut self,
         input: &MediaInput,
         requested_start_seconds: f64,
+        playback_rate: PlaybackRate,
     ) -> Result<(), RelayError> {
         if input.is_live {
             return Err(RelayError::new(
@@ -371,6 +392,7 @@ impl FfmpegProcess {
         self.paused_position_seconds = Some(requested_start_seconds);
         self.awaiting_content_start = false;
         self.is_live = false;
+        self.playback_rate = playback_rate;
         Ok(())
     }
 
@@ -399,16 +421,21 @@ impl FfmpegProcess {
         }
         Some(
             self.content_start_seconds
-                + self
-                    .producer
-                    .as_ref()
-                    .map(ManagedChild::output_seconds)
-                    .unwrap_or(0.0),
+                + self.playback_rate.factor()
+                    * self
+                        .producer
+                        .as_ref()
+                        .map(ManagedChild::output_seconds)
+                        .unwrap_or(0.0),
         )
     }
 
     pub fn is_paused(&self) -> bool {
         self.paused_at.is_some()
+    }
+
+    pub fn playback_rate(&self) -> PlaybackRate {
+        self.playback_rate
     }
 
     fn stop_producer_and_advance_timeline(&mut self) {
@@ -423,6 +450,7 @@ impl FfmpegProcess {
         input: &MediaInput,
         start_seconds: f64,
         overlay: Option<&DanmakuOverlay>,
+        playback_rate: PlaybackRate,
     ) -> Result<(), RelayError> {
         let producer = spawn_content_producer(
             &self.executable,
@@ -431,8 +459,10 @@ impl FfmpegProcess {
             start_seconds,
             self.timeline_offset_seconds,
             overlay,
+            playback_rate,
         )?;
         self.content_start_seconds = start_seconds;
+        self.playback_rate = playback_rate;
         self.producer = Some(producer);
         Ok(())
     }
@@ -664,16 +694,23 @@ fn spawn_content_producer(
     start_seconds: f64,
     timeline_offset_seconds: f64,
     overlay: Option<&DanmakuOverlay>,
+    playback_rate: PlaybackRate,
 ) -> Result<ManagedChild, RelayError> {
     let mut command = base_command(executable);
-    add_input(&mut command, input, &input.video_url, start_seconds);
+    add_input(
+        &mut command,
+        input,
+        &input.video_url,
+        start_seconds,
+        playback_rate,
+    );
     if let Some(audio_url) = input.audio_url.as_deref() {
-        add_input(&mut command, input, audio_url, start_seconds);
+        add_input(&mut command, input, audio_url, start_seconds, playback_rate);
         command.args(["-map", "0:v:0", "-map", "1:a:0"]);
     } else {
         command.args(["-map", "0:v:0", "-map", "0:a:0?"]);
     }
-    add_standard_transcode(&mut command, overlay);
+    add_standard_transcode(&mut command, overlay, playback_rate);
     add_mpegts_output(&mut command, udp_output, timeline_offset_seconds);
     let mut redactions = vec![input.video_url.clone()];
     if let Some(audio_url) = input.audio_url.as_ref() {
@@ -735,12 +772,15 @@ fn base_command(executable: &str) -> Command {
     command
 }
 
-fn add_standard_transcode(command: &mut Command, overlay: Option<&DanmakuOverlay>) {
+fn add_standard_transcode(
+    command: &mut Command,
+    overlay: Option<&DanmakuOverlay>,
+    playback_rate: PlaybackRate,
+) {
     let mut filter = format!(
         "setpts=PTS-STARTPTS,\
          scale=w={OUTPUT_WIDTH}:h={OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,\
-         pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2,\
-         fps={OUTPUT_FPS}"
+         pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2"
     );
     if let Some(path) = overlay.and_then(DanmakuOverlay::ass_path) {
         filter.push_str(&format!(",ass=filename='{}'", escape_filter_path(path)));
@@ -749,10 +789,26 @@ fn add_standard_transcode(command: &mut Command, overlay: Option<&DanmakuOverlay
         filter.push(',');
         filter.push_str(live_filter);
     }
-    add_transcode_with_video_filter(command, &filter);
+    filter.push_str(&format!(
+        ",setpts=PTS/{:.3},fps={OUTPUT_FPS}",
+        playback_rate.factor()
+    ));
+    let audio_filter = format!(
+        "atempo={:.3},asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0",
+        playback_rate.factor()
+    );
+    add_transcode_with_filters(command, &filter, &audio_filter);
 }
 
 fn add_transcode_with_video_filter(command: &mut Command, video_filter: &str) {
+    add_transcode_with_filters(
+        command,
+        video_filter,
+        "asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0",
+    );
+}
+
+fn add_transcode_with_filters(command: &mut Command, video_filter: &str, audio_filter: &str) {
     let video_bitrate = format!("{VIDEO_BITRATE_KBPS}k");
     let video_buffer = format!("{}k", VIDEO_BITRATE_KBPS * 2);
     let keyframe_interval = OUTPUT_FPS.to_string();
@@ -788,7 +844,7 @@ fn add_transcode_with_video_filter(command: &mut Command, video_filter: &str) {
         "-ac",
         "2",
         "-af",
-        "asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0",
+        audio_filter,
     ]);
 }
 
@@ -903,7 +959,13 @@ impl Drop for FfmpegJob {
     }
 }
 
-fn add_input(command: &mut Command, input: &MediaInput, url: &str, start_seconds: f64) {
+fn add_input(
+    command: &mut Command,
+    input: &MediaInput,
+    url: &str,
+    start_seconds: f64,
+    playback_rate: PlaybackRate,
+) {
     command.args([
         "-rw_timeout",
         "15000000",
@@ -918,7 +980,7 @@ fn add_input(command: &mut Command, input: &MediaInput, url: &str, start_seconds
         command.args(["-reconnect_at_eof", "1"]);
     }
     if !input.is_live {
-        command.arg("-re");
+        command.args(["-readrate", &format!("{:.3}", playback_rate.factor())]);
         if start_seconds > 0.0 {
             command.args(["-ss", &format!("{start_seconds:.3}")]);
         }

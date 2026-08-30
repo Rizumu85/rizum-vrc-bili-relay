@@ -1,4 +1,4 @@
-export const RELAY_PROTOCOL_VERSION = 20;
+export const RELAY_PROTOCOL_VERSION = 21;
 
 export type SourceKind = "video" | "live" | "media" | "short_link";
 export type RelayNextStep =
@@ -79,6 +79,7 @@ export interface ProtocolDanmakuSettings {
 
 export interface PlaybackOptions {
   danmaku: ProtocolDanmakuSettings;
+  playback_rate: PlaybackRate;
 }
 
 export interface RelayStatus {
@@ -121,6 +122,7 @@ export interface FfmpegStatus {
 export type ThemePreference = "system" | "light" | "dark";
 export type StreamKeyStatus = "missing" | "available" | "unavailable";
 export type PlaybackEndBehavior = "pause" | "repeat" | "next";
+export type PlaybackRate = "0.5" | "0.75" | "1" | "1.25" | "1.5" | "2";
 export type BilibiliAccessMode = "guest" | "account";
 
 export interface ProductSettings {
@@ -130,6 +132,7 @@ export interface ProductSettings {
   streamKeyStatus: StreamKeyStatus;
   danmaku: ProtocolDanmakuSettings;
   playbackEndBehavior: PlaybackEndBehavior;
+  playbackRate: PlaybackRate;
   bilibiliMode: BilibiliAccessMode;
 }
 
@@ -140,6 +143,7 @@ export interface SettingsUpdate {
   streamKey?: string;
   danmaku?: ProtocolDanmakuSettings;
   playbackEndBehavior?: PlaybackEndBehavior;
+  playbackRate?: PlaybackRate;
   bilibiliMode?: BilibiliAccessMode;
 }
 

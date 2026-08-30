@@ -30,6 +30,7 @@ import {
   type HealthReply,
   type PlaybackEndBehavior,
   type PlaybackOptions,
+  type PlaybackRate,
   type ProtocolDanmakuSettings,
   type RelayStatus,
   type SourceResolution,
@@ -80,7 +81,7 @@ type DanmakuFont = "microsoft-yahei" | "noto-sans-sc" | "source-han-sans" | "sim
 type DanmakuWeight = "regular" | "bold";
 type DanmakuOutline = "heavy" | "outline" | "shadow";
 type DanmakuFilter = "rolling" | "fixed" | "colored" | "advanced";
-type PlaybackUpdate = "part" | "seek" | "danmaku" | "completion" | null;
+type PlaybackUpdate = "part" | "seek" | "rate" | "danmaku" | "completion" | null;
 type MediaComponentState =
   | "checking"
   | "external"
@@ -150,6 +151,7 @@ const PLAYBACK_END_OPTIONS: ReadonlyArray<{
   { value: "next", label: "连续播放", compactLabel: "播完：继续", icon: "skipNext" },
   { value: "repeat", label: "单集循环", compactLabel: "播完：循环", icon: "repeatOne" },
 ];
+const PLAYBACK_RATES: ReadonlyArray<PlaybackRate> = ["1", "1.25", "1.5", "2", "0.5", "0.75"];
 const TRACK_WIDTH = 416;
 const THEME_OPTIONS = [
   { value: "system", label: "跟随系统" },
@@ -288,6 +290,7 @@ function relaySettingsReady(settings: ProductSettings): boolean {
 function configuredPlaybackOptions(
   visibility: DanmakuVisibility,
   settings: DanmakuSettings,
+  playbackRate: PlaybackRate,
 ): PlaybackOptions {
   const font = {
     "microsoft-yahei": "microsoft_yahei",
@@ -307,6 +310,7 @@ function configuredPlaybackOptions(
       outline: settings.outline,
       hidden_types: settings.hiddenTypes,
     },
+    playback_rate: playbackRate,
   };
 }
 
@@ -339,10 +343,12 @@ function playbackPreferenceSignature(
   visibility: DanmakuVisibility,
   settings: DanmakuSettings,
   endBehavior: PlaybackEndBehavior,
+  playbackRate: PlaybackRate,
 ): string {
   return JSON.stringify({
-    danmaku: configuredPlaybackOptions(visibility, settings).danmaku,
+    danmaku: configuredPlaybackOptions(visibility, settings, playbackRate).danmaku,
     playbackEndBehavior: endBehavior,
+    playbackRate,
   });
 }
 
@@ -1208,6 +1214,66 @@ function PlaybackEndSelect({
   );
 }
 
+function PlaybackRateButton({
+  value,
+  onCycle,
+  disabled,
+  palette,
+}: {
+  value: PlaybackRate;
+  onCycle: () => void;
+  disabled: boolean;
+  palette: Palette;
+}) {
+  const activate = () => {
+    if (!disabled) onCycle();
+  };
+
+  return (
+    <div
+      testId="playback-rate"
+      tabIndex={disabled ? -1 : 0}
+      onClick={activate}
+      onKeyDown={(event) => {
+        if (event.key === "enter" || event.key === "space") activate();
+      }}
+      style={{
+        width: 44,
+        height: 26,
+        marginRight: 6,
+        flexShrink: 0,
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: 7,
+        borderWidth: 1,
+        borderColor: palette.panelEdge,
+        backgroundColor: palette.buttonSurface,
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.48 : 1,
+        userSelect: "none",
+        hover: disabled ? undefined : { backgroundColor: palette.buttonHover, borderColor: palette.surfaceLine },
+        active: disabled ? undefined : { backgroundColor: palette.surfaceActive },
+      }}
+    >
+      <text
+        style={{
+          width: 44,
+          color: palette.inkMuted,
+          fontFamily: FONT_UI,
+          fontSize: 11.5,
+          fontWeight: 600,
+          whiteSpace: "nowrap",
+          textAlign: "center",
+        }}
+      >
+        {`${value}×`}
+      </text>
+    </div>
+  );
+}
+
 function SeekControl({
   duration,
   position,
@@ -1219,6 +1285,8 @@ function SeekControl({
   playing,
   transportBusy,
   onTogglePlayback,
+  playbackRate,
+  onPlaybackRateCycle,
   endBehavior,
   onEndBehaviorChange,
   palette,
@@ -1233,6 +1301,8 @@ function SeekControl({
   playing: boolean;
   transportBusy: boolean;
   onTogglePlayback: () => void;
+  playbackRate: PlaybackRate;
+  onPlaybackRateCycle: () => void;
   endBehavior: PlaybackEndBehavior;
   onEndBehaviorChange: (value: PlaybackEndBehavior) => void;
   palette: Palette;
@@ -1415,12 +1485,20 @@ function SeekControl({
         </text>
         <div style={{ flexGrow: 1 }} />
         {showTransport ? (
-          <PlaybackEndSelect
-            value={endBehavior}
-            onChange={onEndBehaviorChange}
-            disabled={transportBusy}
-            palette={palette}
-          />
+          <>
+            <PlaybackRateButton
+              value={playbackRate}
+              onCycle={onPlaybackRateCycle}
+              disabled={transportBusy}
+              palette={palette}
+            />
+            <PlaybackEndSelect
+              value={endBehavior}
+              onChange={onEndBehaviorChange}
+              disabled={transportBusy}
+              palette={palette}
+            />
+          </>
         ) : null}
         <text style={{ color: palette.caption, fontFamily: FONT_MONO, fontSize: 11.5 }}>
           {formatPlaybackTime(duration)}
@@ -1765,6 +1843,8 @@ function Result({
   playbackPaused,
   playbackToggling,
   onTogglePlayback,
+  playbackRate,
+  onPlaybackRateCycle,
   playbackEndBehavior,
   onPlaybackEndBehaviorChange,
   danmaku,
@@ -1791,6 +1871,8 @@ function Result({
   playbackPaused: boolean;
   playbackToggling: boolean;
   onTogglePlayback: () => void;
+  playbackRate: PlaybackRate;
+  onPlaybackRateCycle: () => void;
   playbackEndBehavior: PlaybackEndBehavior;
   onPlaybackEndBehaviorChange: (value: PlaybackEndBehavior) => void;
   danmaku: DanmakuVisibility;
@@ -1979,6 +2061,8 @@ function Result({
                 || relayStatus?.stage === "starting"
               }
               onTogglePlayback={onTogglePlayback}
+              playbackRate={playbackRate}
+              onPlaybackRateCycle={onPlaybackRateCycle}
               endBehavior={playbackEndBehavior}
               onEndBehaviorChange={onPlaybackEndBehaviorChange}
               palette={palette}
@@ -2118,6 +2202,7 @@ function resultStatusLabel(
   if (source?.routing.kind === "direct" && source.playback_url) return "· 可直接播放 · 软件可关闭";
   if (playbackUpdating === "part") return "· 正在切换分 P";
   if (playbackUpdating === "seek") return "· 正在跳转";
+  if (playbackUpdating === "rate") return "· 正在切换倍速";
   if (playbackUpdating === "danmaku") return "· 正在更新弹幕";
   if (playbackUpdating === "completion") return "· 正在继续播放";
   if (playbackMessage) return `· ${playbackMessage}`;
@@ -3677,6 +3762,7 @@ export function AppSurface({
   const [playbackPaused, setPlaybackPaused] = useState(false);
   const [playbackToggling, setPlaybackToggling] = useState(false);
   const [playbackEndBehavior, setPlaybackEndBehavior] = useState<PlaybackEndBehavior>("pause");
+  const [playbackRate, setPlaybackRate] = useState<PlaybackRate>("1");
   const [seekInteractionActive, setSeekInteractionActive] = useState(false);
   const [danmaku, setDanmaku] = useState<DanmakuVisibility>("shown");
   const [danmakuSettings, setDanmakuSettings] = useState<DanmakuSettings>(DEFAULT_DANMAKU_SETTINGS);
@@ -3705,6 +3791,7 @@ export function AppSurface({
   const preferenceSaveQueue = useRef<Promise<void>>(Promise.resolve());
   const danmakuRef = useRef<DanmakuVisibility>(danmaku);
   const danmakuSettingsRef = useRef<DanmakuSettings>(danmakuSettings);
+  const playbackRateRef = useRef<PlaybackRate>(playbackRate);
   const resolvedAppearance: Appearance =
     themePreference === "system" ? initialAppearance : themePreference;
   const palette = PALETTES[resolvedAppearance];
@@ -3775,9 +3862,16 @@ export function AppSurface({
     setPlaybackEndBehavior(next);
   };
 
+  const setPlaybackRatePreference = (next: PlaybackRate) => {
+    preferencesTouched.current = true;
+    playbackRateRef.current = next;
+    setPlaybackRate(next);
+  };
+
   const currentPlaybackOptions = () => configuredPlaybackOptions(
     danmakuRef.current,
     danmakuSettingsRef.current,
+    playbackRateRef.current,
   );
 
   const applyProductSettings = (next: ProductSettings): ProductSettings => {
@@ -3793,6 +3887,7 @@ export function AppSurface({
         decoded.visibility,
         decoded.settings,
         next.playbackEndBehavior,
+        next.playbackRate,
       );
       if (!preferencesTouched.current) {
         danmakuRef.current = decoded.visibility;
@@ -3800,6 +3895,8 @@ export function AppSurface({
         setDanmaku(decoded.visibility);
         setDanmakuSettings(decoded.settings);
         setPlaybackEndBehavior(next.playbackEndBehavior);
+        playbackRateRef.current = next.playbackRate;
+        setPlaybackRate(next.playbackRate);
       }
       preferencesHydrated.current = true;
       setPreferencesReady(true);
@@ -3908,11 +4005,12 @@ export function AppSurface({
 
   useEffect(() => {
     if (!preferencesReady) return;
-    const options = configuredPlaybackOptions(danmaku, danmakuSettings);
+    const options = configuredPlaybackOptions(danmaku, danmakuSettings, playbackRate);
     const signature = playbackPreferenceSignature(
       danmaku,
       danmakuSettings,
       playbackEndBehavior,
+      playbackRate,
     );
     if (signature === persistedPreferenceSignature.current) return;
     if (preferenceSaveTimer.current) clearTimeout(preferenceSaveTimer.current);
@@ -3923,6 +4021,7 @@ export function AppSurface({
           const saved = await getRelayWorker().saveSettings({
             danmaku: options.danmaku,
             playbackEndBehavior,
+            playbackRate,
           });
           persistedPreferenceSignature.current = signature;
           setSettingsError(null);
@@ -3942,7 +4041,7 @@ export function AppSurface({
         preferenceSaveTimer.current = null;
       }
     };
-  }, [preferencesReady, danmaku, danmakuSettings, playbackEndBehavior]);
+  }, [preferencesReady, danmaku, danmakuSettings, playbackEndBehavior, playbackRate]);
 
   useEffect(() => {
     const startup = setTimeout(() => {
@@ -4139,7 +4238,7 @@ export function AppSurface({
     const previousResolution = sourceResolution;
     const canRetarget = previousResolution?.kind === "video"
       || (previousResolution?.kind === "live" && update === "danmaku");
-    if (!previousResolution || !canRetarget || playbackUpdating !== null) return;
+    if (!previousResolution || !canRetarget || playbackUpdating !== null) return false;
 
     const isLiveDanmakuUpdate = previousResolution.kind === "live";
     const effectivePart = isLiveDanmakuUpdate ? 1 : requestedPart;
@@ -4168,26 +4267,26 @@ export function AppSurface({
       const runtimeSettings = settingsReady
         ? productSettings
         : await refreshProductSettings();
-      if (playbackEpoch.current !== epoch) return;
+      if (playbackEpoch.current !== epoch) return false;
       if (!relaySettingsReady(runtimeSettings)) {
         if (previousWasActive) {
           setPart(previousPart);
           setPlaybackPosition(previousPosition);
           setPlaybackMessage("需要先完成 VRCDN 设置");
-          return;
+          return false;
         }
         const resolution = await getRelayWorker().resolveSource(
           effectiveSource,
           effectivePart,
         );
-        if (playbackEpoch.current !== epoch) return;
+        if (playbackEpoch.current !== epoch) return false;
         setSourceResolution(resolution);
         setSource(resolution.canonical_url);
         setPart(String(resolution.selected_part ?? effectivePart));
         setCollectionItem(String(resolution.collection?.selected_item ?? 1));
         setRelayStatus(null);
         setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
-        return;
+        return false;
       }
 
       const playback = await getRelayWorker().retargetRelay(
@@ -4200,7 +4299,7 @@ export function AppSurface({
       );
       if (playbackEpoch.current !== epoch) {
         await getRelayWorker().stopRelay(playback.relay.session_id).catch(() => undefined);
-        return;
+        return false;
       }
 
       setSourceResolution(playback.resolution);
@@ -4215,8 +4314,9 @@ export function AppSurface({
       appliedPlaybackOptions.current = playback.relay.paused
         ? null
         : playbackOptionsSignature(options);
+      return true;
     } catch (error) {
-      if (playbackEpoch.current !== epoch) return;
+      if (playbackEpoch.current !== epoch) return false;
       setPart(previousPart);
       setCollectionItem(previousCollectionItem);
       setPlaybackPosition(previousPosition);
@@ -4230,6 +4330,8 @@ export function AppSurface({
             ? "切换失败 · 原内容仍在播放"
             : update === "seek"
               ? "跳转失败 · 原内容仍在播放"
+              : update === "rate"
+                ? "倍速切换失败 · 原内容仍在播放"
               : update === "danmaku"
                 ? "弹幕更新失败 · 原内容仍在播放"
                 : "播完处理失败 · 结束画面仍会保持",
@@ -4242,11 +4344,14 @@ export function AppSurface({
             ? "切换失败 · 请重试"
             : update === "seek"
               ? "跳转失败 · 请重试"
+              : update === "rate"
+                ? "倍速切换失败 · 请重试"
               : update === "danmaku"
                 ? "弹幕更新失败 · 请重试"
                 : "播完处理失败 · 请重试",
         );
       }
+      return false;
     } finally {
       if (playbackEpoch.current === epoch) setPlaybackUpdating(null);
     }
@@ -4374,6 +4479,37 @@ export function AppSurface({
     void retargetPlayback(requestedPart, position, "seek");
   };
 
+  const cyclePlaybackRate = () => {
+    const currentIndex = PLAYBACK_RATES.indexOf(playbackRateRef.current);
+    const next = PLAYBACK_RATES[(currentIndex + 1) % PLAYBACK_RATES.length] ?? "1";
+    const previous = playbackRateRef.current;
+    setPlaybackRatePreference(next);
+
+    if (
+      sourceResolution === null
+      || sourceResolution.kind !== "video"
+      || sourceResolution.routing.kind === "direct"
+      || playbackPaused
+      || relayStatus?.stage !== "running"
+    ) return;
+
+    const requestedPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
+    const options = configuredPlaybackOptions(
+      danmakuRef.current,
+      danmakuSettingsRef.current,
+      next,
+    );
+    void retargetPlayback(
+      requestedPart,
+      playbackPosition,
+      "rate",
+      options,
+      false,
+    ).then((changed) => {
+      if (!changed) setPlaybackRatePreference(previous);
+    });
+  };
+
   const changeDanmakuVisibility = (next: DanmakuVisibility) => {
     if (next === danmaku || playbackUpdating !== null) return;
     setDanmakuPreference(next);
@@ -4388,7 +4524,7 @@ export function AppSurface({
       requestedPart,
       isLive ? 0 : playbackPosition,
       "danmaku",
-      configuredPlaybackOptions(next, danmakuSettingsRef.current),
+      configuredPlaybackOptions(next, danmakuSettingsRef.current, playbackRateRef.current),
     );
   };
 
@@ -4699,6 +4835,8 @@ export function AppSurface({
                 playbackPaused={playbackPaused}
                 playbackToggling={playbackToggling}
                 onTogglePlayback={() => void togglePlayback()}
+                playbackRate={playbackRate}
+                onPlaybackRateCycle={cyclePlaybackRate}
                 playbackEndBehavior={playbackEndBehavior}
                 onPlaybackEndBehaviorChange={setPlaybackEndBehaviorPreference}
                 danmaku={danmaku}

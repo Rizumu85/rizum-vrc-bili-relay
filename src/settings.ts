@@ -24,5 +24,6 @@ export const DEFAULT_SETTINGS: ProductSettings = {
     hidden_types: ["advanced"],
   },
   playbackEndBehavior: "pause",
+  playbackRate: "1",
   bilibiliMode: "account",
 };

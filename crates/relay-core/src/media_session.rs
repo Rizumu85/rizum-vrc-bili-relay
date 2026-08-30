@@ -6,7 +6,8 @@ use url::Url;
 use crate::danmaku::{DanmakuOverlay, DanmakuSource};
 use crate::ffmpeg::{FfmpegProcess, ProcessPoll};
 use crate::{
-    MediaInput, RelayError, RelayStage, RelayStatus, RelayTarget, ResolvedSource, SourceResolution,
+    MediaInput, PlaybackRate, RelayError, RelayStage, RelayStatus, RelayTarget, ResolvedSource,
+    SourceResolution,
 };
 
 const SESSION_TTL: Duration = Duration::from_secs(10 * 60);
@@ -81,6 +82,7 @@ impl MediaSessionStore {
         ffmpeg_path: Option<&str>,
         overlay: Option<DanmakuOverlay>,
         start_paused: bool,
+        playback_rate: PlaybackRate,
     ) -> Result<RelayStatus, RelayError> {
         self.cleanup_expired();
         let ffmpeg_path = ffmpeg_path.ok_or_else(|| {
@@ -98,6 +100,11 @@ impl MediaSessionStore {
             session.duration_seconds,
             session.input.is_live,
         )?;
+        let playback_rate = if session.input.is_live {
+            PlaybackRate::Normal
+        } else {
+            playback_rate
+        };
         // A single configured ingest target cannot safely accept two local
         // publishers. Enforce that invariant in the core so a stale UI session
         // cannot leave the previous FFmpeg process competing with the new one.
@@ -123,6 +130,7 @@ impl MediaSessionStore {
             start_seconds,
             start_paused,
             overlay.as_ref(),
+            playback_rate,
         )
         .inspect_err(|error| {
             session.stage = RelayStage::Failed;
@@ -146,6 +154,7 @@ impl MediaSessionStore {
         target: RelayTarget,
         overlay: Option<DanmakuOverlay>,
         remain_paused: bool,
+        playback_rate: PlaybackRate,
     ) -> Result<RelayStatus, RelayError> {
         self.cleanup_expired();
         validate_relay_target(&target)?;
@@ -180,6 +189,11 @@ impl MediaSessionStore {
                 next.duration_seconds,
                 next.input.is_live,
             )?;
+            let playback_rate = if next.input.is_live {
+                PlaybackRate::Normal
+            } else {
+                playback_rate
+            };
             let mut process = current.process.take().ok_or_else(|| {
                 RelayError::new(
                     "relay_not_running",
@@ -192,6 +206,7 @@ impl MediaSessionStore {
                 .map(|position| clamp_position(position, current.duration_seconds))
                 .unwrap_or(0.0);
             let previous_paused = process.is_paused();
+            let previous_playback_rate = process.playback_rate();
             let previous_overlay = current.overlay.take();
 
             let switch_result = if remain_paused {
@@ -203,21 +218,29 @@ impl MediaSessionStore {
                         &current.input,
                         previous_position,
                         previous_overlay.as_ref(),
+                        previous_playback_rate,
                     )
                 };
-                pause_result.and_then(|_| process.retarget_paused(&next.input, start_seconds))
+                pause_result.and_then(|_| {
+                    process.retarget_paused(&next.input, start_seconds, playback_rate)
+                })
             } else {
-                process.switch_content(&next.input, start_seconds, overlay.as_ref())
+                process.switch_content(&next.input, start_seconds, overlay.as_ref(), playback_rate)
             };
 
             if let Err(mut error) = switch_result {
                 let restored = if previous_paused {
-                    process.retarget_paused(&current.input, previous_position)
+                    process.retarget_paused(
+                        &current.input,
+                        previous_position,
+                        previous_playback_rate,
+                    )
                 } else {
                     process.switch_content(
                         &current.input,
                         previous_position,
                         previous_overlay.as_ref(),
+                        previous_playback_rate,
                     )
                 }
                 .is_ok();
@@ -303,6 +326,7 @@ impl MediaSessionStore {
         paused: bool,
         requested_start: f64,
         overlay: Option<DanmakuOverlay>,
+        playback_rate: PlaybackRate,
     ) -> Result<RelayStatus, RelayError> {
         self.cleanup_expired();
         let session = self.sessions.get_mut(session_id).ok_or_else(|| {
@@ -331,6 +355,7 @@ impl MediaSessionStore {
             } else {
                 overlay.as_ref()
             },
+            playback_rate,
         )?;
         if let Some(position) = process.position_seconds() {
             session.position_seconds = Some(clamp_position(position, session.duration_seconds));

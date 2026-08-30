@@ -19,7 +19,7 @@ use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 use settings::SettingsStore;
 
-pub const PROTOCOL_VERSION: u32 = 20;
+pub const PROTOCOL_VERSION: u32 = 21;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -264,6 +264,37 @@ pub(crate) struct RelayTarget {
 #[serde(default)]
 pub struct PlaybackOptions {
     pub danmaku: DanmakuSettings,
+    pub playback_rate: PlaybackRate,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Serialize)]
+pub enum PlaybackRate {
+    #[serde(rename = "0.5")]
+    Half,
+    #[serde(rename = "0.75")]
+    ThreeQuarters,
+    #[default]
+    #[serde(rename = "1")]
+    Normal,
+    #[serde(rename = "1.25")]
+    FiveQuarters,
+    #[serde(rename = "1.5")]
+    ThreeHalves,
+    #[serde(rename = "2")]
+    Double,
+}
+
+impl PlaybackRate {
+    pub(crate) fn factor(self) -> f64 {
+        match self {
+            Self::Half => 0.5,
+            Self::ThreeQuarters => 0.75,
+            Self::Normal => 1.0,
+            Self::FiveQuarters => 1.25,
+            Self::ThreeHalves => 1.5,
+            Self::Double => 2.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -317,6 +348,7 @@ pub struct ProductSettings {
     pub stream_key_status: StreamKeyStatus,
     pub danmaku: DanmakuSettings,
     pub playback_end_behavior: PlaybackEndBehavior,
+    pub playback_rate: PlaybackRate,
     pub bilibili_mode: BilibiliAccessMode,
 }
 
@@ -329,6 +361,7 @@ impl Default for ProductSettings {
             stream_key_status: StreamKeyStatus::Missing,
             danmaku: default_danmaku_preferences(),
             playback_end_behavior: PlaybackEndBehavior::Pause,
+            playback_rate: PlaybackRate::Normal,
             bilibili_mode: BilibiliAccessMode::Account,
         }
     }
@@ -375,6 +408,8 @@ pub struct SettingsUpdate {
     pub danmaku: Option<DanmakuSettings>,
     #[serde(default)]
     pub playback_end_behavior: Option<PlaybackEndBehavior>,
+    #[serde(default)]
+    pub playback_rate: Option<PlaybackRate>,
     #[serde(default)]
     pub bilibili_mode: Option<BilibiliAccessMode>,
 }
@@ -700,6 +735,7 @@ impl RelayCore {
                         Some(&ffmpeg_path),
                         overlay,
                         paused,
+                        options.playback_rate,
                     )?,
                 })
             }
@@ -748,6 +784,7 @@ impl RelayCore {
                         target,
                         next_overlay,
                         paused,
+                        options.playback_rate,
                     )?
                 } else {
                     self.sessions.start(
@@ -756,6 +793,7 @@ impl RelayCore {
                         Some(&ffmpeg_path),
                         next_overlay,
                         paused,
+                        options.playback_rate,
                     )?
                 };
                 Ok(Reply::PlaybackState { resolution, relay })
@@ -780,6 +818,7 @@ impl RelayCore {
                         paused,
                         normalized_start,
                         overlay,
+                        options.playback_rate,
                     )?,
                 })
             }
