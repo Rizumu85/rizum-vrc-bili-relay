@@ -914,13 +914,7 @@ pub(crate) fn normalize_source_input(source: &str) -> Result<String, RelayError>
         return Err(RelayError::new("empty_source", "Media source is empty"));
     }
 
-    let candidate = if Url::parse(source).is_ok() {
-        source.to_string()
-    } else if let Some(url) = extract_http_url(source) {
-        url
-    } else {
-        source.to_string()
-    };
+    let candidate = preferred_http_url(source).unwrap_or_else(|| source.to_string());
 
     Ok(normalize_bilibili_list_url(&candidate).unwrap_or(candidate))
 }
@@ -995,28 +989,74 @@ fn inspect_normalized_source(source: &str) -> Result<SourceInspection, RelayErro
     ))
 }
 
-fn extract_http_url(source: &str) -> Option<String> {
-    let lowercase = source.to_ascii_lowercase();
-    let start = [lowercase.find("https://"), lowercase.find("http://")]
-        .into_iter()
-        .flatten()
-        .min()?;
-    let tail = &source[start..];
-    let end = tail
-        .char_indices()
-        .find_map(|(index, character)| {
-            (character.is_whitespace()
-                || matches!(
-                    character,
-                    ']' | '}' | '>' | '】' | '）' | '。' | '，' | '；' | '！'
-                ))
-            .then_some(index)
-        })
-        .unwrap_or(tail.len());
-    let candidate = tail[..end]
-        .trim_end_matches([')', ',', ';', '!', '"', '\''])
-        .replace("\\&", "&");
-    (!candidate.is_empty()).then_some(candidate)
+fn preferred_http_url(source: &str) -> Option<String> {
+    let candidates = extract_http_urls(source);
+    candidates
+        .iter()
+        .rev()
+        .find(|candidate| is_bilibili_page_candidate(candidate))
+        .or_else(|| candidates.last())
+        .cloned()
+}
+
+fn extract_http_urls(source: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let mut cursor = 0;
+    while cursor < source.len() {
+        let remainder = &source[cursor..];
+        let lowercase = remainder.to_ascii_lowercase();
+        let Some(relative_start) = [lowercase.find("https://"), lowercase.find("http://")]
+            .into_iter()
+            .flatten()
+            .min()
+        else {
+            break;
+        };
+        let start = cursor + relative_start;
+        let tail = &source[start..];
+        let end = tail
+            .char_indices()
+            .find_map(|(index, character)| {
+                (character.is_whitespace()
+                    || matches!(
+                        character,
+                        '[' | ']'
+                            | '{'
+                            | '}'
+                            | '<'
+                            | '>'
+                            | '【'
+                            | '】'
+                            | '（'
+                            | '）'
+                            | '。'
+                            | '，'
+                            | '；'
+                            | '！'
+                    ))
+                .then_some(index)
+            })
+            .unwrap_or(tail.len());
+        let candidate = tail[..end]
+            .trim_end_matches([')', ',', ';', '!', '"', '\''])
+            .replace("\\&", "&");
+        if !candidate.is_empty() {
+            candidates.push(candidate);
+        }
+        cursor = start + end.max(1);
+    }
+    candidates
+}
+
+fn is_bilibili_page_candidate(source: &str) -> bool {
+    let Ok(url) = Url::parse(source) else {
+        return false;
+    };
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    host == "b23.tv"
+        || host.ends_with(".b23.tv")
+        || host == "bilibili.com"
+        || host.ends_with(".bilibili.com")
 }
 
 fn normalize_bilibili_list_url(source: &str) -> Option<String> {
