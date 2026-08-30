@@ -3817,7 +3817,7 @@ export function AppSurface({
   );
   const [part, setPart] = useState("2");
   const [collectionItem, setCollectionItem] = useState("1");
-  const [playbackPosition, setPlaybackPosition] = useState(POSITION_BY_PART["2"] ?? 0);
+  const [playbackPosition, setPlaybackPositionState] = useState(POSITION_BY_PART["2"] ?? 0);
   const [playbackUpdating, setPlaybackUpdating] = useState<PlaybackUpdate>(null);
   const [playbackMessage, setPlaybackMessage] = useState<string | null>(null);
   const [playbackPaused, setPlaybackPaused] = useState(false);
@@ -3853,6 +3853,8 @@ export function AppSurface({
   const danmakuRef = useRef<DanmakuVisibility>(danmaku);
   const danmakuSettingsRef = useRef<DanmakuSettings>(danmakuSettings);
   const playbackRateRef = useRef<PlaybackRate>(playbackRate);
+  const playbackPositionRef = useRef(playbackPosition);
+  const pendingPausedPosition = useRef<number | null>(null);
   const resolvedAppearance: Appearance =
     themePreference === "system" ? initialAppearance : themePreference;
   const palette = PALETTES[resolvedAppearance];
@@ -3899,6 +3901,11 @@ export function AppSurface({
   const getRelayWorker = () => {
     relayWorker.current ??= new RelayWorkerClient();
     return relayWorker.current;
+  };
+
+  const setPlaybackPosition = (position: number) => {
+    playbackPositionRef.current = position;
+    setPlaybackPositionState(position);
   };
 
   const setDanmakuPreference = (next: DanmakuVisibility) => {
@@ -4196,7 +4203,13 @@ export function AppSurface({
         if (!cancelled) {
           setRelayStatus(latest);
           setPlaybackPaused(latest.paused);
-          if (latest.position_seconds !== undefined && !seekInteractionActive && playbackUpdating === null) {
+          const preservePausedSeek = latest.paused && pendingPausedPosition.current !== null;
+          if (
+            latest.position_seconds !== undefined
+            && !seekInteractionActive
+            && playbackUpdating === null
+            && !preservePausedSeek
+          ) {
             setPlaybackPosition(latest.position_seconds);
           }
           if (latest.stage === "failed") setRelayError("中继启动失败，检查设置后再试。");
@@ -4234,6 +4247,7 @@ export function AppSurface({
     setPlaybackMessage(null);
     setPlaybackPaused(false);
     setSeekInteractionActive(false);
+    pendingPausedPosition.current = null;
     completionActionSession.current = null;
     appliedPlaybackOptions.current = null;
     setSource(normalizedSource);
@@ -4250,14 +4264,17 @@ export function AppSurface({
       if (resolution.selected_part) setPart(String(resolution.selected_part));
       setCollectionItem(String(resolution.collection?.selected_item ?? 1));
       setPlaybackPosition(0);
+      setPlaybackPaused(resolution.kind === "video");
       setScene("ready-vod");
       if (resolution.routing.kind !== "unavailable" && resolution.session_id) {
+        setPlaybackToggling(true);
         const runtimeSettings = settingsReady
           ? productSettings
           : await refreshProductSettings();
         if (conversionEpoch.current !== epoch) return;
         if (!relaySettingsReady(runtimeSettings)) {
           setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
+          setPlaybackToggling(false);
           return;
         }
         try {
@@ -4274,14 +4291,22 @@ export function AppSurface({
               : playbackOptionsSignature(options);
             setRelayStatus(started);
             setPlaybackPaused(started.paused);
-            if (started.position_seconds !== undefined) setPlaybackPosition(started.position_seconds);
+            if (
+              started.position_seconds !== undefined
+              && pendingPausedPosition.current === null
+            ) {
+              setPlaybackPosition(started.position_seconds);
+            }
           }
         } catch (error) {
           if (conversionEpoch.current === epoch) setRelayError(relayErrorMessage(error));
+        } finally {
+          if (conversionEpoch.current === epoch) setPlaybackToggling(false);
         }
       }
     } catch (error) {
       if (conversionEpoch.current !== epoch) return;
+      setPlaybackToggling(false);
       setConversionError(relayErrorMessage(error));
       setScene("error");
     }
@@ -4314,6 +4339,7 @@ export function AppSurface({
     const previousPosition = playbackPosition;
     const previousRelay = relayStatus;
     const previousWasActive = hasActivePublisher(previousRelay);
+    const previousPendingPosition = pendingPausedPosition.current;
 
     setPlaybackUpdating(update);
     setPlaybackMessage(null);
@@ -4323,6 +4349,7 @@ export function AppSurface({
       setCollectionItem(String(selectedCollectionItem));
     }
     setPlaybackPosition(effectiveStart);
+    pendingPausedPosition.current = null;
 
     try {
       const runtimeSettings = settingsReady
@@ -4333,6 +4360,7 @@ export function AppSurface({
         if (previousWasActive) {
           setPart(previousPart);
           setPlaybackPosition(previousPosition);
+          pendingPausedPosition.current = previousPendingPosition;
           setPlaybackMessage("需要先完成 VRCDN 设置");
           return false;
         }
@@ -4385,6 +4413,7 @@ export function AppSurface({
         && !(error instanceof RelayWorkerError && error.code === "retarget_restore_failed");
       if (originalRestored) {
         setRelayStatus(previousRelay);
+        pendingPausedPosition.current = previousPendingPosition;
         setRelayError(null);
         setPlaybackMessage(
           update === "part"
@@ -4535,9 +4564,25 @@ export function AppSurface({
   const commitPlaybackPosition = (position: number) => {
     setPlaybackPosition(position);
     if (sourceResolution?.kind !== "video") return;
-    if (playbackPaused || sourceResolution.routing.kind === "direct") return;
+    if (sourceResolution.routing.kind === "direct") return;
+    if (playbackPaused || !hasActivePublisher(relayStatus)) {
+      pendingPausedPosition.current = position;
+      return;
+    }
+    pendingPausedPosition.current = null;
     const requestedPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
     void retargetPlayback(requestedPart, position, "seek");
+  };
+
+  const previewPlaybackPosition = (position: number) => {
+    setPlaybackPosition(position);
+    if (
+      sourceResolution?.kind === "video"
+      && sourceResolution.routing.kind !== "direct"
+      && (playbackPaused || !hasActivePublisher(relayStatus))
+    ) {
+      pendingPausedPosition.current = position;
+    }
   };
 
   const changePlaybackRate = (next: PlaybackRate) => {
@@ -4660,18 +4705,22 @@ export function AppSurface({
           ?.duration_seconds
           ?? sourceResolution.duration_seconds
           ?? 0;
+        const selectedPosition = pendingPausedPosition.current ?? playbackPositionRef.current;
         const requestedPosition = !nextPaused
           && selectedDuration > 0
-          && playbackPosition >= selectedDuration - 1
+          && selectedPosition >= selectedDuration - 1
             ? 0
-            : playbackPosition;
+            : selectedPosition;
         const updated = await getRelayWorker().setRelayPaused(
           relayStatus.session_id,
           nextPaused,
           options,
           requestedPosition,
         );
-        if (!nextPaused) appliedPlaybackOptions.current = playbackOptionsSignature(options);
+        if (!nextPaused) {
+          appliedPlaybackOptions.current = playbackOptionsSignature(options);
+          pendingPausedPosition.current = null;
+        }
         setRelayStatus(updated);
         if (updated.position_seconds !== undefined) setPlaybackPosition(updated.position_seconds);
         setPlaybackPaused(updated.paused);
@@ -4679,13 +4728,15 @@ export function AppSurface({
       }
       if (!playbackPaused || !sourceResolution.session_id) return;
       const options = currentPlaybackOptions();
+      const requestedPosition = pendingPausedPosition.current ?? playbackPositionRef.current;
       const started = await getRelayWorker().startRelay(
         sourceResolution.session_id,
         options,
-        playbackPosition,
+        requestedPosition,
         false,
       );
       appliedPlaybackOptions.current = playbackOptionsSignature(options);
+      pendingPausedPosition.current = null;
       setRelayStatus(started);
       if (started.position_seconds !== undefined) setPlaybackPosition(started.position_seconds);
       setPlaybackPaused(false);
@@ -4720,7 +4771,7 @@ export function AppSurface({
       const started = await getRelayWorker().startRelay(
         resolution.session_id,
         options,
-        playbackPosition,
+        pendingPausedPosition.current ?? playbackPositionRef.current,
         resolution.kind === "video",
       );
       if (conversionEpoch.current !== epoch) return;
@@ -4730,6 +4781,7 @@ export function AppSurface({
       setRelayStatus(started);
       setPlaybackPaused(started.paused);
       if (started.position_seconds !== undefined) setPlaybackPosition(started.position_seconds);
+      pendingPausedPosition.current = null;
     } catch (error) {
       if (conversionEpoch.current === epoch) setRelayError(relayErrorMessage(error));
     } finally {
@@ -4911,7 +4963,7 @@ export function AppSurface({
                 collectionItem={collectionItem}
                 onCollectionItemChange={changeCollectionItem}
                 playbackPosition={playbackPosition}
-                onPlaybackPositionChange={setPlaybackPosition}
+                onPlaybackPositionChange={previewPlaybackPosition}
                 onPlaybackPositionCommit={commitPlaybackPosition}
                 onSeekInteractionChange={setSeekInteractionActive}
                 playbackUpdating={playbackUpdating}
