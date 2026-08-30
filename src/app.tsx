@@ -151,7 +151,7 @@ const PLAYBACK_END_OPTIONS: ReadonlyArray<{
   { value: "next", label: "连续播放", compactLabel: "播完：继续", icon: "skipNext" },
   { value: "repeat", label: "单集循环", compactLabel: "播完：循环", icon: "repeatOne" },
 ];
-const PLAYBACK_RATES: ReadonlyArray<PlaybackRate> = ["1", "1.25", "1.5", "2", "0.5", "0.75"];
+const PLAYBACK_RATES: ReadonlyArray<PlaybackRate> = ["0.5", "0.75", "1", "1.25", "1.5", "2"];
 const TRACK_WIDTH = 416;
 const THEME_OPTIONS = [
   { value: "system", label: "跟随系统" },
@@ -1214,63 +1214,124 @@ function PlaybackEndSelect({
   );
 }
 
-function PlaybackRateButton({
+function PlaybackRateSelect({
   value,
-  onCycle,
+  onChange,
   disabled,
   palette,
 }: {
   value: PlaybackRate;
-  onCycle: () => void;
+  onChange: (value: PlaybackRate) => void;
   disabled: boolean;
   palette: Palette;
 }) {
-  const activate = () => {
-    if (!disabled) onCycle();
-  };
+  const [open, setOpen] = useState(false);
 
   return (
-    <div
-      testId="playback-rate"
-      tabIndex={disabled ? -1 : 0}
-      onClick={activate}
-      onKeyDown={(event) => {
-        if (event.key === "enter" || event.key === "space") activate();
-      }}
-      style={{
-        width: 44,
-        height: 26,
-        marginRight: 6,
-        flexShrink: 0,
-        display: "flex",
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "center",
-        borderRadius: 7,
-        borderWidth: 1,
-        borderColor: palette.panelEdge,
-        backgroundColor: palette.buttonSurface,
-        cursor: disabled ? "default" : "pointer",
-        opacity: disabled ? 0.48 : 1,
-        userSelect: "none",
-        hover: disabled ? undefined : { backgroundColor: palette.buttonHover, borderColor: palette.surfaceLine },
-        active: disabled ? undefined : { backgroundColor: palette.surfaceActive },
-      }}
+    <Select.Root
+      value={value}
+      open={open}
+      onOpenChange={setOpen}
+      onValueChange={(next) => onChange(next as PlaybackRate)}
+      disabled={disabled}
+      style={{ width: 50, height: 26, marginRight: 6, flexShrink: 0, opacity: disabled ? 0.48 : 1 }}
     >
-      <text
+      <Select.Trigger
+        testId="playback-rate-select"
+        style={({ open: selectOpen, disabled: selectDisabled }) => ({
+          width: 50,
+          height: 26,
+          display: "flex",
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 3,
+          paddingLeft: 8,
+          paddingRight: 6,
+          borderRadius: 7,
+          borderWidth: 1,
+          borderColor: selectOpen ? palette.surfaceLine : palette.panelEdge,
+          backgroundColor: selectOpen ? palette.surfaceHover : palette.buttonSurface,
+          cursor: selectDisabled ? "default" : "pointer",
+          userSelect: "none",
+          hover: selectDisabled ? undefined : { backgroundColor: palette.buttonHover, borderColor: palette.surfaceLine },
+          active: selectDisabled ? undefined : { backgroundColor: palette.surfaceActive },
+        })}
+      >
+        <Select.Value>
+          <text
+            style={{
+              color: palette.inkMuted,
+              fontFamily: FONT_UI,
+              fontSize: 10.5,
+              fontWeight: 600,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {`${value}×`}
+          </text>
+        </Select.Value>
+        <Icon name={open ? "chevronUp" : "chevron"} size={7.5} color={open ? palette.inkMuted : palette.caption} />
+      </Select.Trigger>
+      <Select.Content
+        side="top"
+        sideOffset={6}
         style={{
-          width: 44,
-          color: palette.inkMuted,
-          fontFamily: FONT_UI,
-          fontSize: 10.5,
-          fontWeight: 600,
-          whiteSpace: "nowrap",
-          textAlign: "center",
+          width: 78,
+          height: 194,
+          maxHeight: 194,
+          backgroundColor: palette.floatingSurface,
         }}
       >
-        {`${value}×`}
-      </text>
-    </div>
+        <motion.div
+          initial={REDUCED_MOTION ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={motionTransition(MOTION.selectEnterSeconds)}
+          style={{
+            position: "relative",
+            width: "100%",
+            height: "100%",
+            padding: 4,
+            borderRadius: 10,
+            borderWidth: 1,
+            borderColor: palette.floatingEdge,
+            backgroundColor: palette.floatingSurface,
+            boxShadow: {
+              offsetX: 0,
+              offsetY: 12,
+              blurRadius: 28,
+              spreadRadius: 0,
+              color: palette.floatingShadow,
+            },
+          }}
+        >
+          {PLAYBACK_RATES.map((rate) => (
+            <Select.Item
+              key={rate}
+              value={rate}
+              style={({ highlighted }) => ({
+                height: 31,
+                display: "flex",
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 5,
+                paddingLeft: 8,
+                paddingRight: 7,
+                borderRadius: 7,
+                cursor: "pointer",
+                backgroundColor: highlighted ? palette.segmentedTrack : "#00000000",
+              })}
+            >
+              <text style={{ color: palette.inkSoft, fontFamily: FONT_UI, fontSize: 11.5, whiteSpace: "nowrap" }}>
+                {`${rate}×`}
+              </text>
+              {rate === value ? <Icon name="check" size={8.5} color={palette.accentDanmaku} /> : null}
+            </Select.Item>
+          ))}
+        </motion.div>
+      </Select.Content>
+    </Select.Root>
   );
 }
 
@@ -1286,7 +1347,7 @@ function SeekControl({
   transportBusy,
   onTogglePlayback,
   playbackRate,
-  onPlaybackRateCycle,
+  onPlaybackRateChange,
   endBehavior,
   onEndBehaviorChange,
   palette,
@@ -1302,7 +1363,7 @@ function SeekControl({
   transportBusy: boolean;
   onTogglePlayback: () => void;
   playbackRate: PlaybackRate;
-  onPlaybackRateCycle: () => void;
+  onPlaybackRateChange: (value: PlaybackRate) => void;
   endBehavior: PlaybackEndBehavior;
   onEndBehaviorChange: (value: PlaybackEndBehavior) => void;
   palette: Palette;
@@ -1486,9 +1547,9 @@ function SeekControl({
         <div style={{ flexGrow: 1 }} />
         {showTransport ? (
           <>
-            <PlaybackRateButton
+            <PlaybackRateSelect
               value={playbackRate}
-              onCycle={onPlaybackRateCycle}
+              onChange={onPlaybackRateChange}
               disabled={transportBusy}
               palette={palette}
             />
@@ -1844,7 +1905,7 @@ function Result({
   playbackToggling,
   onTogglePlayback,
   playbackRate,
-  onPlaybackRateCycle,
+  onPlaybackRateChange,
   playbackEndBehavior,
   onPlaybackEndBehaviorChange,
   danmaku,
@@ -1872,7 +1933,7 @@ function Result({
   playbackToggling: boolean;
   onTogglePlayback: () => void;
   playbackRate: PlaybackRate;
-  onPlaybackRateCycle: () => void;
+  onPlaybackRateChange: (value: PlaybackRate) => void;
   playbackEndBehavior: PlaybackEndBehavior;
   onPlaybackEndBehaviorChange: (value: PlaybackEndBehavior) => void;
   danmaku: DanmakuVisibility;
@@ -2062,7 +2123,7 @@ function Result({
               }
               onTogglePlayback={onTogglePlayback}
               playbackRate={playbackRate}
-              onPlaybackRateCycle={onPlaybackRateCycle}
+              onPlaybackRateChange={onPlaybackRateChange}
               endBehavior={playbackEndBehavior}
               onEndBehaviorChange={onPlaybackEndBehaviorChange}
               palette={palette}
@@ -4479,11 +4540,10 @@ export function AppSurface({
     void retargetPlayback(requestedPart, position, "seek");
   };
 
-  const cyclePlaybackRate = () => {
+  const changePlaybackRate = (next: PlaybackRate) => {
     if (playbackUpdating !== null) return;
-    const currentIndex = PLAYBACK_RATES.indexOf(playbackRateRef.current);
-    const next = PLAYBACK_RATES[(currentIndex + 1) % PLAYBACK_RATES.length] ?? "1";
     const previous = playbackRateRef.current;
+    if (next === previous) return;
     setPlaybackRatePreference(next);
 
     if (
@@ -4860,7 +4920,7 @@ export function AppSurface({
                 playbackToggling={playbackToggling}
                 onTogglePlayback={() => void togglePlayback()}
                 playbackRate={playbackRate}
-                onPlaybackRateCycle={cyclePlaybackRate}
+                onPlaybackRateChange={changePlaybackRate}
                 playbackEndBehavior={playbackEndBehavior}
                 onPlaybackEndBehaviorChange={setPlaybackEndBehaviorPreference}
                 danmaku={danmaku}
