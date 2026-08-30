@@ -19,7 +19,7 @@ use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 use settings::SettingsStore;
 
-pub const PROTOCOL_VERSION: u32 = 19;
+pub const PROTOCOL_VERSION: u32 = 20;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -223,6 +223,8 @@ pub struct SourceResolution {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub collection: Option<VideoCollection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub live_status: Option<LiveStatus>,
     pub routing: RouteDecision,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -231,6 +233,23 @@ pub struct SourceResolution {
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_expires_in_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VideoCollection {
+    pub id: u64,
+    pub title: String,
+    pub selected_item: u32,
+    pub items: Vec<VideoCollectionItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VideoCollectionItem {
+    pub index: u32,
+    pub source_id: String,
+    pub canonical_url: String,
+    pub title: String,
+    pub duration_seconds: u64,
 }
 
 #[derive(Debug, Clone)]

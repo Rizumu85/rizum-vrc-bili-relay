@@ -1,4 +1,4 @@
-export const RELAY_PROTOCOL_VERSION = 19;
+export const RELAY_PROTOCOL_VERSION = 20;
 
 export type SourceKind = "video" | "live" | "media" | "short_link";
 export type RelayNextStep =
@@ -22,6 +22,21 @@ export interface VideoPart {
   duration_seconds: number;
 }
 
+export interface VideoCollectionItem {
+  index: number;
+  source_id: string;
+  canonical_url: string;
+  title: string;
+  duration_seconds: number;
+}
+
+export interface VideoCollection {
+  id: number;
+  title: string;
+  selected_item: number;
+  items: VideoCollectionItem[];
+}
+
 export interface SourceResolution {
   kind: "video" | "live" | "media";
   source_id: string;
@@ -30,6 +45,7 @@ export interface SourceResolution {
   parts?: VideoPart[];
   selected_part?: number;
   duration_seconds?: number;
+  collection?: VideoCollection;
   live_status?: "offline" | "live" | "replay";
   routing: RouteDecision;
   playback_url?: string;

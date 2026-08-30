@@ -59,11 +59,11 @@ type DanmakuVisibility = "shown" | "hidden";
 export function sceneWindowHeight(
   scene: Scene,
   settingsExpanded = false,
-  singlePartVideo = false,
+  playbackSelectionRows = 1,
 ): number {
   if (scene === "idle" || scene === "loading") return 178;
   if (scene === "error") return 230;
-  if (scene === "ready-vod") return singlePartVideo ? 471 : 506;
+  if (scene === "ready-vod") return 471 + Math.min(Math.max(playbackSelectionRows, 0), 2) * 35;
   if (scene === "settings") return settingsExpanded ? 400 : 364;
   return 572;
 }
@@ -147,7 +147,7 @@ const PLAYBACK_END_OPTIONS: ReadonlyArray<{
   icon: IconName;
 }> = [
   { value: "pause", label: "播完暂停", compactLabel: "播完：暂停", icon: "holdEnd" },
-  { value: "next", label: "自动下一 P", compactLabel: "播完：下一 P", icon: "skipNext" },
+  { value: "next", label: "连续播放", compactLabel: "播完：继续", icon: "skipNext" },
   { value: "repeat", label: "单集循环", compactLabel: "播完：循环", icon: "repeatOne" },
 ];
 const TRACK_WIDTH = 416;
@@ -1754,6 +1754,8 @@ function Result({
   palette,
   part,
   onPartChange,
+  collectionItem,
+  onCollectionItemChange,
   playbackPosition,
   onPlaybackPositionChange,
   onPlaybackPositionCommit,
@@ -1778,6 +1780,8 @@ function Result({
   palette: Palette;
   part: string;
   onPartChange: (part: string) => void;
+  collectionItem: string;
+  onCollectionItemChange: (item: string) => void;
   playbackPosition: number;
   onPlaybackPositionChange: (position: number) => void;
   onPlaybackPositionCommit: (position: number) => void;
@@ -1824,9 +1828,18 @@ function Result({
           duration: sourceResolution.duration_seconds ?? 0,
         }]
     : CAPTURE_REFERENCE_PARTS;
+  const collectionItems: PlaybackPart[] = sourceResolution?.kind === "video"
+    ? sourceResolution.collection?.items.map((entry) => ({
+        value: String(entry.index),
+        label: `${entry.index} · ${entry.title}`,
+        duration: entry.duration_seconds,
+      })) ?? []
+    : [];
   const isLive = sourceResolution?.kind === "live";
   const showPlaybackControls = isReference || sourceResolution?.kind === "video";
   const showPartControl = isReference || parts.length > 1;
+  const showCollectionControl = !isReference && collectionItems.length > 1;
+  const selectorRows = Number(showCollectionControl) + Number(showPartControl);
   const showTransport = isReference || (
     sourceResolution?.kind === "video"
     && sourceResolution.routing.kind !== "direct"
@@ -1916,8 +1929,23 @@ function Result({
 
       {showPlaybackControls ? (
         <>
-          {showPartControl ? (
+          {showCollectionControl ? (
             <div style={{ marginTop: 9, display: "flex", flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <text style={{ width: 46, color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12.5 }}>
+                合集
+              </text>
+              <PartSelect
+                part={collectionItem}
+                setPart={onCollectionItemChange}
+                parts={collectionItems}
+                palette={palette}
+                disabled={playbackUpdating !== null}
+              />
+            </div>
+          ) : null}
+
+          {showPartControl ? (
+            <div style={{ marginTop: showCollectionControl ? 5 : 9, display: "flex", flexDirection: "row", alignItems: "center", gap: 10 }}>
               <text style={{ width: 46, color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12.5 }}>
                 分 P
               </text>
@@ -1931,7 +1959,7 @@ function Result({
             </div>
           ) : null}
 
-          <div style={{ marginTop: showPartControl ? 5 : 12, paddingLeft: 2, paddingRight: 2 }}>
+          <div style={{ marginTop: selectorRows > 0 ? 5 : 12, paddingLeft: 2, paddingRight: 2 }}>
             <SeekControl
               duration={playbackDuration}
               position={playbackPosition}
@@ -3642,6 +3670,7 @@ export function AppSurface({
     initialSource ?? (initialScene === "ready-vod" ? SAMPLE_VIDEO : ""),
   );
   const [part, setPart] = useState("2");
+  const [collectionItem, setCollectionItem] = useState("1");
   const [playbackPosition, setPlaybackPosition] = useState(POSITION_BY_PART["2"] ?? 0);
   const [playbackUpdating, setPlaybackUpdating] = useState<PlaybackUpdate>(null);
   const [playbackMessage, setPlaybackMessage] = useState<string | null>(null);
@@ -3685,8 +3714,12 @@ export function AppSurface({
     mediaState === "failed" ||
     mediaState === "downloading" ||
     Boolean(mediaStateCaption(mediaState, mediaStatus));
-  const singlePartVideo =
-    sourceResolution?.kind === "video" && (sourceResolution.parts?.length ?? 0) <= 1;
+  const playbackSelectionRows = sourceResolution?.kind === "video"
+    ? Number((sourceResolution.parts?.length ?? 0) > 1)
+      + Number((sourceResolution.collection?.items.length ?? 0) > 1)
+    : sourceResolution === null && scene === "ready-vod"
+      ? 1
+      : 0;
 
   const closeApplication = () => {
     if (windowClosing.current) return;
@@ -3708,12 +3741,12 @@ export function AppSurface({
     const resize = setTimeout(
       () => setProductWindowClientSize(
         sceneWindowWidth(scene),
-        sceneWindowHeight(scene, settingsExpanded, singlePartVideo),
+        sceneWindowHeight(scene, settingsExpanded, playbackSelectionRows),
       ),
       0,
     );
     return () => clearTimeout(resize);
-  }, [scene, settingsExpanded, singlePartVideo]);
+  }, [scene, settingsExpanded, playbackSelectionRows]);
 
   const getRelayWorker = () => {
     relayWorker.current ??= new RelayWorkerClient();
@@ -4055,6 +4088,7 @@ export function AppSurface({
       setSource(resolution.canonical_url);
       setSourceResolution(resolution);
       if (resolution.selected_part) setPart(String(resolution.selected_part));
+      setCollectionItem(String(resolution.collection?.selected_item ?? 1));
       setPlaybackPosition(0);
       setScene("ready-vod");
       if (resolution.routing.kind !== "unavailable" && resolution.session_id) {
@@ -4099,6 +4133,8 @@ export function AppSurface({
     update: Exclude<PlaybackUpdate, null>,
     options = currentPlaybackOptions(),
     remainPaused = playbackPaused,
+    sourceUrl?: string,
+    selectedCollectionItem?: number,
   ) => {
     const previousResolution = sourceResolution;
     const canRetarget = previousResolution?.kind === "video"
@@ -4108,9 +4144,13 @@ export function AppSurface({
     const isLiveDanmakuUpdate = previousResolution.kind === "live";
     const effectivePart = isLiveDanmakuUpdate ? 1 : requestedPart;
     const effectiveStart = isLiveDanmakuUpdate ? 0 : startSeconds;
+    const effectiveSource = isLiveDanmakuUpdate
+      ? previousResolution.canonical_url
+      : sourceUrl ?? previousResolution.canonical_url;
 
     const epoch = ++playbackEpoch.current;
     const previousPart = part;
+    const previousCollectionItem = collectionItem;
     const previousPosition = playbackPosition;
     const previousRelay = relayStatus;
     const previousWasActive = hasActivePublisher(previousRelay);
@@ -4119,6 +4159,9 @@ export function AppSurface({
     setPlaybackMessage(null);
     setRelayError(null);
     setPart(String(effectivePart));
+    if (selectedCollectionItem !== undefined) {
+      setCollectionItem(String(selectedCollectionItem));
+    }
     setPlaybackPosition(effectiveStart);
 
     try {
@@ -4134,12 +4177,14 @@ export function AppSurface({
           return;
         }
         const resolution = await getRelayWorker().resolveSource(
-          previousResolution.canonical_url,
+          effectiveSource,
           effectivePart,
         );
         if (playbackEpoch.current !== epoch) return;
         setSourceResolution(resolution);
+        setSource(resolution.canonical_url);
         setPart(String(resolution.selected_part ?? effectivePart));
+        setCollectionItem(String(resolution.collection?.selected_item ?? 1));
         setRelayStatus(null);
         setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
         return;
@@ -4147,7 +4192,7 @@ export function AppSurface({
 
       const playback = await getRelayWorker().retargetRelay(
         previousWasActive ? previousRelay?.session_id : undefined,
-        previousResolution.canonical_url,
+        effectiveSource,
         effectivePart,
         options,
         effectiveStart,
@@ -4159,7 +4204,9 @@ export function AppSurface({
       }
 
       setSourceResolution(playback.resolution);
+      setSource(playback.resolution.canonical_url);
       setPart(String(playback.resolution.selected_part ?? effectivePart));
+      setCollectionItem(String(playback.resolution.collection?.selected_item ?? 1));
       setPlaybackPosition(playback.relay.position_seconds ?? effectiveStart);
       setRelayStatus(playback.relay);
       setPlaybackPaused(playback.relay.paused);
@@ -4171,6 +4218,7 @@ export function AppSurface({
     } catch (error) {
       if (playbackEpoch.current !== epoch) return;
       setPart(previousPart);
+      setCollectionItem(previousCollectionItem);
       setPlaybackPosition(previousPosition);
       const originalRestored = previousWasActive
         && !(error instanceof RelayWorkerError && error.code === "retarget_restore_failed");
@@ -4225,15 +4273,29 @@ export function AppSurface({
       .sort((left, right) => left.page - right.page);
     const currentIndex = orderedParts.findIndex((entry) => entry.page === currentPart);
     const nextPart = currentIndex >= 0 ? orderedParts[currentIndex + 1] : undefined;
-    const shouldAdvance = playbackEndBehavior === "next" && nextPart !== undefined;
+    const orderedCollectionItems = [...(sourceResolution.collection?.items ?? [])]
+      .sort((left, right) => left.index - right.index);
+    const currentCollectionItem = sourceResolution.collection?.selected_item
+      ?? (Number.parseInt(collectionItem, 10) || 1);
+    const currentCollectionIndex = orderedCollectionItems
+      .findIndex((entry) => entry.index === currentCollectionItem);
+    const nextCollectionItem = currentCollectionIndex >= 0
+      ? orderedCollectionItems[currentCollectionIndex + 1]
+      : undefined;
+    const shouldAdvancePart = playbackEndBehavior === "next" && nextPart !== undefined;
+    const shouldAdvanceCollection = playbackEndBehavior === "next"
+      && nextPart === undefined
+      && nextCollectionItem !== undefined;
 
-    if (playbackEndBehavior === "repeat" || shouldAdvance) {
+    if (playbackEndBehavior === "repeat" || shouldAdvancePart || shouldAdvanceCollection) {
       void retargetPlayback(
-        shouldAdvance ? nextPart.page : currentPart,
+        shouldAdvancePart ? nextPart.page : shouldAdvanceCollection ? 1 : currentPart,
         0,
         "completion",
         options,
         false,
+        shouldAdvanceCollection ? nextCollectionItem.canonical_url : undefined,
+        shouldAdvanceCollection ? nextCollectionItem.index : undefined,
       );
       return;
     }
@@ -4285,6 +4347,23 @@ export function AppSurface({
       || nextPart === part
     ) return;
     void retargetPlayback(requestedPart, 0, "part");
+  };
+
+  const changeCollectionItem = (nextItem: string) => {
+    if (sourceResolution?.kind !== "video") return;
+    const requestedItem = Number.parseInt(nextItem, 10);
+    const item = sourceResolution.collection?.items
+      .find((entry) => entry.index === requestedItem);
+    if (!item || nextItem === collectionItem) return;
+    void retargetPlayback(
+      1,
+      0,
+      "part",
+      currentPlaybackOptions(),
+      playbackPaused,
+      item.canonical_url,
+      item.index,
+    );
   };
 
   const commitPlaybackPosition = (position: number) => {
@@ -4609,6 +4688,8 @@ export function AppSurface({
                 palette={palette}
                 part={part}
                 onPartChange={changePart}
+                collectionItem={collectionItem}
+                onCollectionItemChange={changeCollectionItem}
                 playbackPosition={playbackPosition}
                 onPlaybackPositionChange={setPlaybackPosition}
                 onPlaybackPositionCommit={commitPlaybackPosition}

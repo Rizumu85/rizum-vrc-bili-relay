@@ -109,6 +109,7 @@ pub(crate) fn resolve(source: &str, ffprobe_path: &str) -> Result<ResolvedSource
             parts: Vec::new(),
             selected_part: None,
             duration_seconds,
+            collection: None,
             live_status: None,
             routing: RouteDecision {
                 kind: if direct {

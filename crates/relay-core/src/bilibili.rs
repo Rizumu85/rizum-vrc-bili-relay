@@ -8,8 +8,8 @@ use url::Url;
 use crate::bilibili_auth::BilibiliAuthService;
 use crate::{
     BilibiliAccessMode, BilibiliAuthStatus, LiveStatus, MediaFormat, MediaInput, RelayError,
-    ResolvedSource, RouteDecision, RouteKind, RouteReason, SourceKind, SourceResolution, VideoPart,
-    inspect_source, normalize_source_input,
+    ResolvedSource, RouteDecision, RouteKind, RouteReason, SourceKind, SourceResolution,
+    VideoCollection, VideoCollectionItem, VideoPart, inspect_source, normalize_source_input,
 };
 
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
@@ -125,6 +125,7 @@ impl BilibiliClient {
 
         let bvid = string_field(data, "bvid").unwrap_or(source_id);
         let title = string_field(data, "title").unwrap_or_else(|| bvid.clone());
+        let collection = read_video_collection(data, &bvid);
         let pages = data.get("pages").and_then(Value::as_array).ok_or_else(|| {
             RelayError::new("video_has_no_parts", "Bilibili video has no playable parts")
         })?;
@@ -180,6 +181,7 @@ impl BilibiliClient {
                 parts,
                 selected_part: Some(selected_part),
                 duration_seconds,
+                collection,
                 live_status: None,
                 routing,
                 playback_url: None,
@@ -247,6 +249,7 @@ impl BilibiliClient {
                 parts: Vec::new(),
                 selected_part: None,
                 duration_seconds: None,
+                collection: None,
                 live_status: Some(live_status),
                 routing,
                 playback_url: None,
@@ -419,6 +422,64 @@ impl BilibiliClient {
             )
         })
     }
+}
+
+fn read_video_collection(data: &Value, current_bvid: &str) -> Option<VideoCollection> {
+    let season = data.get("ugc_season")?;
+    let id = u64_field(season, "id")?;
+    let title = string_field(season, "title")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "合集".to_string());
+    let items = season
+        .get("sections")?
+        .as_array()?
+        .iter()
+        .filter_map(|section| section.get("episodes").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|episode| {
+            let source_id = string_field(episode, "bvid")?;
+            let title = string_field(episode, "title")
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| source_id.clone());
+            let duration_seconds = episode
+                .get("arc")
+                .and_then(|arc| u64_field(arc, "duration"))
+                .or_else(|| {
+                    episode
+                        .get("pages")
+                        .and_then(Value::as_array)
+                        .and_then(|pages| pages.first())
+                        .and_then(|page| u64_field(page, "duration"))
+                })
+                .unwrap_or(1)
+                .max(1);
+            Some((source_id, title, duration_seconds))
+        })
+        .enumerate()
+        .map(
+            |(index, (source_id, title, duration_seconds))| VideoCollectionItem {
+                index: index as u32 + 1,
+                canonical_url: format!("https://www.bilibili.com/video/{source_id}"),
+                source_id,
+                title,
+                duration_seconds,
+            },
+        )
+        .collect::<Vec<_>>();
+    if items.len() <= 1 {
+        return None;
+    }
+    let selected_item = items
+        .iter()
+        .position(|item| item.source_id.eq_ignore_ascii_case(current_bvid))?
+        as u32
+        + 1;
+    Some(VideoCollection {
+        id,
+        title,
+        selected_item,
+        items,
+    })
 }
 
 struct DashTrack {
