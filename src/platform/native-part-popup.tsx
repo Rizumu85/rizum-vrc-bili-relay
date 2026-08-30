@@ -11,6 +11,11 @@ import { FFIType, JSCallback, dlopen, ptr } from "bun:ffi";
 
 import { ICONS } from "../icons";
 import { FONT_UI, RADII, type Palette } from "../theme";
+import {
+  queryElementBounds,
+  queryScrollOffset,
+  scrollToElement,
+} from "./gpuix-geometry";
 
 const PRODUCT_WINDOW_TITLE = "VRC Bili Relay";
 const POPUP_WINDOW_TITLE = "VRC Bili Relay · Parts";
@@ -308,7 +313,7 @@ function NativePartPopupSurface({
   const scrollTo = (offset: number) => {
     const bounded = Math.max(0, Math.min(maxScroll, offset));
     const scroller = scrollerId.current;
-    if (scroller !== null) renderer.scrollTo(scroller, 0, -bounded);
+    if (scroller !== null && !scrollToElement(renderer, scroller, 0, -bounded)) return;
     setScrollOffset(bounded);
   };
 
@@ -326,14 +331,14 @@ function NativePartPopupSurface({
 
   const syncScrollOffset = () => {
     const scroller = scrollerId.current;
-    const offset = scroller !== null ? renderer.getScrollOffset(scroller) : null;
+    const offset = scroller !== null ? queryScrollOffset(renderer, scroller) : null;
     if (offset) setScrollOffset(Math.max(0, Math.min(maxScroll, -(offset[1] ?? 0))));
   };
 
   const setScrollFromTrack = (event: EventPayload) => {
     if (maxScroll <= 0 || event.y === undefined) return;
     const track = trackId.current;
-    const bounds = track !== null ? renderer.getElementBounds(track) : null;
+    const bounds = track !== null ? queryElementBounds(renderer, track) : null;
     if (!bounds) return;
     const ratio = Math.max(0, Math.min(1, (event.y - bounds[1] - thumbHeight / 2) / Math.max(1, thumbTravel)));
     scrollTo(ratio * maxScroll);

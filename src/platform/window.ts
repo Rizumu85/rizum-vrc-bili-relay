@@ -1,6 +1,8 @@
 import { FFIType, JSCallback, dlopen, ptr } from "bun:ffi";
 import { dirname, resolve } from "node:path";
 
+import { queryElementBounds, queryWindowSize } from "./gpuix-geometry";
+
 export const PRODUCT_WINDOW_TITLE = "VRC Bili Relay";
 export const PRODUCT_APP_USER_MODEL_ID = "Rizum.VRCBiliRelay";
 
@@ -65,6 +67,10 @@ const user32 = process.platform === "win32"
         returns: FFIType.int32_t,
       },
       IsWindowVisible: {
+        args: [FFIType.ptr],
+        returns: FFIType.bool,
+      },
+      IsIconic: {
         args: [FFIType.ptr],
         returns: FFIType.bool,
       },
@@ -304,7 +310,9 @@ function endProductWindowDrag(): void {
 export function minimizeProductWindow(): boolean {
   if (!user32) return false;
   const handle = findCurrentProcessWindow();
-  return handle ? user32.symbols.ShowWindow(handle, SW_MINIMIZE) : false;
+  if (!handle) return false;
+  suspendProductWindowInteractions();
+  return user32.symbols.ShowWindow(handle, SW_MINIMIZE);
 }
 
 export function closeProductWindow(): boolean {
@@ -359,6 +367,11 @@ export function releaseProductWindowPointer(): void {
 
 function pollProductWindowTextInputs(): void {
   if (!user32) return;
+  const handle = findCurrentProcessWindow();
+  if (!handle || user32.symbols.IsIconic(handle)) {
+    suspendTextInputPointerCapture();
+    return;
+  }
   const leftMouseDown = (user32.symbols.GetAsyncKeyState(VK_LBUTTON) & 0x8000) !== 0;
   if (!leftMouseDown) {
     if (pointerCaptureHandle) releaseProductWindowPointer();
@@ -366,20 +379,20 @@ function pollProductWindowTextInputs(): void {
     return;
   }
 
-  if (!leftMouseWasDown) beginTextInputPointerCapture();
+  if (!leftMouseWasDown) beginTextInputPointerCapture(handle);
   leftMouseWasDown = true;
   updateTextInputPointerCapture();
 }
 
-function beginTextInputPointerCapture(): void {
+function beginTextInputPointerCapture(
+  handle: ReturnType<typeof ptr> | bigint,
+): void {
   if (!user32 || !pointerMoveRenderer) return;
-  const handle = findCurrentProcessWindow();
-  if (!handle) return;
   const cursor = logicalClientCursor(handle);
   if (!cursor) return;
 
   for (const elementId of textInputElementIds) {
-    const bounds = toPointerTargetBounds(pointerMoveRenderer.getElementBounds(elementId));
+    const bounds = queryElementBounds(pointerMoveRenderer, elementId);
     if (!bounds) continue;
     const [x, y, width, height] = bounds;
     if (cursor.x < x || cursor.x >= x + width || cursor.y < y || cursor.y >= y + height) {
@@ -394,6 +407,10 @@ function beginTextInputPointerCapture(): void {
 
 function updateTextInputPointerCapture(): void {
   if (!user32 || !pointerMoveRenderer || !pointerCaptureHandle || !pointerCaptureTargetBounds) return;
+  if (user32.symbols.IsIconic(pointerCaptureHandle)) {
+    suspendTextInputPointerCapture();
+    return;
+  }
   const cursor = new Int32Array(2);
   const client = new Int32Array(4);
   if (
@@ -412,7 +429,8 @@ function updateTextInputPointerCapture(): void {
     return;
   }
 
-  const windowSize = pointerMoveRenderer.getWindowSize();
+  const windowSize = queryWindowSize(pointerMoveRenderer);
+  if (!windowSize) return;
   const scaleX = windowSize.width / Math.max(1, client[2] - client[0]);
   const scaleY = windowSize.height / Math.max(1, client[3] - client[1]);
   const [x, y, width, height] = pointerCaptureTargetBounds;
@@ -435,7 +453,7 @@ function logicalClientCursor(handle: ReturnType<typeof ptr> | bigint): { x: numb
   ) {
     return null;
   }
-  const windowSize = pointerMoveRenderer?.getWindowSize();
+  const windowSize = pointerMoveRenderer ? queryWindowSize(pointerMoveRenderer) : null;
   if (!windowSize) return null;
   return {
     x: cursor[0] * windowSize.width / Math.max(1, client[2] - client[0]),
@@ -443,19 +461,14 @@ function logicalClientCursor(handle: ReturnType<typeof ptr> | bigint): { x: numb
   };
 }
 
-function toPointerTargetBounds(
-  bounds: number[] | null | undefined,
-): readonly [number, number, number, number] | null {
-  if (
-    !bounds
-    || bounds.length < 4
-    || !bounds.slice(0, 4).every(Number.isFinite)
-    || bounds[2] <= 1
-    || bounds[3] <= 1
-  ) {
-    return null;
-  }
-  return [bounds[0], bounds[1], bounds[2], bounds[3]];
+function suspendTextInputPointerCapture(): void {
+  if (pointerCaptureHandle) releaseProductWindowPointer();
+  leftMouseWasDown = false;
+}
+
+function suspendProductWindowInteractions(): void {
+  endProductWindowDrag();
+  suspendTextInputPointerCapture();
 }
 
 export function setProductWindowClientSize(logicalWidth: number, logicalHeight: number): boolean {

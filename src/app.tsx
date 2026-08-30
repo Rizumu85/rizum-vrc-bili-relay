@@ -35,6 +35,7 @@ import {
   type SourceResolution,
 } from "./relay/protocol";
 import { RelayWorkerClient, RelayWorkerError } from "./relay/worker-client";
+import { queryElementBounds, queryWindowSize } from "./platform/gpuix-geometry";
 import {
   beginProductWindowDrag,
   closeProductWindow,
@@ -881,8 +882,9 @@ function PartSelect({
       return;
     }
     const elementId = triggerId.current;
-    const bounds = elementId === null ? null : renderer.getElementBounds(elementId);
-    if (!bounds || bounds.length < 4) return;
+    const bounds = elementId === null ? null : queryElementBounds(renderer, elementId);
+    const mainWindowSize = queryWindowSize(renderer);
+    if (!bounds || !mainWindowSize) return;
     setOpen(true);
     const shown = showNativePartPopup({
       items: parts.map(({ value, label }) => ({ value, label })),
@@ -890,7 +892,7 @@ function PartSelect({
       palette,
       parentWindowId: renderer.getWindowId(),
       anchorBounds: [bounds[0], bounds[1], bounds[2], bounds[3]],
-      mainWindowSize: renderer.getWindowSize(),
+      mainWindowSize,
       onSelect: (value) => {
         setPart(value);
         setOpen(false);
