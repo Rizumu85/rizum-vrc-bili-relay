@@ -247,10 +247,15 @@ function MotionFade({
 }
 
 function formatPlaybackTime(seconds: number): string {
-  const value = Math.max(0, Math.round(seconds));
-  const minutes = Math.floor(value / 60);
+  const value = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(value / 3600);
+  const minutes = Math.floor((value % 3600) / 60);
   const rest = value % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+  const minuteText = String(minutes).padStart(2, "0");
+  const secondText = String(rest).padStart(2, "0");
+  return hours > 0
+    ? `${String(hours).padStart(2, "0")}:${minuteText}:${secondText}`
+    : `${minuteText}:${secondText}`;
 }
 
 async function readClipboard(): Promise<string> {
