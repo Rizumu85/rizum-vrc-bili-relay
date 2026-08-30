@@ -1262,7 +1262,7 @@ function PlaybackRateButton({
           width: 44,
           color: palette.inkMuted,
           fontFamily: FONT_UI,
-          fontSize: 11.5,
+          fontSize: 10.5,
           fontWeight: 600,
           whiteSpace: "nowrap",
           textAlign: "center",
@@ -4480,6 +4480,7 @@ export function AppSurface({
   };
 
   const cyclePlaybackRate = () => {
+    if (playbackUpdating !== null) return;
     const currentIndex = PLAYBACK_RATES.indexOf(playbackRateRef.current);
     const next = PLAYBACK_RATES[(currentIndex + 1) % PLAYBACK_RATES.length] ?? "1";
     const previous = playbackRateRef.current;
@@ -4493,21 +4494,44 @@ export function AppSurface({
       || relayStatus?.stage !== "running"
     ) return;
 
-    const requestedPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
+    const activeRelay = relayStatus;
+    const previousPosition = playbackPosition;
+    const epoch = ++playbackEpoch.current;
     const options = configuredPlaybackOptions(
       danmakuRef.current,
       danmakuSettingsRef.current,
       next,
     );
-    void retargetPlayback(
-      requestedPart,
-      playbackPosition,
-      "rate",
-      options,
-      false,
-    ).then((changed) => {
-      if (!changed) setPlaybackRatePreference(previous);
-    });
+    setPlaybackUpdating("rate");
+    setPlaybackMessage(null);
+    setRelayError(null);
+
+    const applyRate = async () => {
+      try {
+        const updated = await getRelayWorker().setRelayRate(activeRelay.session_id, options);
+        if (playbackEpoch.current !== epoch) return;
+        setRelayStatus(updated);
+        setPlaybackPosition(updated.position_seconds ?? previousPosition);
+        setPlaybackPaused(updated.paused);
+        appliedPlaybackOptions.current = playbackOptionsSignature(options);
+      } catch (error) {
+        if (playbackEpoch.current !== epoch) return;
+        setPlaybackRatePreference(previous);
+        const restored = !(error instanceof RelayWorkerError && error.code === "rate_restore_failed");
+        if (restored) {
+          setRelayStatus(activeRelay);
+          setPlaybackPosition(previousPosition);
+          setPlaybackMessage("倍速切换失败 · 原内容仍在播放");
+        } else {
+          setRelayStatus(null);
+          setRelayError(relayErrorMessage(error));
+          setPlaybackMessage("倍速切换失败 · 请重试");
+        }
+      } finally {
+        if (playbackEpoch.current === epoch) setPlaybackUpdating(null);
+      }
+    };
+    void applyRate();
   };
 
   const changeDanmakuVisibility = (next: DanmakuVisibility) => {

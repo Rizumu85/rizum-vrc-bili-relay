@@ -370,6 +370,94 @@ impl MediaSessionStore {
         Ok(status_for(session_id, session))
     }
 
+    pub fn set_playback_rate(
+        &mut self,
+        session_id: &str,
+        requested_start: f64,
+        overlay: Option<DanmakuOverlay>,
+        playback_rate: PlaybackRate,
+    ) -> Result<RelayStatus, RelayError> {
+        self.cleanup_expired();
+        let session = self.sessions.get_mut(session_id).ok_or_else(|| {
+            RelayError::new(
+                "media_session_not_found",
+                "Media session expired or does not exist; resolve the source again",
+            )
+        })?;
+        if session.input.is_live {
+            return Err(RelayError::new(
+                "playback_rate_not_supported",
+                "Live streams do not support playback-rate changes",
+            ));
+        }
+        let start_seconds = normalize_start(
+            requested_start,
+            session.duration_seconds,
+            session.input.is_live,
+        )?;
+        let process = session.process.as_mut().ok_or_else(|| {
+            RelayError::new(
+                "relay_not_running",
+                "The relay is not running and cannot change playback rate",
+            )
+        })?;
+        if process.is_paused() {
+            return Err(RelayError::new(
+                "relay_paused",
+                "Resume playback before changing playback rate",
+            ));
+        }
+
+        let previous_position = process
+            .position_seconds()
+            .or(session.position_seconds)
+            .map(|position| clamp_position(position, session.duration_seconds))
+            .unwrap_or(start_seconds);
+        let previous_playback_rate = process.playback_rate();
+        let previous_overlay = session.overlay.take();
+
+        if let Err(mut error) = process.switch_content(
+            &session.input,
+            start_seconds,
+            overlay.as_ref(),
+            playback_rate,
+        ) {
+            let restored = process
+                .switch_content(
+                    &session.input,
+                    previous_position,
+                    previous_overlay.as_ref(),
+                    previous_playback_rate,
+                )
+                .is_ok();
+            session.overlay = previous_overlay;
+            session.position_seconds = Some(previous_position);
+            session.stage = if restored {
+                RelayStage::Running
+            } else {
+                RelayStage::Failed
+            };
+            session.paused = !restored;
+            session.diagnostic = (!restored).then(|| error.message.clone());
+            session.expires_at = Instant::now() + SESSION_TTL;
+            if !restored {
+                error.code = "rate_restore_failed";
+                error
+                    .message
+                    .push_str("; the previous playback rate could not be restored");
+            }
+            return Err(error);
+        }
+
+        session.overlay = overlay;
+        session.position_seconds = Some(start_seconds);
+        session.stage = RelayStage::Running;
+        session.paused = false;
+        session.diagnostic = None;
+        session.expires_at = Instant::now() + SESSION_TTL;
+        Ok(status_for(session_id, session))
+    }
+
     pub fn stop(&mut self, session_id: &str) -> Result<RelayStatus, RelayError> {
         if !self.suspend(session_id) {
             return Err(RelayError::new(

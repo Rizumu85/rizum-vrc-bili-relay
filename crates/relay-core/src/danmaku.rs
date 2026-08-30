@@ -1,3 +1,4 @@
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fmt::Write as _;
 use std::fs::{self, File};
@@ -23,6 +24,7 @@ const MAX_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_EVENTS: usize = 60_000;
 const MAX_TEXT_CHARS: usize = 300;
 const MAX_ASS_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CACHED_VIDEOS: usize = 4;
 pub(crate) const OUTPUT_WIDTH: u32 = 1280;
 pub(crate) const OUTPUT_HEIGHT: u32 = 720;
 pub(crate) const OUTPUT_FPS: u32 = 30;
@@ -107,6 +109,14 @@ pub(crate) struct DanmakuService {
     live: LiveDanmakuService,
     runtime_root: PathBuf,
     next_id: u64,
+    video_cache: HashMap<u64, CachedVideoDanmaku>,
+    video_cache_order: VecDeque<u64>,
+}
+
+struct CachedVideoDanmaku {
+    from_seconds: f64,
+    segment_count: u64,
+    events: Vec<DanmakuEvent>,
 }
 
 impl DanmakuService {
@@ -121,6 +131,8 @@ impl DanmakuService {
             http,
             runtime_root: runtime_root(),
             next_id: 1,
+            video_cache: HashMap::new(),
+            video_cache_order: VecDeque::new(),
         }
     }
 
@@ -212,17 +224,23 @@ impl DanmakuService {
     }
 
     fn fetch(
-        &self,
+        &mut self,
         source: &VideoDanmakuSource,
         start_seconds: f64,
     ) -> Result<Vec<DanmakuEvent>, RelayError> {
+        let start_seconds = start_seconds.max(0.0);
         let segment_count = source
             .duration_seconds
             .max(1)
             .div_ceil(SEGMENT_SECONDS)
             .clamp(1, MAX_SEGMENTS);
-        let first_segment =
-            ((start_seconds.max(0.0) as u64) / SEGMENT_SECONDS + 1).clamp(1, segment_count);
+        if let Some(cached) = self.video_cache.get(&source.cid)
+            && cached.segment_count == segment_count
+            && cached.from_seconds <= start_seconds + 0.001
+        {
+            return Ok(cached.events.clone());
+        }
+        let first_segment = ((start_seconds as u64) / SEGMENT_SECONDS + 1).clamp(1, segment_count);
         let mut events = Vec::new();
         for segment in first_segment..=segment_count {
             let endpoint = format!(
@@ -278,7 +296,7 @@ impl DanmakuService {
                 ));
             }
             for event in parse_segment(&payload)? {
-                if event.offset_seconds + 0.001 >= start_seconds.max(0.0) {
+                if event.offset_seconds + 0.001 >= start_seconds {
                     events.push(event);
                     if events.len() >= MAX_EVENTS {
                         break;
@@ -294,6 +312,22 @@ impl DanmakuService {
                 .total_cmp(&right.offset_seconds)
                 .then(left.id.cmp(&right.id))
         });
+        if !self.video_cache.contains_key(&source.cid)
+            && self.video_cache.len() >= MAX_CACHED_VIDEOS
+            && let Some(expired_cid) = self.video_cache_order.pop_front()
+        {
+            self.video_cache.remove(&expired_cid);
+        }
+        self.video_cache_order.retain(|cid| *cid != source.cid);
+        self.video_cache_order.push_back(source.cid);
+        self.video_cache.insert(
+            source.cid,
+            CachedVideoDanmaku {
+                from_seconds: start_seconds,
+                segment_count,
+                events: events.clone(),
+            },
+        );
         Ok(events)
     }
 }
@@ -307,6 +341,7 @@ pub(crate) enum DanmakuKind {
     Advanced,
 }
 
+#[derive(Clone)]
 pub(crate) struct DanmakuEvent {
     pub id: u64,
     pub offset_seconds: f64,

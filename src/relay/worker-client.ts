@@ -152,6 +152,20 @@ export class RelayWorkerClient {
     );
   }
 
+  async setRelayRate(
+    sessionId: string,
+    options: PlaybackOptions,
+  ): Promise<RelayStatus> {
+    return this.relayRequest(
+      {
+        type: "set_relay_rate",
+        session_id: sessionId,
+        options,
+      },
+      30_000,
+    );
+  }
+
   async stopRelay(sessionId: string): Promise<RelayStatus> {
     return this.relayRequest({ type: "stop_relay", session_id: sessionId });
   }

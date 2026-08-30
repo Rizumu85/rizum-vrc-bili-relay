@@ -19,7 +19,7 @@ use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 use settings::SettingsStore;
 
-pub const PROTOCOL_VERSION: u32 = 21;
+pub const PROTOCOL_VERSION: u32 = 22;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -68,6 +68,11 @@ pub enum Command {
         paused: bool,
         #[serde(default)]
         start_seconds: f64,
+        #[serde(default)]
+        options: PlaybackOptions,
+    },
+    SetRelayRate {
+        session_id: String,
         #[serde(default)]
         options: PlaybackOptions,
     },
@@ -816,6 +821,23 @@ impl RelayCore {
                     relay: self.sessions.set_paused(
                         &session_id,
                         paused,
+                        normalized_start,
+                        overlay,
+                        options.playback_rate,
+                    )?,
+                })
+            }
+            Command::SetRelayRate {
+                session_id,
+                options,
+            } => {
+                let current = self.sessions.status(&session_id)?;
+                let start_seconds = current.position_seconds.unwrap_or(0.0);
+                let (overlay, normalized_start) =
+                    self.prepare_danmaku_overlay(&session_id, &options.danmaku, start_seconds)?;
+                Ok(Reply::RelayState {
+                    relay: self.sessions.set_playback_rate(
+                        &session_id,
                         normalized_start,
                         overlay,
                         options.playback_rate,
