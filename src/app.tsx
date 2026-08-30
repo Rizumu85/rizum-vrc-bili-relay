@@ -4052,6 +4052,7 @@ export function AppSurface({
       setRelayStatus(null);
       const resolution = await getRelayWorker().resolveSource(normalizedSource);
       if (conversionEpoch.current !== epoch) return;
+      setSource(resolution.canonical_url);
       setSourceResolution(resolution);
       if (resolution.selected_part) setPart(String(resolution.selected_part));
       setPlaybackPosition(0);

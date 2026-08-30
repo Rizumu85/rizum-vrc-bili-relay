@@ -9,7 +9,7 @@ use crate::bilibili_auth::BilibiliAuthService;
 use crate::{
     BilibiliAccessMode, BilibiliAuthStatus, LiveStatus, MediaFormat, MediaInput, RelayError,
     ResolvedSource, RouteDecision, RouteKind, RouteReason, SourceKind, SourceResolution, VideoPart,
-    inspect_source,
+    inspect_source, normalize_source_input,
 };
 
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
@@ -67,10 +67,11 @@ impl BilibiliClient {
         source: &str,
         requested_part: Option<u32>,
     ) -> Result<ResolvedSource, RelayError> {
-        let inspection = inspect_source(source)?;
+        let source = normalize_source_input(source)?;
+        let inspection = inspect_source(&source)?;
         match inspection.kind {
             SourceKind::ShortLink => {
-                let expanded = self.expand_short_link(source)?;
+                let expanded = self.expand_short_link(&source)?;
                 let expanded_inspection = inspect_source(expanded.as_str())?;
                 if matches!(expanded_inspection.kind, SourceKind::ShortLink) {
                     return Err(RelayError::new(
@@ -80,7 +81,7 @@ impl BilibiliClient {
                 }
                 self.resolve(expanded.as_str(), requested_part)
             }
-            SourceKind::Video => self.resolve_video(source, inspection.source_id, requested_part),
+            SourceKind::Video => self.resolve_video(&source, inspection.source_id, requested_part),
             SourceKind::Live => self.resolve_live(inspection.source_id),
             SourceKind::Media => Err(RelayError::new(
                 "invalid_media_source",

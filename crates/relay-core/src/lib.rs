@@ -633,7 +633,8 @@ impl RelayCore {
                 source,
                 requested_part,
             } => {
-                let inspection = inspect_source(&source)?;
+                let source = normalize_source_input(&source)?;
+                let inspection = inspect_normalized_source(&source)?;
                 let resolved = if matches!(inspection.kind, SourceKind::Media) {
                     let ffprobe_path = self.ffmpeg.probe_path().ok_or_else(|| {
                         RelayError::new(
@@ -691,6 +692,7 @@ impl RelayCore {
                 paused,
                 options,
             } => {
+                let source = normalize_source_input(&source)?;
                 let mut target = self.settings.relay_target(start_seconds)?;
                 media_session::validate_relay_target(&target)?;
                 let ffmpeg_path = self.ffmpeg.executable_path().ok_or_else(|| {
@@ -822,11 +824,28 @@ impl RelayCore {
 }
 
 pub fn inspect_source(source: &str) -> Result<SourceInspection, RelayError> {
+    let source = normalize_source_input(source)?;
+    inspect_normalized_source(&source)
+}
+
+pub(crate) fn normalize_source_input(source: &str) -> Result<String, RelayError> {
     let source = source.trim();
     if source.is_empty() {
         return Err(RelayError::new("empty_source", "Media source is empty"));
     }
 
+    let candidate = if Url::parse(source).is_ok() {
+        source.to_string()
+    } else if let Some(url) = extract_http_url(source) {
+        url
+    } else {
+        source.to_string()
+    };
+
+    Ok(normalize_bilibili_list_url(&candidate).unwrap_or(candidate))
+}
+
+fn inspect_normalized_source(source: &str) -> Result<SourceInspection, RelayError> {
     if is_video_id(source) {
         return Ok(video_inspection(source));
     }
@@ -894,6 +913,77 @@ pub fn inspect_source(source: &str) -> Result<SourceInspection, RelayError> {
         "unsupported_source",
         "Only Bilibili pages and HTTP(S) MP4, HLS, MPEG-TS, or FLV media links are supported",
     ))
+}
+
+fn extract_http_url(source: &str) -> Option<String> {
+    let lowercase = source.to_ascii_lowercase();
+    let start = [lowercase.find("https://"), lowercase.find("http://")]
+        .into_iter()
+        .flatten()
+        .min()?;
+    let tail = &source[start..];
+    let end = tail
+        .char_indices()
+        .find_map(|(index, character)| {
+            (character.is_whitespace()
+                || matches!(
+                    character,
+                    ']' | '}' | '>' | '】' | '）' | '。' | '，' | '；' | '！'
+                ))
+            .then_some(index)
+        })
+        .unwrap_or(tail.len());
+    let candidate = tail[..end]
+        .trim_end_matches([')', ',', ';', '!', '"', '\''])
+        .replace("\\&", "&");
+    (!candidate.is_empty()).then_some(candidate)
+}
+
+fn normalize_bilibili_list_url(source: &str) -> Option<String> {
+    let url = Url::parse(source).ok()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    if !(host == "bilibili.com" || host.ends_with(".bilibili.com")) {
+        return None;
+    }
+    let is_list_page = url
+        .path_segments()
+        .and_then(|mut segments| segments.find(|segment| !segment.is_empty()))
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("list"));
+    if !is_list_page {
+        return None;
+    }
+
+    let query = url.query_pairs().collect::<Vec<_>>();
+    let source_id = query
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("bvid"))
+        .map(|(_, value)| value.as_ref())
+        .filter(|value| is_video_id(value))
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            query
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case("oid"))
+                .map(|(_, value)| value.as_ref())
+                .filter(|value| {
+                    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+                })
+                .map(|value| format!("av{value}"))
+        })?;
+    let normalized_id = if source_id[..2].eq_ignore_ascii_case("bv") {
+        format!("BV{}", &source_id[2..])
+    } else {
+        source_id
+    };
+    let part = query
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("p"))
+        .map(|(_, value)| value.as_ref())
+        .filter(|value| value.parse::<u32>().is_ok_and(|part| part > 0));
+    Some(match part {
+        Some(part) => format!("https://www.bilibili.com/video/{normalized_id}?p={part}"),
+        None => format!("https://www.bilibili.com/video/{normalized_id}"),
+    })
 }
 
 fn video_inspection(video_id: &str) -> SourceInspection {
