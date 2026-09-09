@@ -784,6 +784,10 @@ fn add_standard_transcode(
     );
     if let Some(path) = overlay.and_then(DanmakuOverlay::ass_path) {
         filter.push_str(&format!(",ass=filename='{}'", escape_filter_path(path)));
+        // UI-private font registration is not visible to the FFmpeg process.
+        if let Some(fonts) = crate::danmaku_style::font_directory() {
+            filter.push_str(&format!(":fontsdir='{}'", escape_filter_path(&fonts)));
+        }
     }
     if let Some(live_filter) = overlay.and_then(DanmakuOverlay::live_filter_graph) {
         filter.push(',');

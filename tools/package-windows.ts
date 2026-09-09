@@ -17,6 +17,7 @@ run(["bun", "run", "build"]);
 rmSync(packageRoot, { recursive: true, force: true });
 mkdirSync(resolve(stage, "assets"), { recursive: true });
 mkdirSync(resolve(stage, "assets", "fonts"), { recursive: true });
+mkdirSync(resolve(stage, "assets", "fonts", "danmaku"), { recursive: true });
 
 for (const source of [
   resolve(root, "dist", "VRC-Bili-Relay.exe"),
@@ -31,6 +32,9 @@ for (const fontAssetName of [
   "MiSans-License.pdf",
   "NotoSerifSC-VF.ttf",
   "Noto-OFL.txt",
+  "danmaku/NotoSansSC-Regular.otf",
+  "danmaku/NotoSansSC-Bold.otf",
+  "NotoSans-OFL.txt",
   "CascadiaMono.ttf",
   "Cascadia-OFL.txt",
 ]) {

@@ -5,6 +5,7 @@ mod bilibili;
 mod bilibili_auth;
 mod bilibili_session;
 mod danmaku;
+mod danmaku_style;
 mod ffmpeg;
 mod ffmpeg_manager;
 mod live_danmaku;

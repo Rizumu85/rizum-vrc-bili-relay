@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::{Cursor, ErrorKind, Read};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -21,10 +21,8 @@ use tungstenite::{ClientRequestBuilder, Error as WebSocketError, Message, client
 use zeromq::{ReqSocket, Socket, SocketRecv, SocketSend};
 
 use crate::danmaku::{DanmakuEvent, DanmakuKind, OUTPUT_HEIGHT, acquire_lane, should_hide};
-use crate::{
-    DanmakuArea, DanmakuFont, DanmakuOutline, DanmakuSettings, DanmakuSize, DanmakuSpeed,
-    DanmakuWeight, RelayError,
-};
+use crate::danmaku_style::{font_size, opacity, outline, resolve_font};
+use crate::{DanmakuArea, DanmakuSettings, DanmakuSpeed, RelayError};
 
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
@@ -554,6 +552,7 @@ fn render_loop(
         return;
     };
     let font_size = font_size(settings.size);
+    let render_size = f64::from(font_size) * resolve_font(&settings).drawtext_scale;
     let line_height = ((f64::from(font_size) * 1.22).round() as i32).max(font_size + 8);
     let area_ratio = match settings.area {
         DanmakuArea::Quarter => 0.25,
@@ -602,7 +601,7 @@ fn render_loop(
         };
         let command = format!(
             "drawtext@dm{slot} reinit {}",
-            reinit_argument(&event, &settings, lane, now)
+            reinit_argument(&event, &settings, lane, now, render_size)
         );
         if send_zmq_command(&runtime, &endpoint, &command, &mut socket, &cancel) {
             active_slots[slot] = true;
@@ -814,17 +813,19 @@ fn read_u32(payload: &[u8], offset: usize) -> Result<u32, String> {
 }
 
 fn live_filter_graph(port: u16, settings: &DanmakuSettings) -> String {
-    let font_file = filter_font_file(settings.font, settings.weight);
-    let font_size = font_size(settings.size);
-    let opacity = f64::from(settings.opacity.clamp(20, 100)) / 100.0;
-    let (border_width, shadow_x, shadow_y) = outline(settings.outline);
+    let font = resolve_font(settings);
+    let font_file = escape_filter_path(&font.file);
+    let font_size = f64::from(font_size(settings.size)) * font.drawtext_scale;
+    let opacity = opacity(settings);
+    let shadow_opacity = opacity * 0.6;
+    let (border_width, shadow) = outline(settings);
     let mut filters = Vec::with_capacity(FILTER_SLOT_COUNT + 1);
     filters.push(format!(r"zmq=b=tcp\\://127.0.0.1\\:{port}"));
     for index in 0..FILTER_SLOT_COUNT {
         filters.push(format!(
-            "drawtext@dm{index}=fontfile='{font_file}':text=:expansion=none:fontsize={font_size}:\
-             fontcolor=white@{opacity:.2}:borderw={border_width}:bordercolor=0x101010:\
-             shadowx={shadow_x}:shadowy={shadow_y}:x=0:y=0"
+            "drawtext@dm{index}=fontfile='{font_file}':text=:expansion=none:fontsize={font_size:.3}:\
+             fontcolor=white@{opacity:.2}:borderw={border_width}:bordercolor=0x101010@{opacity:.2}:\
+             shadowcolor=0x101010@{shadow_opacity:.2}:shadowx={shadow}:shadowy={shadow}:x=0:y=0"
         ));
     }
     filters.join(",")
@@ -835,6 +836,7 @@ fn reinit_argument(
     settings: &DanmakuSettings,
     lane: usize,
     start_seconds: f64,
+    render_size: f64,
 ) -> String {
     let size = font_size(settings.size);
     let line_height = ((f64::from(size) * 1.22).round() as i32).max(size + 8);
@@ -848,11 +850,13 @@ fn reinit_argument(
         DanmakuKind::Reverse => format!("-text_w+(w+text_w)*(t-{start_seconds:.3})/{duration:.3}"),
         _ => format!("w-(w+text_w)*(t-{start_seconds:.3})/{duration:.3}"),
     };
-    let opacity = f64::from(settings.opacity.clamp(20, 100)) / 100.0;
-    let (border_width, shadow_x, shadow_y) = outline(settings.outline);
+    let opacity = opacity(settings);
+    let shadow_opacity = opacity * 0.6;
+    let (border_width, shadow) = outline(settings);
     format!(
-        "text='{}':fontsize={size}:fontcolor=0x{:06X}@{opacity:.2}:\
-         borderw={border_width}:bordercolor=0x101010:shadowx={shadow_x}:shadowy={shadow_y}:\
+        "text='{}':fontsize={render_size:.3}:fontcolor=0x{:06X}@{opacity:.2}:\
+         borderw={border_width}:bordercolor=0x101010@{opacity:.2}:\
+         shadowcolor=0x101010@{shadow_opacity:.2}:shadowx={shadow}:shadowy={shadow}:\
          x={x}:y={y}",
         escape_drawtext(&event.text),
         event.color,
@@ -868,48 +872,6 @@ fn event_duration(kind: DanmakuKind, speed: DanmakuSpeed) -> f64 {
         DanmakuSpeed::Normal => 8.0,
         DanmakuSpeed::Fast => 6.0,
     }
-}
-
-fn font_size(size: DanmakuSize) -> i32 {
-    match size {
-        DanmakuSize::Small => 28,
-        DanmakuSize::Medium => 36,
-        DanmakuSize::Large => 44,
-    }
-}
-
-fn outline(outline: DanmakuOutline) -> (u8, u8, u8) {
-    match outline {
-        DanmakuOutline::Heavy => (3, 0, 0),
-        DanmakuOutline::Outline => (2, 0, 0),
-        DanmakuOutline::Shadow => (1, 3, 3),
-    }
-}
-
-fn filter_font_file(font: DanmakuFont, weight: DanmakuWeight) -> String {
-    let windows = std::env::var_os("WINDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
-    let requested = match font {
-        DanmakuFont::MicrosoftYahei if matches!(weight, DanmakuWeight::Bold) => "msyhbd.ttc",
-        DanmakuFont::MicrosoftYahei => "msyh.ttc",
-        DanmakuFont::NotoSansSc => "NotoSansSC-VF.ttf",
-        DanmakuFont::SourceHanSans => "SourceHanSansSC-Regular.otf",
-        DanmakuFont::Simhei => "simhei.ttf",
-    };
-    let requested = windows.join("Fonts").join(requested);
-    let fallback = windows
-        .join("Fonts")
-        .join(if matches!(weight, DanmakuWeight::Bold) {
-            "msyhbd.ttc"
-        } else {
-            "msyh.ttc"
-        });
-    escape_filter_path(if requested.is_file() {
-        &requested
-    } else {
-        &fallback
-    })
 }
 
 fn escape_filter_path(path: &Path) -> String {

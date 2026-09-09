@@ -10,11 +10,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, COOKIE, REFERER};
 
+use crate::danmaku_style::{ass_alpha, font_size, opacity, outline, resolve_font};
 use crate::live_danmaku::{LiveDanmakuOverlay, LiveDanmakuService, LiveDanmakuSource};
-use crate::{
-    DanmakuArea, DanmakuFilter, DanmakuFont, DanmakuOutline, DanmakuSettings, DanmakuSize,
-    DanmakuSpeed, DanmakuWeight, RelayError,
-};
+use crate::{DanmakuArea, DanmakuFilter, DanmakuSettings, DanmakuSpeed, DanmakuWeight, RelayError};
 
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
@@ -497,11 +495,7 @@ fn render_ass(
     settings: &DanmakuSettings,
     start_seconds: f64,
 ) -> (String, u64) {
-    let font_size = match settings.size {
-        DanmakuSize::Small => 28,
-        DanmakuSize::Medium => 36,
-        DanmakuSize::Large => 44,
-    };
+    let font_size = font_size(settings.size);
     let line_height = (font_size + 8).max((f64::from(font_size) * 1.22).round() as i32);
     let area_ratio = match settings.area {
         DanmakuArea::Quarter => 0.25,
@@ -516,8 +510,8 @@ fn render_ass(
         DanmakuSpeed::Normal => 8.0,
         DanmakuSpeed::Fast => 6.0,
     };
-    let opacity = settings.opacity.clamp(20, 100);
-    let alpha = ((100 - u32::from(opacity)) * 255 / 100) as u8;
+    let alpha = ass_alpha(opacity(settings));
+    let shadow_alpha = ass_alpha(opacity(settings) * 0.6);
     let mut rolling_lanes = vec![0.0_f64; lane_count];
     let mut top_lanes = vec![0.0_f64; lane_count];
     let mut bottom_lanes = vec![0.0_f64; lane_count];
@@ -563,7 +557,7 @@ fn render_ass(
         }
         let _ = writeln!(
             output,
-            "Dialogue: 0,{},{},Danmaku,,0,0,0,,{{\\1a&H{alpha:02X}&\\c&H{}&{movement}}}{text}",
+            "Dialogue: 0,{},{},Danmaku,,0,0,0,,{{\\1a&H{alpha:02X}&\\3a&H{alpha:02X}&\\4a&H{shadow_alpha:02X}&\\c&H{}&{movement}}}{text}",
             format_time(start),
             format_time(end),
             ass_color(event.color),
@@ -577,22 +571,13 @@ fn render_ass(
 }
 
 fn append_header(output: &mut String, settings: &DanmakuSettings, font_size: i32) {
-    let font = match settings.font {
-        DanmakuFont::MicrosoftYahei => "Microsoft YaHei",
-        DanmakuFont::NotoSansSc => "Noto Sans SC",
-        DanmakuFont::SourceHanSans => "Source Han Sans SC",
-        DanmakuFont::Simhei => "SimHei",
-    };
+    let font = resolve_font(settings).family;
     let bold = if matches!(settings.weight, DanmakuWeight::Bold) {
         -1
     } else {
         0
     };
-    let (outline, shadow) = match settings.outline {
-        DanmakuOutline::Heavy => (3, 0),
-        DanmakuOutline::Outline => (2, 0),
-        DanmakuOutline::Shadow => (1, 3),
-    };
+    let (outline, shadow) = outline(settings);
     let _ = writeln!(
         output,
         "[Script Info]\nScriptType: v4.00+\nPlayResX: {OUTPUT_WIDTH}\nPlayResY: {OUTPUT_HEIGHT}\nWrapStyle: 2\nScaledBorderAndShadow: yes\nYCbCr Matrix: TV.709\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Danmaku,{font},{font_size},&H00FFFFFF,&H00FFFFFF,&H00101010,&H64000000,{bold},0,0,0,100,100,0,0,1,{outline},{shadow},7,0,0,0,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"

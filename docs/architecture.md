@@ -300,6 +300,28 @@ Leaving without valid settings cancels the pending resume and preserves the
 existing explanation; it never manufactures an output URL or repeats source
 resolution.
 
+## Danmaku typography
+
+`danmaku_style.rs` owns shared font resolution, logical sizes, border widths,
+and opacity conversion for video (libass) and live (drawtext). Noto Sans SC uses
+bundled static Regular 400 / Bold 700 faces from `assets/fonts/danmaku/`, not an
+installed variable font whose default axis can be Thin 100. Live selects a
+specific face; video receives both the family/weight and an explicit `fontsdir`.
+UI-private font registration cannot supply fonts to the FFmpeg process.
+
+The pinned Noto faces have 1000 units per em and a 1448-unit ascender/descender
+span. Live compensates for drawtext's em-based sizing to match libass's line-based
+sizing. Update that metric with the font assets if replacing them. Lane spacing
+continues to use the logical size. Borders scale with size using integer pixels
+supported by both renderers. Text and border opacity track the same preference;
+shadow opacity is 60% of that preference rather than an opaque default.
+
+Manual verification for the font correction used the production live filter
+and ZMQ reinitialization commands, local encoded frames, and generated video ASS
+with FFmpeg font-selection logs. Noto 400/700 selected the bundled static faces;
+the thin-outline symptom no longer appeared in the bold sample. These are local
+render checks, not a claim of automated suites or VRChat visual verification.
+
 ## Next product boundary
 
 The core media, FFmpeg, danmaku, settings, and authentication seams are now

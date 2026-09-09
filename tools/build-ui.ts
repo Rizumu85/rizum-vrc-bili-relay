@@ -20,6 +20,7 @@ run([
 run(["bun", "run", "tools/generate-danmaku-backdrop.ts"]);
 mkdirSync(resolve(dist, "assets"), { recursive: true });
 mkdirSync(resolve(dist, "assets", "fonts"), { recursive: true });
+mkdirSync(resolve(dist, "assets", "fonts", "danmaku"), { recursive: true });
 copyFileSync(
   resolve(root, "assets", "danmaku-preview-backdrop.png"),
   resolve(dist, "assets", "danmaku-preview-backdrop.png"),
@@ -33,6 +34,9 @@ for (const fontAssetName of [
   "MiSans-License.pdf",
   "NotoSerifSC-VF.ttf",
   "Noto-OFL.txt",
+  "danmaku/NotoSansSC-Regular.otf",
+  "danmaku/NotoSansSC-Bold.otf",
+  "NotoSans-OFL.txt",
   "CascadiaMono.ttf",
   "Cascadia-OFL.txt",
 ]) {
