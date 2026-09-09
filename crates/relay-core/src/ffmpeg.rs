@@ -821,6 +821,11 @@ fn add_transcode_with_filters(command: &mut Command, video_filter: &str, audio_f
         "veryfast",
         "-tune",
         "zerolatency",
+        // Zerolatency enables CPU-dependent slice threading (11 horizontal
+        // slices on the reported machine). Keep each frame in one slice for
+        // the RTSP/Media Foundation playback path, including hold producers.
+        "-x264-params",
+        "sliced-threads=0:slices=1",
         "-b:v",
         &video_bitrate,
         "-maxrate",

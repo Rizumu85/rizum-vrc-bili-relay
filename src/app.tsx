@@ -61,10 +61,19 @@ export function sceneWindowHeight(
   scene: Scene,
   settingsExpanded = false,
   playbackSelectionRows = 1,
+  sourceKind: SourceResolution["kind"] = "video",
 ): number {
   if (scene === "idle" || scene === "loading") return 178;
   if (scene === "error") return 230;
-  if (scene === "ready-vod") return 471 + Math.min(Math.max(playbackSelectionRows, 0), 2) * 35;
+  if (scene === "ready-vod") {
+    // Omit the seek/transport block (12 + 28 + 26) when it is not rendered,
+    // and the danmaku row (15 + 32) for generic media.
+    const playbackHeight = sourceKind === "video"
+      ? 66 + Math.min(Math.max(playbackSelectionRows, 0), 2) * 35
+      : 0;
+    const danmakuHeight = sourceKind === "media" ? 0 : 47;
+    return 358 + playbackHeight + danmakuHeight;
+  }
   if (scene === "settings") return settingsExpanded ? 400 : 364;
   return 572;
 }
@@ -3896,12 +3905,12 @@ export function AppSurface({
     const resize = setTimeout(
       () => setProductWindowClientSize(
         sceneWindowWidth(scene),
-        sceneWindowHeight(scene, settingsExpanded, playbackSelectionRows),
+        sceneWindowHeight(scene, settingsExpanded, playbackSelectionRows, sourceResolution?.kind),
       ),
       0,
     );
     return () => clearTimeout(resize);
-  }, [scene, settingsExpanded, playbackSelectionRows]);
+  }, [scene, settingsExpanded, playbackSelectionRows, sourceResolution?.kind]);
 
   const getRelayWorker = () => {
     relayWorker.current ??= new RelayWorkerClient();
