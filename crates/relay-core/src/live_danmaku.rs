@@ -428,7 +428,11 @@ fn receive_connection(
 ) -> Result<(), String> {
     let mut socket = connect_websocket(endpoint, cancel, socket_interrupt)?;
     let auth = json!({
-        "uid": 0,
+        // The websocket identity must match the cookie used to obtain its
+        // token. Only guest sessions authenticate with uid=0.
+        "uid": read_cookie(&endpoint.cookie, "DedeUserID")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0),
         "roomid": endpoint.room_id.parse::<u64>().unwrap_or_default(),
         "protover": 3,
         "buvid": endpoint.buvid3,
