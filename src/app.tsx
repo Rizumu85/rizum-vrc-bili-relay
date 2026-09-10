@@ -4855,8 +4855,14 @@ export function AppSurface({
   return (
     <div
       style={{
-        width: "100%",
-        height: "100%",
+        // Keep the retained GPUI scene dimensions explicit. GPUIX can resize
+        // the Win32 client surface before its percentage-size root receives a
+        // layout pass; in that window the newly exposed right side stays
+        // unpainted until a full process restart. A scene-sized root makes the
+        // React mutation itself invalidate layout and paint on every scene
+        // transition.
+        width: sceneWindowWidth(scene),
+        height: sceneWindowHeight(scene, settingsExpanded, playbackSelectionRows, sourceResolution?.kind),
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
