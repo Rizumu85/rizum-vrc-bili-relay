@@ -349,6 +349,25 @@ measurements are not a substitute for hours-long playback observation.
 
 ## Next product boundary
 
+### Local stream diagnostics (v0.1.23)
+
+FFmpeg children record numeric progress every two seconds from worker polling,
+including per-window output advancement, cumulative frames/bytes, reported speed,
+progress age, and pause/media/publisher lifecycle events. Numeric seek, timeline
+offset and read-rate context links producer replacements to the stable publisher.
+Stderr is persisted only as cumulative, allowlisted warning category counts.
+This is not a source-download throughput meter: source starvation and encoding
+pressure still need correlated evidence; publisher progress does not prove delivery
+to VRCDN or to the player's buffer. Polling can pause during blocking operations;
+use the recorded sample-window duration rather than assuming an exact cadence.
+
+Logs stay in `%LOCALAPPDATA%/VRC Bili Relay/runtime/diagnostics/relay-health.jsonl`,
+with one `relay-health.previous.jsonl` backup, each approximately 2 MiB. A bounded
+128-entry background queue drops telemetry under pressure rather than blocking
+playback. No raw stderr, command lines, signed media URLs, cookies or ingest keys
+are written. Nothing is automatically uploaded. Final records can be lost during
+abrupt process exit; these files are diagnostic aids, not durable audit logs.
+
 The core media, FFmpeg, danmaku, settings, and authentication seams are now
 implemented. Further slices should start from a user-visible gap rather than
 adding another transport or persistence layer speculatively.

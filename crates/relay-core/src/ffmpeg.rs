@@ -78,6 +78,10 @@ struct ManagedChild {
     stderr: Arc<Mutex<VecDeque<String>>>,
     has_output: Arc<AtomicBool>,
     output_micros: Arc<AtomicU64>,
+    health: Arc<Mutex<crate::stream_diagnostics::Progress>>,
+    role: &'static str,
+    last_health_sample: Instant,
+    last_health_output: f64,
 }
 
 enum ChildPoll {
@@ -569,14 +573,41 @@ impl ManagedChild {
         };
         let stdin = child.stdin.take();
         let stderr = Arc::new(Mutex::new(VecDeque::with_capacity(LOG_LINE_LIMIT)));
+        let health = Arc::new(Mutex::new(crate::stream_diagnostics::Progress::default()));
+        // Persist numeric context only, never arbitrary command arguments.
+        if let Ok(mut progress) = health.lock() {
+            let args: Vec<_> = command.get_args().collect();
+            for pair in args.windows(2) {
+                let key = match pair[0].to_str() {
+                    Some("-output_ts_offset") => "timeline_offset_seconds",
+                    Some("-ss") => "source_start_seconds",
+                    Some("-readrate") => "requested_readrate",
+                    _ => continue,
+                };
+                if let Some(value) = pair[1]
+                    .to_str()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .filter(|v| v.is_finite())
+                {
+                    progress.values.insert(key.to_string(), value);
+                }
+            }
+        }
         if let Some(pipe) = child.stderr.take() {
-            drain_stderr(pipe, Arc::clone(&stderr), redactions);
+            drain_stderr(pipe, Arc::clone(&stderr), redactions, Arc::clone(&health));
         }
         let has_output = Arc::new(AtomicBool::new(false));
         let output_micros = Arc::new(AtomicU64::new(0));
         if let Some(pipe) = child.stdout.take() {
-            drain_progress(pipe, Arc::clone(&has_output), Arc::clone(&output_micros));
+            drain_progress(
+                pipe,
+                Arc::clone(&has_output),
+                Arc::clone(&output_micros),
+                Arc::clone(&health),
+            );
         }
+
+        crate::stream_diagnostics::record(child.id(), error_subject, "spawn", 0.0, &health);
 
         Ok(Self {
             child,
@@ -587,20 +618,49 @@ impl ManagedChild {
             stderr,
             has_output,
             output_micros,
+            health,
+            role: error_subject,
+            last_health_sample: Instant::now(),
+            last_health_output: 0.0,
         })
     }
 
     fn poll(&mut self, enforce_startup_timeout: bool) -> Result<ChildPoll, RelayError> {
+        if self.last_health_sample.elapsed() >= Duration::from_secs(2) {
+            let window = self.last_health_sample.elapsed().as_secs_f64();
+            let output = self.output_seconds();
+            if let Ok(mut health) = self.health.lock() {
+                health.values.insert("sample_window_seconds".into(), window);
+                health.values.insert(
+                    "output_advance_seconds".into(),
+                    output - self.last_health_output,
+                );
+                health.values.insert(
+                    "output_realtime_ratio".into(),
+                    (output - self.last_health_output) / window,
+                );
+            }
+            self.record_health("sample");
+            self.last_health_output = output;
+            self.last_health_sample = Instant::now();
+        }
         match self.child.try_wait().map_err(|error| {
             RelayError::new(
                 "ffmpeg_status_failed",
                 format!("FFmpeg status could not be read: {error}"),
             )
         })? {
-            Some(status) => Ok(ChildPoll::Exited {
-                status,
-                diagnostic: self.diagnostic(),
-            }),
+            Some(status) => {
+                self.record_health(if status.success() {
+                    "exited_ok"
+                } else {
+                    "exited_error"
+                });
+                Ok(ChildPoll::Exited {
+                    status,
+                    diagnostic: self.diagnostic(),
+                })
+            }
             None if self.has_output.load(Ordering::Acquire) => {
                 Ok(ChildPoll::Alive { stable: true })
             }
@@ -620,6 +680,7 @@ impl ManagedChild {
     }
 
     fn stop(&mut self) {
+        self.record_health("stop_requested");
         if self.child.try_wait().ok().flatten().is_none() {
             if let Some(mut stdin) = self.stdin.take() {
                 let _ = stdin.write_all(b"q\n");
@@ -640,9 +701,11 @@ impl ManagedChild {
             }
         }
         let _ = self.child.wait();
+        self.record_health("stopped");
     }
 
     fn force_stop(&mut self) {
+        self.record_health("force_stop");
         if self.child.try_wait().ok().flatten().is_none() {
             let _ = self.child.kill();
         }
@@ -651,6 +714,16 @@ impl ManagedChild {
 
     fn output_seconds(&self) -> f64 {
         self.output_micros.load(Ordering::Acquire) as f64 / 1_000_000.0
+    }
+
+    fn record_health(&self, event: &'static str) {
+        crate::stream_diagnostics::record(
+            self.child.id(),
+            self.role,
+            event,
+            self.started_at.elapsed().as_secs_f64(),
+            &self.health,
+        );
     }
 
     fn diagnostic(&self) -> String {
@@ -1021,9 +1094,13 @@ fn drain_stderr(
     pipe: impl std::io::Read + Send + 'static,
     destination: Arc<Mutex<VecDeque<String>>>,
     redactions: Vec<String>,
+    health: Arc<Mutex<crate::stream_diagnostics::Progress>>,
 ) {
     thread::spawn(move || {
         for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+            if let Ok(mut health) = health.lock() {
+                health.warning(&line);
+            }
             let sanitized = redactions.iter().fold(line, |text, secret| {
                 if secret.is_empty() {
                     text
@@ -1045,9 +1122,13 @@ fn drain_progress(
     pipe: impl std::io::Read + Send + 'static,
     has_output: Arc<AtomicBool>,
     output_micros: Arc<AtomicU64>,
+    health: Arc<Mutex<crate::stream_diagnostics::Progress>>,
 ) {
     thread::spawn(move || {
         for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+            if let Ok(mut health) = health.lock() {
+                health.line(&line);
+            }
             let position = line
                 .strip_prefix("out_time_us=")
                 .or_else(|| line.strip_prefix("out_time_ms="))

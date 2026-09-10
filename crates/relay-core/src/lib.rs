@@ -12,6 +12,7 @@ mod live_danmaku;
 mod media_session;
 mod media_source;
 mod settings;
+mod stream_diagnostics;
 mod windows_secret;
 
 use bilibili::BilibiliClient;
