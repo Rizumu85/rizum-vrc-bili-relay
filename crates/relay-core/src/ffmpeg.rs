@@ -56,9 +56,15 @@ pub(crate) struct FfmpegProcess {
 }
 
 pub(crate) enum ProcessPoll {
-    Alive { stable: bool },
+    Alive {
+        stable: bool,
+    },
     Draining,
-    Exited { success: bool, diagnostic: String },
+    Exited {
+        success: bool,
+        diagnostic: String,
+        source_exit: bool,
+    },
     PauseExpired,
     CompletionExpired,
 }
@@ -162,6 +168,7 @@ impl FfmpegProcess {
                 return Ok(ProcessPoll::Exited {
                     success: status.success(),
                     diagnostic,
+                    source_exit: false,
                 });
             }
             ChildPoll::Alive { stable } => stable,
@@ -180,6 +187,7 @@ impl FfmpegProcess {
                 return Ok(ProcessPoll::Exited {
                     success: false,
                     diagnostic: error.message,
+                    source_exit: true,
                 });
             }
             self.awaiting_content_start = false;
@@ -193,6 +201,7 @@ impl FfmpegProcess {
                 return Ok(ProcessPoll::Exited {
                     success: false,
                     diagnostic: "FFmpeg media producer is unavailable".to_string(),
+                    source_exit: true,
                 });
             }
         };
@@ -211,6 +220,7 @@ impl FfmpegProcess {
                         return Ok(ProcessPoll::Exited {
                             success: false,
                             diagnostic: error.message,
+                            source_exit: true,
                         });
                     }
                     self.completed_position_seconds = Some(completed_position);
@@ -224,6 +234,7 @@ impl FfmpegProcess {
                 return Ok(ProcessPoll::Exited {
                     success: status.success() && !self.is_paused(),
                     diagnostic,
+                    source_exit: true,
                 });
             }
             ChildPoll::Alive { stable } => stable,
@@ -242,6 +253,7 @@ impl FfmpegProcess {
             ChildPoll::Exited { status, diagnostic } => Ok(ProcessPoll::Exited {
                 success: status.success(),
                 diagnostic,
+                source_exit: false,
             }),
         }
     }

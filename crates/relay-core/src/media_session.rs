@@ -3,8 +3,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use url::Url;
 
+use crate::bilibili::BilibiliClient;
 use crate::danmaku::{DanmakuOverlay, DanmakuSource};
 use crate::ffmpeg::{FfmpegProcess, ProcessPoll};
+use crate::{LiveStatus, RelayEndReason};
 use crate::{
     MediaInput, PlaybackRate, RelayError, RelayStage, RelayStatus, RelayTarget, ResolvedSource,
     SourceResolution,
@@ -28,6 +30,8 @@ struct MediaSession {
     duration_seconds: Option<f64>,
     paused: bool,
     diagnostic: Option<String>,
+    end_reason: Option<RelayEndReason>,
+    live_end_check_pending: bool,
 }
 
 impl MediaSessionStore {
@@ -62,6 +66,8 @@ impl MediaSessionStore {
                     duration_seconds,
                     paused: false,
                     diagnostic: None,
+                    end_reason: None,
+                    live_end_check_pending: false,
                 },
             );
         }
@@ -122,6 +128,8 @@ impl MediaSessionStore {
             process.stop();
         }
         session.overlay = None;
+        session.end_reason = None;
+        session.live_end_check_pending = false;
         let process = FfmpegProcess::spawn(
             ffmpeg_path,
             &session.input,
@@ -134,11 +142,14 @@ impl MediaSessionStore {
         )
         .inspect_err(|error| {
             session.stage = RelayStage::Failed;
+            session.end_reason = Some(RelayEndReason::StartFailed);
             session.diagnostic = Some(error.message.clone());
         })?;
         session.overlay = overlay;
         session.process = Some(process);
         session.stage = RelayStage::Starting;
+        session.end_reason = None;
+        session.live_end_check_pending = false;
         session.playback_url = Some(target.playback_url);
         session.position_seconds = (!session.input.is_live).then_some(start_seconds);
         session.paused = start_paused;
@@ -308,7 +319,11 @@ impl MediaSessionStore {
         Ok((session.input.danmaku_source.clone(), start_seconds))
     }
 
-    pub fn status(&mut self, session_id: &str) -> Result<RelayStatus, RelayError> {
+    pub fn status(
+        &mut self,
+        session_id: &str,
+        bilibili: &BilibiliClient,
+    ) -> Result<RelayStatus, RelayError> {
         self.cleanup_expired();
         let session = self.sessions.get_mut(session_id).ok_or_else(|| {
             RelayError::new(
@@ -317,6 +332,25 @@ impl MediaSessionStore {
             )
         })?;
         refresh(session)?;
+        if session.live_end_check_pending
+            && matches!(session.stage, RelayStage::Failed | RelayStage::Completed)
+        {
+            session.live_end_check_pending = false;
+            if let Some(DanmakuSource::Live(source)) = session.input.danmaku_source.as_ref() {
+                match bilibili.live_room_status(&source.room_id) {
+                    Ok(LiveStatus::Offline | LiveStatus::Replay) => {
+                        session.stage = RelayStage::Completed;
+                        session.end_reason = Some(RelayEndReason::LiveEnded);
+                        session.diagnostic = None;
+                    }
+                    Ok(LiveStatus::Live) => {}
+                    Err(_) => {
+                        // Unknown is not offline. Keep the concrete stream
+                        // failure, without claiming that the broadcaster ended.
+                    }
+                }
+            }
+        }
         Ok(status_for(session_id, session))
     }
 
@@ -542,11 +576,18 @@ impl Drop for MediaSessionStore {
 }
 
 fn refresh(session: &mut MediaSession) -> Result<(), RelayError> {
+    let was_running = session.stage == RelayStage::Running;
     let poll = {
         let Some(process) = session.process.as_mut() else {
             return Ok(());
         };
-        let poll = process.poll(&session.input, session.overlay.as_ref())?;
+        let poll = process
+            .poll(&session.input, session.overlay.as_ref())
+            .unwrap_or_else(|error| ProcessPoll::Exited {
+                success: false,
+                diagnostic: error.message,
+                source_exit: false,
+            });
         if let Some(position) = process.position_seconds() {
             session.position_seconds = Some(clamp_position(position, session.duration_seconds));
         }
@@ -586,13 +627,24 @@ fn refresh(session: &mut MediaSession) -> Result<(), RelayError> {
         ProcessPoll::Exited {
             success,
             diagnostic,
+            source_exit,
         } => {
-            session.stage = if success {
+            session.stage = if success && !session.input.is_live {
                 RelayStage::Completed
             } else {
                 RelayStage::Failed
             };
             session.diagnostic = (!diagnostic.is_empty()).then_some(diagnostic);
+            session.end_reason = if success && !session.input.is_live {
+                None
+            } else if !was_running {
+                Some(RelayEndReason::StartFailed)
+            } else if source_exit {
+                Some(RelayEndReason::SourceDisconnected)
+            } else {
+                Some(RelayEndReason::PublisherDisconnected)
+            };
+            session.live_end_check_pending = session.input.is_live;
             session.process = None;
             session.overlay = None;
             session.paused = false;
@@ -629,6 +681,11 @@ fn status_for(session_id: &str, session: &MediaSession) -> RelayStatus {
         paused: session.paused,
         danmaku_events: session.overlay.as_ref().map(DanmakuOverlay::event_count),
         diagnostic: session.diagnostic.clone(),
+        end_reason: if matches!(session.stage, RelayStage::Failed | RelayStage::Completed) {
+            session.end_reason.clone()
+        } else {
+            None
+        },
     }
 }
 

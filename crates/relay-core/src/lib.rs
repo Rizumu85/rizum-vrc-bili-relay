@@ -20,7 +20,7 @@ use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 use settings::SettingsStore;
 
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -542,6 +542,17 @@ pub struct RelayStatus {
     pub danmaku_events: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_reason: Option<RelayEndReason>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelayEndReason {
+    LiveEnded,
+    SourceDisconnected,
+    PublisherDisconnected,
+    StartFailed,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -805,7 +816,7 @@ impl RelayCore {
                 Ok(Reply::PlaybackState { resolution, relay })
             }
             Command::RelayStatus { session_id } => Ok(Reply::RelayState {
-                relay: self.sessions.status(&session_id)?,
+                relay: self.sessions.status(&session_id, &self.bilibili)?,
             }),
             Command::SetRelayPaused {
                 session_id,
@@ -832,7 +843,7 @@ impl RelayCore {
                 session_id,
                 options,
             } => {
-                let current = self.sessions.status(&session_id)?;
+                let current = self.sessions.status(&session_id, &self.bilibili)?;
                 let start_seconds = current.position_seconds.unwrap_or(0.0);
                 let (overlay, normalized_start) =
                     self.prepare_danmaku_overlay(&session_id, &options.danmaku, start_seconds)?;

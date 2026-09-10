@@ -7,7 +7,8 @@ import {
   type EventPayload,
   type Root,
 } from "@gpuix/react";
-import { FFIType, JSCallback, dlopen, ptr } from "bun:ffi";
+import { FFIType, dlopen, ptr } from "bun:ffi";
+import { findProcessWindowByTitle } from "./window-lookup";
 
 import { ICONS } from "../icons";
 import { FONT_UI, RADII, type Palette } from "../theme";
@@ -55,13 +56,6 @@ export interface NativePartPopupRequest {
 
 const user32 = process.platform === "win32"
   ? dlopen("user32.dll", {
-      EnumWindows: { args: [FFIType.function, FFIType.ptr], returns: FFIType.bool },
-      GetWindowThreadProcessId: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.uint32_t },
-      GetWindowTextLengthW: { args: [FFIType.ptr], returns: FFIType.int32_t },
-      GetWindowTextW: {
-        args: [FFIType.ptr, FFIType.ptr, FFIType.int32_t],
-        returns: FFIType.int32_t,
-      },
       GetWindowRect: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
       GetClientRect: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
       ClientToScreen: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
@@ -242,34 +236,7 @@ function readClientScale(
 }
 
 function findWindowByTitle(title: string): WindowHandle | null {
-  if (!user32) return null;
-  let handle: WindowHandle | null = null;
-  const callback = new JSCallback(
-    (candidate: ReturnType<typeof ptr>) => {
-      const owner = new Uint32Array(1);
-      user32.symbols.GetWindowThreadProcessId(candidate, ptr(owner));
-      if (owner[0] !== process.pid || readWindowTitle(candidate) !== title) return true;
-      handle = candidate;
-      return false;
-    },
-    { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
-  );
-  try {
-    user32.symbols.EnumWindows(callback, null);
-  } finally {
-    callback.close();
-  }
-  return handle;
-}
-
-function readWindowTitle(handle: WindowHandle): string {
-  if (!user32) return "";
-  const length = user32.symbols.GetWindowTextLengthW(handle);
-  if (length <= 0) return "";
-  const buffer = new Uint16Array(length + 1);
-  const copied = user32.symbols.GetWindowTextW(handle, ptr(buffer), buffer.length);
-  if (copied <= 0) return "";
-  return Buffer.from(buffer.buffer, 0, copied * 2).toString("utf16le");
+  return findProcessWindowByTitle(title, false);
 }
 
 function PopupIcon({ name, color, size }: { name: "check"; color: string; size: number }) {

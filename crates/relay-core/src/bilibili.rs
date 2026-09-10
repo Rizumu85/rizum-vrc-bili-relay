@@ -40,6 +40,51 @@ impl BilibiliClient {
         self.access_mode = access_mode;
     }
 
+    pub(crate) fn live_room_status(&self, room_id: &str) -> Result<LiveStatus, RelayError> {
+        let room_id = room_id
+            .parse::<u64>()
+            .map_err(|_| RelayError::new("live_room_invalid", "Invalid live room identifier"))?;
+        // End-of-stream confirmation must not re-resolve signed media URLs or
+        // hold the worker for the normal 20-second source-resolution timeout.
+        let response = self
+            .http
+            .get(format!(
+                "https://api.live.bilibili.com/room/v1/Room/room_init?id={room_id}"
+            ))
+            .header(REFERER, format!("https://live.bilibili.com/{room_id}"))
+            .timeout(Duration::from_secs(4))
+            .send()
+            .map_err(|error| {
+                network_error(
+                    "bilibili_unavailable",
+                    "Cannot confirm live room status",
+                    error,
+                )
+            })?;
+        ensure_http_success(&response)?;
+        let root: Value = response.json().map_err(|error| {
+            network_error(
+                "invalid_bilibili_response",
+                "Cannot read live room status",
+                error,
+            )
+        })?;
+        let data = api_data(
+            &root,
+            "live_room_unavailable",
+            "Cannot confirm live room status",
+        )?;
+        match u64_field(data, "live_status") {
+            Some(0) => Ok(LiveStatus::Offline),
+            Some(1) => Ok(LiveStatus::Live),
+            Some(2) => Ok(LiveStatus::Replay),
+            _ => Err(RelayError::new(
+                "live_status_unknown",
+                "Live room status is unknown",
+            )),
+        }
+    }
+
     pub fn auth_status(&self) -> BilibiliAuthStatus {
         self.auth.status()
     }

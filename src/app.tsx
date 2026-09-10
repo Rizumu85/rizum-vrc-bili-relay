@@ -36,6 +36,7 @@ import {
   type SourceResolution,
 } from "./relay/protocol";
 import { RelayWorkerClient, RelayWorkerError } from "./relay/worker-client";
+import { relayFailureMessage } from "./relay/status-message";
 import { queryElementBounds, queryWindowSize } from "./platform/gpuix-geometry";
 import {
   beginProductWindowDrag,
@@ -2248,7 +2249,8 @@ function Result({
               onClick={onStopRelay}
             />
           ) : null}
-          {!isReference && relayError && sourceResolution?.routing.kind !== "unavailable" ? (
+          {!isReference && relayError && sourceResolution?.routing.kind !== "unavailable"
+            && (!relayStatus || relayStatus.end_reason === "start_failed") ? (
             <Button label="设置" palette={palette} quiet onClick={onOpenSettings} />
           ) : null}
         </div>
@@ -2296,11 +2298,11 @@ function resultStatusLabel(
     case "draining":
       return "· 视频已结束 · 等待播放器播完";
     case "completed":
-      return "· 视频播放完成";
+      return relay.end_reason === "live_ended" ? "· 直播已结束" : "· 视频播放完成";
     case "stopped":
       return "· 中继已停止";
     case "failed":
-      return "· 中继启动失败";
+      return relay.end_reason === "start_failed" ? "· 中继未能启动" : "· 连接已中断";
     default:
       return "· 正在准备播放地址";
   }
@@ -2318,9 +2320,9 @@ function relayOutputDescription(
     && (relay.stage === "running" || relay.stage === "draining" || playbackPaused)
   ) return relay.playback_url;
   if (relay?.stage === "starting") return "正在准备播放地址";
-  if (relay?.stage === "completed") return "视频已播放完成";
+  if (relay?.stage === "completed") return relay.end_reason === "live_ended" ? "直播已结束" : "视频已播放完成";
   if (relay?.stage === "stopped") return "中继已停止，重新生成地址即可再次启动";
-  if (relay?.stage === "failed") return relayError ?? "中继启动失败，检查设置后再试";
+  if (relay?.stage === "failed") return relayFailureMessage(relay);
   return relayError ?? routeDescription(source);
 }
 
@@ -4226,7 +4228,8 @@ export function AppSurface({
           ) {
             setPlaybackPosition(latest.position_seconds);
           }
-          if (latest.stage === "failed") setRelayError("中继启动失败，检查设置后再试。");
+          if (latest.stage === "failed") setRelayError(relayFailureMessage(latest));
+          else setRelayError(null);
           if (hasActivePublisher(latest)) {
             timer = setTimeout(poll, latest.stage === "starting" ? 700 : 2000);
           }

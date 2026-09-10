@@ -322,6 +322,31 @@ with FFmpeg font-selection logs. Noto 400/700 selected the bundled static faces;
 the thin-outline symptom no longer appeared in the bold sample. These are local
 render checks, not a claim of automated suites or VRChat visual verification.
 
+## Terminal live states and native memory ownership
+
+Protocol 23 adds `end_reason` to relay status. Producer and publisher exits are
+distinguished. An unexpected live EOF is not proof of normal completion, even
+when FFmpeg exits with code 0. After a live relay exits, the worker queries the
+room's status once with a four-second timeout. Only an explicit offline/replay
+status permits `completed/live_ended`; an active room or unknown/network-error
+response preserves the stream failure. Polling exceptions also terminate and
+release the failed pipeline rather than leaving the UI retrying stale state.
+
+Win32 window discovery belongs to `src/platform/window-lookup.ts`. Cache and
+validate HWND identity (including PID/title), and reuse one synchronous
+`JSCallback` for enumeration. Do not create/close callbacks on pointer polls.
+On Windows/Bun 1.3.14, 12,000 create/close cycles grew RSS by about 152 MB after
+GC despite unchanged JS heap use. Reusing the callback grew about 5.7 MB;
+the full shared lookup stabilized around 95 MB RSS over 36,000 calls.
+An affected old UI process held 19.28 GiB private memory while its worker held
+about 2 MiB and no FFmpeg process remained. This is separate from video buffers
+or the packaged danmaku font assets.
+
+`benchmarks/window-callback.bench.ts` measures recreate/reuse/full-lookup modes.
+`benchmarks/window-memory.bench.ts` runs the real UI in a background window and
+reports memory over time without assertions or a test renderer. Short-run
+measurements are not a substitute for hours-long playback observation.
+
 ## Next product boundary
 
 The core media, FFmpeg, danmaku, settings, and authentication seams are now

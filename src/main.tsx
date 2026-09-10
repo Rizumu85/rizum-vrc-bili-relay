@@ -45,6 +45,7 @@ render(
     minWidth: sceneWindowWidth("idle"),
     minHeight: sceneWindowHeight("idle"),
     resizable: false,
+    focus: process.env.VRC_BILI_RELAY_BACKGROUND !== "1",
     titlebarTransparent: process.platform === "win32",
     windowBackground: "blurred",
   },

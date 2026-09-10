@@ -1,4 +1,4 @@
-export const RELAY_PROTOCOL_VERSION = 22;
+export const RELAY_PROTOCOL_VERSION = 23;
 
 export type SourceKind = "video" | "live" | "media" | "short_link";
 export type RelayNextStep =
@@ -90,6 +90,7 @@ export interface RelayStatus {
   paused: boolean;
   danmaku_events?: number;
   diagnostic?: string;
+  end_reason?: "live_ended" | "source_disconnected" | "publisher_disconnected" | "start_failed";
 }
 
 export interface RouteDecision {

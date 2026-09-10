@@ -1,4 +1,5 @@
-import { FFIType, JSCallback, dlopen, ptr } from "bun:ffi";
+import { FFIType, dlopen, ptr } from "bun:ffi";
+import { findProcessWindowByTitle } from "./window-lookup";
 import { dirname, resolve } from "node:path";
 
 import { queryElementBounds, queryWindowSize } from "./gpuix-geometry";
@@ -50,26 +51,6 @@ const textInputElementIds = new Set<number>();
 
 const user32 = process.platform === "win32"
   ? dlopen("user32.dll", {
-      EnumWindows: {
-        args: [FFIType.function, FFIType.ptr],
-        returns: FFIType.bool,
-      },
-      GetWindowThreadProcessId: {
-        args: [FFIType.ptr, FFIType.ptr],
-        returns: FFIType.uint32_t,
-      },
-      GetWindowTextLengthW: {
-        args: [FFIType.ptr],
-        returns: FFIType.int32_t,
-      },
-      GetWindowTextW: {
-        args: [FFIType.ptr, FFIType.ptr, FFIType.int32_t],
-        returns: FFIType.int32_t,
-      },
-      IsWindowVisible: {
-        args: [FFIType.ptr],
-        returns: FFIType.bool,
-      },
       IsIconic: {
         args: [FFIType.ptr],
         returns: FFIType.bool,
@@ -367,15 +348,16 @@ export function releaseProductWindowPointer(): void {
 
 function pollProductWindowTextInputs(): void {
   if (!user32) return;
-  const handle = findCurrentProcessWindow();
-  if (!handle || user32.symbols.IsIconic(handle)) {
-    suspendTextInputPointerCapture();
-    return;
-  }
   const leftMouseDown = (user32.symbols.GetAsyncKeyState(VK_LBUTTON) & 0x8000) !== 0;
   if (!leftMouseDown) {
     if (pointerCaptureHandle) releaseProductWindowPointer();
     leftMouseWasDown = false;
+    return;
+  }
+
+  const handle = findCurrentProcessWindow();
+  if (!handle || user32.symbols.IsIconic(handle)) {
+    suspendTextInputPointerCapture();
     return;
   }
 
@@ -530,37 +512,5 @@ export function setProductWindowClientSize(logicalWidth: number, logicalHeight: 
 }
 
 function findCurrentProcessWindow(): ReturnType<typeof ptr> | bigint | null {
-  if (!user32) return null;
-  let handle: ReturnType<typeof ptr> | bigint | null = null;
-  const callback = new JSCallback(
-    (candidate: ReturnType<typeof ptr>) => {
-      if (!user32.symbols.IsWindowVisible(candidate)) return true;
-      const owner = new Uint32Array(1);
-      user32.symbols.GetWindowThreadProcessId(candidate, ptr(owner));
-      if (owner[0] !== process.pid) return true;
-      if (readWindowTitle(candidate) !== PRODUCT_WINDOW_TITLE) return true;
-      handle = candidate;
-      return false;
-    },
-    {
-      args: [FFIType.ptr, FFIType.ptr],
-      returns: FFIType.bool,
-    },
-  );
-  try {
-    user32.symbols.EnumWindows(callback, null);
-  } finally {
-    callback.close();
-  }
-  return handle;
-}
-
-function readWindowTitle(candidate: ReturnType<typeof ptr> | bigint): string {
-  if (!user32) return "";
-  const length = user32.symbols.GetWindowTextLengthW(candidate);
-  if (length <= 0) return "";
-  const buffer = new Uint16Array(length + 1);
-  const copied = user32.symbols.GetWindowTextW(candidate, ptr(buffer), buffer.length);
-  if (copied <= 0) return "";
-  return Buffer.from(buffer.buffer, 0, copied * 2).toString("utf16le");
+  return findProcessWindowByTitle(PRODUCT_WINDOW_TITLE);
 }
