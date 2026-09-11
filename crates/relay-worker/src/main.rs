@@ -14,6 +14,10 @@ fn main() -> io::Result<()> {
     loop {
         line.clear();
         if input.read_line(&mut line)? == 0 {
+            // Native window closure can end the pipe without a JSON shutdown
+            // command. Stop active sessions before the worker exits so a
+            // paused hold producer cannot keep the public stream alive.
+            let _ = core.handle(relay_core::Command::Shutdown);
             break;
         }
 

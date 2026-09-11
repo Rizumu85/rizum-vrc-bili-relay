@@ -228,7 +228,9 @@ export class RelayWorkerClient {
     if (!child) return;
 
     try {
-      await this.request({ type: "shutdown" }, 1_000);
+      // FFmpeg needs a short graceful-stop window, especially when paused
+      // with the generated hold producer still feeding the publisher.
+      await this.request({ type: "shutdown" }, 5_000);
       await child.exited;
     } catch {
       child.kill();
