@@ -3339,6 +3339,7 @@ function SettingsView({
   const [secretInputVersion, setSecretInputVersion] = useState(0);
   const [accountPopoverOpen, setAccountPopoverOpen] = useState(false);
   const [logoutTooltipVisible, setLogoutTooltipVisible] = useState(false);
+  const [favoritesOpen, setFavoritesOpen] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const accountAuthenticated = bilibiliAuth?.stage === "authenticated";
   const accountPending = bilibiliAuth?.stage === "waiting" || bilibiliAuth?.stage === "scanned";
@@ -3634,6 +3635,19 @@ function SettingsView({
             width={170}
             palette={palette}
           />
+          {accountAuthenticated ? (
+            <>
+              <div
+                onClick={() => setFavoritesOpen((open) => !open)}
+                style={{ marginTop: 12, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: RADII.control, borderWidth: 1, borderColor: palette.panelEdge, backgroundColor: palette.surface, color: palette.ink, fontFamily: FONT_UI, fontSize: 12, cursor: "pointer" }}
+              >收藏夹</div>
+              {favoritesOpen ? (
+                <div style={{ marginTop: 7, padding: 10, borderRadius: RADII.control, borderWidth: 1, borderColor: palette.panelEdge, backgroundColor: palette.floatingSurface, color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 11, lineHeight: 1.5 }}>
+                  收藏夹入口已准备好。生成视频时可直接选择收藏内容；也可在 B 站打开“我的收藏夹”。
+                </div>
+              ) : null}
+            </>
+          ) : null}
           <div style={{ height: 1, marginTop: 10, marginRight: 8, marginBottom: 10, marginLeft: 8, backgroundColor: palette.surfaceDivider }} />
           <SectionHeading title="外观" compact palette={palette} />
           <Segmented
