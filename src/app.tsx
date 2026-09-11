@@ -4845,7 +4845,10 @@ export function AppSurface({
   };
 
   const showSubview = (next: "settings" | "danmaku") => {
-    conversionEpoch.current += 1;
+    // Opening settings/style is a UI-only transition. Do not invalidate an
+    // in-flight conversion: the conversion owns the relay startup and
+    // cancelling its epoch here can leave the UI detached from a live
+    // publisher while the native worker is still switching inputs.
     if (scene !== "settings" && scene !== "danmaku") {
       setLastMainScene(scene === "loading" ? (sourceResolution ? "ready-vod" : "idle") : scene);
     }
