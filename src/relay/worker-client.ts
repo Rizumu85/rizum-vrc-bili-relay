@@ -5,6 +5,7 @@ import {
   RELAY_PROTOCOL_VERSION,
   type BilibiliAuthStateReply,
   type BilibiliAuthStatus,
+  type FavoriteFolder,
   type FfmpegStateReply,
   type FfmpegStatus,
   type HealthReply,
@@ -199,6 +200,12 @@ export class RelayWorkerClient {
 
   async logoutBilibili(): Promise<BilibiliAuthStatus> {
     return this.bilibiliAuthRequest({ type: "logout_bilibili" });
+  }
+
+  async listFavoriteFolders(): Promise<FavoriteFolder[]> {
+    const reply = await this.request({ type: "list_favorite_folders" });
+    if (reply.type !== "favorite_folders") throw new RelayWorkerError("protocol_mismatch", `Expected favorite folders, received ${reply.type}`);
+    return reply.folders;
   }
 
   async getSettings(): Promise<ProductSettings> {

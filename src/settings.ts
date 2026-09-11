@@ -26,4 +26,5 @@ export const DEFAULT_SETTINGS: ProductSettings = {
   playbackEndBehavior: "pause",
   playbackRate: "1",
   bilibiliMode: "account",
+  outputResolution: "p720",
 };

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BilibiliAccessMode, DanmakuSettings, PlaybackEndBehavior, PlaybackRate, ProductSettings,
-    RelayError, RelayTarget, SettingsUpdate, StreamKeyStatus, ThemePreference,
+    RelayError, RelayTarget, SettingsUpdate, StreamKeyStatus, ThemePreference, OutputResolution,
     default_danmaku_preferences, windows_secret,
 };
 
@@ -99,6 +99,7 @@ struct StoredSettings {
     playback_end_behavior: PlaybackEndBehavior,
     playback_rate: PlaybackRate,
     bilibili_mode: BilibiliAccessMode,
+    output_resolution: OutputResolution,
 }
 
 impl Default for StoredSettings {
@@ -112,6 +113,7 @@ impl Default for StoredSettings {
             playback_end_behavior: PlaybackEndBehavior::Pause,
             playback_rate: PlaybackRate::Normal,
             bilibili_mode: BilibiliAccessMode::Account,
+            output_resolution: OutputResolution::P720,
         }
     }
 }
@@ -127,6 +129,7 @@ impl StoredSettings {
             playback_end_behavior: self.playback_end_behavior,
             playback_rate: self.playback_rate,
             bilibili_mode: self.bilibili_mode,
+            output_resolution: self.output_resolution,
         }
     }
 
@@ -154,6 +157,8 @@ struct SettingsFile {
     playback_end_behavior: PlaybackEndBehavior,
     playback_rate: PlaybackRate,
     bilibili_mode: BilibiliAccessMode,
+    #[serde(default)]
+    output_resolution: OutputResolution,
 }
 
 impl Default for SettingsFile {
@@ -169,6 +174,7 @@ impl Default for SettingsFile {
             playback_end_behavior: PlaybackEndBehavior::Pause,
             playback_rate: PlaybackRate::Normal,
             bilibili_mode: BilibiliAccessMode::Account,
+            output_resolution: OutputResolution::P720,
         }
     }
 }
@@ -191,6 +197,7 @@ struct SettingsDocument<'a> {
     playback_end_behavior: PlaybackEndBehavior,
     playback_rate: PlaybackRate,
     bilibili_mode: BilibiliAccessMode,
+    output_resolution: OutputResolution,
 }
 
 impl SettingsStore {
@@ -228,6 +235,7 @@ impl SettingsStore {
                 .unwrap_or(current.playback_end_behavior),
             playback_rate: update.playback_rate.unwrap_or(current.playback_rate),
             bilibili_mode: update.bilibili_mode.unwrap_or(current.bilibili_mode),
+            output_resolution: update.output_resolution.unwrap_or(current.output_resolution),
         })?;
         self.write(&stored)?;
         Ok(stored.public())
@@ -276,6 +284,7 @@ impl SettingsStore {
             playback_end_behavior: settings.playback_end_behavior,
             playback_rate: settings.playback_rate,
             bilibili_mode: settings.bilibili_mode,
+            output_resolution: settings.output_resolution,
         };
         let encoded = serde_json::to_vec_pretty(&document).map_err(|error| {
             RelayError::new(
@@ -376,6 +385,7 @@ fn read_settings(path: &Path) -> Result<Option<LoadedSettings>, RelayError> {
         playback_end_behavior: file.playback_end_behavior,
         playback_rate: file.playback_rate,
         bilibili_mode: file.bilibili_mode,
+        output_resolution: file.output_resolution,
     })?;
     Ok(Some(LoadedSettings {
         settings,

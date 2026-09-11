@@ -21,9 +21,9 @@ use windows_sys::Win32::System::JobObjects::{
 };
 
 use crate::danmaku::{
-    AUDIO_BITRATE_KBPS, DanmakuOverlay, OUTPUT_FPS, OUTPUT_HEIGHT, OUTPUT_WIDTH, VIDEO_BITRATE_KBPS,
+    AUDIO_BITRATE_KBPS, DanmakuOverlay, OUTPUT_FPS, OUTPUT_WIDTH, VIDEO_BITRATE_KBPS,
 };
-use crate::{MediaInput, PlaybackRate, RelayError};
+use crate::{MediaInput, OutputResolution, PlaybackRate, RelayError};
 
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
@@ -53,6 +53,7 @@ pub(crate) struct FfmpegProcess {
     awaiting_content_start: bool,
     is_live: bool,
     playback_rate: PlaybackRate,
+    output_resolution: OutputResolution,
 }
 
 pub(crate) enum ProcessPoll {
@@ -104,6 +105,7 @@ impl FfmpegProcess {
         start_paused: bool,
         _overlay: Option<&DanmakuOverlay>,
         playback_rate: PlaybackRate,
+        output_resolution: OutputResolution,
     ) -> Result<Self, RelayError> {
         if start_paused && input.is_live {
             return Err(RelayError::new(
@@ -118,7 +120,7 @@ impl FfmpegProcess {
         // Prime the publisher with a still frame. FFmpeg can consume several
         // seconds while probing the local MPEG-TS stream and opening RTMP; the
         // real video must not advance during that phase.
-        let producer = match spawn_hold_producer(executable, &udp_output, 0.0) {
+        let producer = match spawn_hold_producer(executable, &udp_output, 0.0, output_resolution) {
             Ok(producer) => producer,
             Err(error) => {
                 let mut publisher = publisher;
@@ -141,6 +143,7 @@ impl FfmpegProcess {
             awaiting_content_start: !start_paused,
             is_live: input.is_live,
             playback_rate,
+            output_resolution,
         })
     }
 
@@ -476,6 +479,7 @@ impl FfmpegProcess {
             self.timeline_offset_seconds,
             overlay,
             playback_rate,
+            self.output_resolution,
         )?;
         self.content_start_seconds = start_seconds;
         self.playback_rate = playback_rate;
@@ -488,6 +492,7 @@ impl FfmpegProcess {
             &self.executable,
             &self.udp_output,
             self.timeline_offset_seconds,
+            self.output_resolution,
         )?;
         self.producer = Some(producer);
         Ok(())
@@ -780,6 +785,7 @@ fn spawn_content_producer(
     timeline_offset_seconds: f64,
     overlay: Option<&DanmakuOverlay>,
     playback_rate: PlaybackRate,
+    output_resolution: OutputResolution,
 ) -> Result<ManagedChild, RelayError> {
     let mut command = base_command(executable);
     add_input(
@@ -795,7 +801,7 @@ fn spawn_content_producer(
     } else {
         command.args(["-map", "0:v:0", "-map", "0:a:0?"]);
     }
-    add_standard_transcode(&mut command, overlay, playback_rate);
+    add_standard_transcode(&mut command, overlay, playback_rate, output_resolution);
     add_mpegts_output(&mut command, udp_output, timeline_offset_seconds);
     let mut redactions = vec![input.video_url.clone()];
     if let Some(audio_url) = input.audio_url.as_ref() {
@@ -813,9 +819,11 @@ fn spawn_hold_producer(
     executable: &str,
     udp_output: &str,
     timeline_offset_seconds: f64,
+    output_resolution: OutputResolution,
 ) -> Result<ManagedChild, RelayError> {
     let mut command = base_command(executable);
-    let video_source = format!("color=c=0x202126:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:r={OUTPUT_FPS}");
+    let (width, height) = output_resolution.dimensions();
+    let video_source = format!("color=c=0x202126:s={width}x{height}:r={OUTPUT_FPS}");
     command.args(["-re", "-f", "lavfi", "-i", &video_source]);
     command.args([
         "-re",
@@ -828,9 +836,14 @@ fn spawn_hold_producer(
         "-map",
         "1:a:0",
     ]);
+    let scale = f64::from(width) / f64::from(OUTPUT_WIDTH);
+    let bar_width = (32.0 * scale).round() as u32;
+    let bar_height = (112.0 * scale).round() as u32;
+    let gap = (20.0 * scale).round() as u32;
     let pause_filter = format!(
-        "setpts=PTS-STARTPTS,drawbox=x=iw/2-42:y=ih/2-56:w=32:h=112:color=white@0.72:t=fill,\
-         drawbox=x=iw/2+10:y=ih/2-56:w=32:h=112:color=white@0.72:t=fill,fps={OUTPUT_FPS}"
+        "setpts=PTS-STARTPTS,drawbox=x=iw/2-{bar_width_plus_gap}:y=ih/2-{half_bar_height}:w={bar_width}:h={bar_height}:color=white@0.72:t=fill,drawbox=x=iw/2+{gap}:y=ih/2-{half_bar_height}:w={bar_width}:h={bar_height}:color=white@0.72:t=fill,fps={OUTPUT_FPS}",
+        bar_width_plus_gap = bar_width + gap,
+        half_bar_height = bar_height / 2,
     );
     add_transcode_with_video_filter(&mut command, &pause_filter);
     add_mpegts_output(&mut command, udp_output, timeline_offset_seconds);
@@ -861,11 +874,13 @@ fn add_standard_transcode(
     command: &mut Command,
     overlay: Option<&DanmakuOverlay>,
     playback_rate: PlaybackRate,
+    output_resolution: OutputResolution,
 ) {
+    let (width, height) = output_resolution.dimensions();
     let mut filter = format!(
         "setpts=PTS-STARTPTS,\
-         scale=w={OUTPUT_WIDTH}:h={OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,\
-         pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2"
+         scale=w='min(iw,{width})':h='min(ih,{height})':force_original_aspect_ratio=decrease,\
+         pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
     );
     if let Some(path) = overlay.and_then(DanmakuOverlay::ass_path) {
         filter.push_str(&format!(",ass=filename='{}'", escape_filter_path(path)));

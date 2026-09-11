@@ -8,7 +8,7 @@ use crate::danmaku::{DanmakuOverlay, DanmakuSource};
 use crate::ffmpeg::{FfmpegProcess, ProcessPoll};
 use crate::{LiveStatus, RelayEndReason};
 use crate::{
-    MediaInput, PlaybackRate, RelayError, RelayStage, RelayStatus, RelayTarget, ResolvedSource,
+    MediaInput, OutputResolution, PlaybackRate, RelayError, RelayStage, RelayStatus, RelayTarget, ResolvedSource,
     SourceResolution,
 };
 
@@ -89,6 +89,7 @@ impl MediaSessionStore {
         overlay: Option<DanmakuOverlay>,
         start_paused: bool,
         playback_rate: PlaybackRate,
+        output_resolution: OutputResolution,
     ) -> Result<RelayStatus, RelayError> {
         self.cleanup_expired();
         let ffmpeg_path = ffmpeg_path.ok_or_else(|| {
@@ -139,6 +140,7 @@ impl MediaSessionStore {
             start_paused,
             overlay.as_ref(),
             playback_rate,
+            output_resolution,
         )
         .inspect_err(|error| {
             session.stage = RelayStage::Failed;

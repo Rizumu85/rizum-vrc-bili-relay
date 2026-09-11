@@ -88,6 +88,7 @@ pub enum Command {
         login_id: u64,
     },
     LogoutBilibili,
+    ListFavoriteFolders,
     GetSettings,
     RevealStreamKey,
     SaveSettings {
@@ -149,6 +150,7 @@ pub enum Reply {
     BilibiliAuthState {
         auth: BilibiliAuthStatus,
     },
+    FavoriteFolders { folders: Vec<FavoriteFolder> },
     SettingsState {
         settings: ProductSettings,
     },
@@ -156,6 +158,13 @@ pub enum Reply {
         stream_key: String,
     },
     ShutdownAccepted,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FavoriteFolder {
+    pub id: u64,
+    pub title: String,
+    pub media_count: u32,
 }
 
 impl Reply {
@@ -272,7 +281,15 @@ pub(crate) struct RelayTarget {
 pub struct PlaybackOptions {
     pub danmaku: DanmakuSettings,
     pub playback_rate: PlaybackRate,
+    #[serde(default)]
+    pub output_resolution: OutputResolution,
 }
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputResolution { #[default] P720, P1080 }
+
+impl OutputResolution { pub(crate) fn dimensions(self) -> (u32, u32) { match self { Self::P720 => (1280, 720), Self::P1080 => (1920, 1080) } } }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Serialize)]
 pub enum PlaybackRate {
@@ -357,6 +374,7 @@ pub struct ProductSettings {
     pub playback_end_behavior: PlaybackEndBehavior,
     pub playback_rate: PlaybackRate,
     pub bilibili_mode: BilibiliAccessMode,
+    pub output_resolution: OutputResolution,
 }
 
 impl Default for ProductSettings {
@@ -370,6 +388,7 @@ impl Default for ProductSettings {
             playback_end_behavior: PlaybackEndBehavior::Pause,
             playback_rate: PlaybackRate::Normal,
             bilibili_mode: BilibiliAccessMode::Account,
+            output_resolution: OutputResolution::P720,
         }
     }
 }
@@ -419,6 +438,8 @@ pub struct SettingsUpdate {
     pub playback_rate: Option<PlaybackRate>,
     #[serde(default)]
     pub bilibili_mode: Option<BilibiliAccessMode>,
+    #[serde(default)]
+    pub output_resolution: Option<OutputResolution>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
@@ -754,6 +775,7 @@ impl RelayCore {
                         overlay,
                         paused,
                         options.playback_rate,
+                        options.output_resolution,
                     )?,
                 })
             }
@@ -812,6 +834,7 @@ impl RelayCore {
                         next_overlay,
                         paused,
                         options.playback_rate,
+                        options.output_resolution,
                     )?
                 };
                 Ok(Reply::PlaybackState { resolution, relay })
@@ -875,6 +898,7 @@ impl RelayCore {
             Command::LogoutBilibili => Ok(Reply::BilibiliAuthState {
                 auth: self.bilibili.logout()?,
             }),
+            Command::ListFavoriteFolders => Ok(Reply::FavoriteFolders { folders: self.bilibili.favorite_folders()? }),
             Command::GetSettings => Ok(Reply::SettingsState {
                 settings: self.settings.load()?,
             }),

@@ -31,6 +31,7 @@ import {
   type PlaybackEndBehavior,
   type PlaybackOptions,
   type PlaybackRate,
+  type OutputResolution,
   type ProtocolDanmakuSettings,
   type RelayStatus,
   type SourceResolution,
@@ -117,6 +118,7 @@ interface SettingsDraft {
   key: string;
   playbackUrl: string;
   theme: ThemePreference;
+  outputResolution: OutputResolution;
 }
 
 const SAMPLE_VIDEO = "https://www.bilibili.com/video/BV1UCVn66Eww?p=2";
@@ -326,6 +328,7 @@ function configuredPlaybackOptions(
       hidden_types: settings.hiddenTypes,
     },
     playback_rate: playbackRate,
+    output_resolution: "p720",
   };
 }
 
@@ -3327,6 +3330,7 @@ function SettingsView({
     key: "",
     playbackUrl: storedSettings.playbackUrl,
     theme: themePreference,
+    outputResolution: storedSettings.outputResolution,
   });
   const [keyDirty, setKeyDirty] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -3376,6 +3380,7 @@ function SettingsView({
       key: "",
       playbackUrl: storedSettings.playbackUrl,
       theme: storedSettings.theme,
+      outputResolution: storedSettings.outputResolution,
     });
     setKeyDirty(false);
     setSaveError(null);
@@ -3384,6 +3389,7 @@ function SettingsView({
     storedSettings.playbackUrl,
     storedSettings.streamKeyStatus,
     storedSettings.theme,
+    storedSettings.outputResolution,
   ]);
 
   const update = (key: "host" | "key" | "playbackUrl", value: string) =>
@@ -3408,6 +3414,7 @@ function SettingsView({
       host: DEFAULT_SETTINGS.host,
       key: "",
       playbackUrl: DEFAULT_SETTINGS.playbackUrl,
+      outputResolution: DEFAULT_SETTINGS.outputResolution,
       theme: DEFAULT_SETTINGS.theme,
     });
     setKeyDirty(true);
@@ -3425,12 +3432,14 @@ function SettingsView({
         playbackUrl: settings.playbackUrl,
         theme: settings.theme,
         ...(keyDirty ? { streamKey: settings.key } : {}),
+        outputResolution: settings.outputResolution,
       });
       setSettings({
         host: persisted.host,
         key: "",
         playbackUrl: persisted.playbackUrl,
         theme: persisted.theme,
+        outputResolution: persisted.outputResolution,
       });
       setKeyDirty(false);
       setSecretInputVersion((current) => current + 1);
@@ -3509,6 +3518,32 @@ function SettingsView({
                 placeholder="从 VRCDN Live 页面复制"
                 palette={palette}
               />
+            </Field>
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <Field label="输出分辨率" palette={palette}>
+              <div style={{ display: "flex", flexDirection: "row", gap: 7 }}>
+                {(["p720", "p1080"] as const).map((value) => {
+                  const selected = settings.outputResolution === value;
+                  return (
+                    <div
+                      key={value}
+                      onClick={() => setSettings((current) => ({ ...current, outputResolution: value }))}
+                      style={{
+                        flexGrow: 1,
+                        height: 33,
+                        borderWidth: 1,
+                        borderRadius: RADII.control,
+                        borderColor: selected ? palette.accentTeal : palette.panelEdge,
+                        backgroundColor: selected ? palette.focus : palette.surface,
+                        color: selected ? palette.ink : palette.inkMuted,
+                        fontFamily: FONT_UI,
+                        fontSize: 12.5,
+                      }}
+                    >{value === "p720" ? "720p" : "1080p"}</div>
+                  );
+                })}
+              </div>
             </Field>
           </div>
           <div
@@ -3952,11 +3987,14 @@ export function AppSurface({
     setPlaybackRate(next);
   };
 
-  const currentPlaybackOptions = () => configuredPlaybackOptions(
+  const currentPlaybackOptions = () => ({
+    ...configuredPlaybackOptions(
     danmakuRef.current,
     danmakuSettingsRef.current,
     playbackRateRef.current,
-  );
+    ),
+    output_resolution: productSettings.outputResolution,
+  });
 
   const applyProductSettings = (next: ProductSettings): ProductSettings => {
     const visible = initialThemePreference

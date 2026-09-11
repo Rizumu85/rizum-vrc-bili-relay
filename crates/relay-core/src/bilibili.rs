@@ -9,7 +9,7 @@ use crate::bilibili_auth::BilibiliAuthService;
 use crate::{
     BilibiliAccessMode, BilibiliAuthStatus, LiveStatus, MediaFormat, MediaInput, RelayError,
     ResolvedSource, RouteDecision, RouteKind, RouteReason, SourceKind, SourceResolution,
-    VideoCollection, VideoCollectionItem, VideoPart, inspect_source, normalize_source_input,
+    VideoCollection, VideoCollectionItem, VideoPart, FavoriteFolder, inspect_source, normalize_source_input,
 };
 
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
@@ -99,6 +99,20 @@ impl BilibiliClient {
 
     pub fn logout(&mut self) -> Result<BilibiliAuthStatus, RelayError> {
         self.auth.logout()
+    }
+
+    pub fn favorite_folders(&self) -> Result<Vec<FavoriteFolder>, RelayError> {
+        let mid = self.auth.status().user_id.ok_or_else(|| RelayError::new("login_required", "请先登录 Bilibili"))?;
+        let cookie = self.active_cookie().ok_or_else(|| RelayError::new("login_required", "请先登录 Bilibili"))?;
+        let response = self.http.get(format!("https://api.bilibili.com/x/v3/fav/folder/created/list?pn=1&ps=50&up_mid={mid}"))
+            .header(COOKIE, cookie).header(REFERER, "https://space.bilibili.com/").send()
+            .map_err(|e| network_error("bilibili_unavailable", "无法读取收藏夹", e))?;
+        ensure_http_success(&response)?;
+        let root: Value = response.json().map_err(|e| network_error("invalid_bilibili_response", "无法读取收藏夹", e))?;
+        let data = api_data(&root, "favorites_unavailable", "无法读取收藏夹")?;
+        Ok(data.get("list").and_then(Value::as_array).into_iter().flatten().filter_map(|item| Some(FavoriteFolder {
+            id: item.get("id")?.as_u64()?, title: item.get("title")?.as_str()?.to_owned(), media_count: item.get("media_count").and_then(Value::as_u64).unwrap_or(0) as u32,
+        })).collect())
     }
 
     fn active_cookie(&self) -> Option<&str> {

@@ -80,6 +80,7 @@ export interface ProtocolDanmakuSettings {
 export interface PlaybackOptions {
   danmaku: ProtocolDanmakuSettings;
   playback_rate: PlaybackRate;
+  output_resolution: OutputResolution;
 }
 
 export interface RelayStatus {
@@ -124,6 +125,7 @@ export type ThemePreference = "system" | "light" | "dark";
 export type StreamKeyStatus = "missing" | "available" | "unavailable";
 export type PlaybackEndBehavior = "pause" | "repeat" | "next";
 export type PlaybackRate = "0.5" | "0.75" | "1" | "1.25" | "1.5" | "2";
+export type OutputResolution = "p720" | "p1080";
 export type BilibiliAccessMode = "guest" | "account";
 
 export interface ProductSettings {
@@ -135,6 +137,7 @@ export interface ProductSettings {
   playbackEndBehavior: PlaybackEndBehavior;
   playbackRate: PlaybackRate;
   bilibiliMode: BilibiliAccessMode;
+  outputResolution: OutputResolution;
 }
 
 export interface SettingsUpdate {
@@ -146,6 +149,7 @@ export interface SettingsUpdate {
   playbackEndBehavior?: PlaybackEndBehavior;
   playbackRate?: PlaybackRate;
   bilibiliMode?: BilibiliAccessMode;
+  outputResolution?: OutputResolution;
 }
 
 export type BilibiliAuthStage =
@@ -209,6 +213,8 @@ export interface BilibiliAuthStateReply {
   type: "bilibili_auth_state";
   auth: BilibiliAuthStatus;
 }
+export interface FavoriteFolder { id: number; title: string; media_count: number; }
+export interface FavoriteFoldersReply { type: "favorite_folders"; folders: FavoriteFolder[]; }
 
 export interface SettingsStateReply {
   type: "settings_state";
@@ -232,6 +238,7 @@ export type RelayReply =
   | PlaybackStateReply
   | FfmpegStateReply
   | BilibiliAuthStateReply
+  | FavoriteFoldersReply
   | SettingsStateReply
   | StreamKeyValueReply
   | ShutdownAcceptedReply;
