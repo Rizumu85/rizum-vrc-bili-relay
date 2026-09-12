@@ -43,6 +43,8 @@ Current commands:
 - `list_favorite_resources`
 - `search_favorite_resources`
 - `fetch_favorite_covers`
+- `list_watch_later`
+- `list_history`
 - `get_settings`
 - `reveal_stream_key`
 - `save_settings`
@@ -57,6 +59,13 @@ downloaded by `fetch_favorite_covers` into `%LOCALAPPDATA%\VRC Bili
 Relay\covers` (sha-256-derived file names, oldest-first pruning at 300 files)
 because GPUIX `<img>` only loads local paths; the UI renders text rows first
 and swaps placeholders for cached files as they arrive.
+
+`list_watch_later` and `list_history` reuse the same paged resource shape for
+the two other login-gated video libraries. Watch-later maps Bilibili's
+`/x/v2/history/toview` list (no pagination), history pages `/x/v2/history`.
+Bilibili's history search endpoint rejects third-party signatures, so both
+libraries are plain lists without keyword search; the bookmark menu on the
+main window opens all three libraries from one entry point.
 
 The first source inspection classifies video, live-room, short, and generic
 media links and returns the next resolution step without doing I/O. Source

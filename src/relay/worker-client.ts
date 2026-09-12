@@ -234,6 +234,14 @@ export class RelayWorkerClient {
     return reply.covers;
   }
 
+  async listWatchLater(): Promise<FavoriteResourcePage> {
+    return this.favoriteResourcesRequest({ type: "list_watch_later" });
+  }
+
+  async listHistory(page: number): Promise<FavoriteResourcePage> {
+    return this.favoriteResourcesRequest({ type: "list_history", page });
+  }
+
   async getSettings(): Promise<ProductSettings> {
     return this.settingsRequest({ type: "get_settings" });
   }

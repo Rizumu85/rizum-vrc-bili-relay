@@ -19,6 +19,9 @@ param(
     [switch]$OpenFavoriteFolder,
     [switch]$ToggleFavoritesSearch,
     [string]$TypeFavoritesSearch,
+    [ValidateSet("favorites", "watchLater", "history")]
+    [string]$Library,
+    [switch]$OpenLibraryMenu,
     [switch]$LongPartList,
     [switch]$IncludePopup,
     [switch]$OpenPlaybackEndSelect,
@@ -104,6 +107,23 @@ public static class GpuixWindowCapture
         }, IntPtr.Zero);
         return union;
     }
+
+    public static void SetProcessWindowsTopmost(uint targetProcessId)
+    {
+        // Popup windows are created at normal Z-order, so raise every visible
+        // window of the process above the shell before a union capture.
+        EnumWindows((window, _) =>
+        {
+            uint processId;
+            if (IsWindowVisible(window)
+                && GetWindowThreadProcessId(window, out processId) != 0
+                && processId == targetProcessId)
+            {
+                SetWindowPos(window, new IntPtr(-1), 0, 0, 0, 0, 0x0013);
+            }
+            return true;
+        }, IntPtr.Zero);
+    }
 }
 "@
 
@@ -130,6 +150,12 @@ if ($Source) {
 }
 if ($TypeFavoritesSearch) {
     $startInfo.EnvironmentVariables["VRC_BILI_RELAY_FAVORITES_SEARCH"] = $TypeFavoritesSearch
+}
+if ($Library) {
+    $startInfo.EnvironmentVariables["VRC_BILI_RELAY_LIBRARY"] = $Library
+}
+if ($OpenLibraryMenu) {
+    $startInfo.EnvironmentVariables["VRC_BILI_RELAY_OPEN_LIBRARY_MENU"] = "1"
 }
 if ($SettingsPath) {
     $startInfo.EnvironmentVariables["VRC_BILI_RELAY_SETTINGS"] = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot $SettingsPath))
@@ -280,6 +306,12 @@ try {
         Start-Sleep -Milliseconds 500
     }
 
+    if ($OpenLibraryMenu) {
+        # The menu opens itself via VRC_BILI_RELAY_OPEN_LIBRARY_MENU; wait for
+        # the native popup window to appear.
+        Start-Sleep -Milliseconds 1600
+    }
+
     if ($OpenFavoriteFolder) {
         if ($Scene -ne "favorites") {
             throw "OpenFavoriteFolder requires -Scene favorites."
@@ -392,6 +424,11 @@ try {
     }
 
     $captureRectangle = if ($IncludePopup) {
+        # Popup windows sit at normal Z-order, so other applications can cover
+        # them. Raise every window of the process above the shell before the
+        # union capture, otherwise CopyFromScreen reads the desktop instead.
+        [GpuixWindowCapture]::SetProcessWindowsTopmost([uint32]$process.Id)
+        Start-Sleep -Milliseconds 250
         [GpuixWindowCapture]::GetVisibleProcessBounds([uint32]$process.Id)
     } else {
         $rectangle

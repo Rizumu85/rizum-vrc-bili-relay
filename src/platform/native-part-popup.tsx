@@ -10,7 +10,7 @@ import {
 import { FFIType, dlopen, ptr } from "bun:ffi";
 import { findProcessWindowByTitle } from "./window-lookup";
 
-import { ICONS } from "../icons";
+import { ICONS, type IconName } from "../icons";
 import { FONT_UI, RADII, type Palette } from "../theme";
 import {
   queryElementBounds,
@@ -41,6 +41,7 @@ interface QueryRenderer {
 export interface NativePartPopupItem {
   value: string;
   label: string;
+  icon?: IconName;
 }
 
 export interface NativePartPopupRequest {
@@ -50,6 +51,7 @@ export interface NativePartPopupRequest {
   parentWindowId: number;
   anchorBounds: readonly [number, number, number, number];
   mainWindowSize: { width: number; height: number };
+  width?: number;
   onSelect: (value: string) => void;
   onDismiss: () => void;
 }
@@ -75,10 +77,15 @@ export function supportsNativePartPopup(): boolean {
   return process.platform === "win32" && user32 !== null;
 }
 
+export function isNativePartPopupOpen(): boolean {
+  return popupRenderer !== null;
+}
+
 export function showNativePartPopup(request: NativePartPopupRequest): boolean {
   if (!user32 || request.items.length === 0) return false;
   hideNativePartPopup();
 
+  const menuWidth = request.width ?? MENU_WIDTH;
   const visibleRows = Math.max(1, Math.min(MENU_MAX_ROWS, request.items.length));
   const panelHeight = visibleRows * MENU_ROW_HEIGHT + MENU_PADDING * 2;
   const parentHandle = findWindowByTitle(PRODUCT_WINDOW_TITLE);
@@ -90,9 +97,9 @@ export function showNativePartPopup(request: NativePartPopupRequest): boolean {
     renderer.init({
       title: POPUP_WINDOW_TITLE,
       appName: PRODUCT_WINDOW_TITLE,
-      width: MENU_WIDTH,
+      width: menuWidth,
       height: panelHeight,
-      minWidth: MENU_WIDTH,
+      minWidth: menuWidth,
       minHeight: panelHeight,
       resizable: false,
       transparent: true,
@@ -239,7 +246,7 @@ function findWindowByTitle(title: string): WindowHandle | null {
   return findProcessWindowByTitle(title, false);
 }
 
-function PopupIcon({ name, color, size }: { name: "check"; color: string; size: number }) {
+function PopupIcon({ name, color, size }: { name: IconName; color: string; size: number }) {
   return <svg source={ICONS[name]} style={{ width: size, height: size, color, flexShrink: 0 }} />;
 }
 
@@ -339,7 +346,7 @@ function NativePartPopupSurface({
           position: "absolute",
           left: 0,
           top: 0,
-          width: MENU_WIDTH,
+          width: request.width ?? MENU_WIDTH,
           height: panelHeight,
           padding: MENU_PADDING,
           borderRadius: RADII.compactPanel,
@@ -378,6 +385,9 @@ function NativePartPopupSurface({
                 active: { backgroundColor: request.palette.surfaceActive },
               }}
             >
+              {item.icon ? (
+                <PopupIcon name={item.icon} size={13} color={request.palette.inkMuted} />
+              ) : null}
               <text
                 style={{
                   minWidth: 0,

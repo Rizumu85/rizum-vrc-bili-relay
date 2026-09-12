@@ -157,17 +157,53 @@ impl BilibiliClient {
     }
 
     fn favorite_resources_endpoint(&self, endpoint: String, page: u32) -> Result<FavoriteResourcePage, RelayError> {
-        let cookie = self.active_cookie().ok_or_else(|| RelayError::new("login_required", "请先登录 Bilibili"))?;
-        let response = self.http.get(endpoint)
-            .header(COOKIE, cookie).header(REFERER, "https://space.bilibili.com/").send()
-            .map_err(|e| network_error("bilibili_unavailable", "无法读取收藏内容", e))?;
-        ensure_http_success(&response)?;
-        let root: Value = response.json().map_err(|e| network_error("invalid_bilibili_response", "无法读取收藏内容", e))?;
-        let data = api_data(&root, "favorites_unavailable", "无法读取收藏内容")?;
+        let data = self.authenticated_get(&endpoint, "favorites_unavailable", "无法读取收藏内容")?;
         let medias = data.get("medias").and_then(Value::as_array);
         let items = medias.into_iter().flatten().filter_map(read_favorite_resource).collect::<Vec<_>>();
         let has_more = data.get("has_more").and_then(Value::as_bool).unwrap_or(items.len() >= 20);
         Ok(FavoriteResourcePage { items, page, has_more })
+    }
+
+    pub fn watch_later(&self) -> Result<FavoriteResourcePage, RelayError> {
+        let data = self.authenticated_get(
+            "https://api.bilibili.com/x/v2/history/toview",
+            "watch_later_unavailable",
+            "无法读取稍后再看",
+        )?;
+        let items = data
+            .get("list")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(read_watch_later_item)
+            .collect::<Vec<_>>();
+        Ok(FavoriteResourcePage { items, page: 1, has_more: false })
+    }
+
+    pub fn history(&self, page: u32) -> Result<FavoriteResourcePage, RelayError> {
+        let data = self.authenticated_get(
+            &format!("https://api.bilibili.com/x/v2/history?pn={page}&ps=20"),
+            "history_unavailable",
+            "无法读取历史记录",
+        )?;
+        let items = data
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(read_history_item)
+            .collect::<Vec<_>>();
+        let has_more = items.len() >= 20;
+        Ok(FavoriteResourcePage { items, page, has_more })
+    }
+
+    fn authenticated_get(&self, endpoint: &str, code: &'static str, context: &'static str) -> Result<Value, RelayError> {
+        let cookie = self.active_cookie().ok_or_else(|| RelayError::new("login_required", "请先登录 Bilibili"))?;
+        let response = self.http.get(endpoint)
+            .header(COOKIE, cookie).header(REFERER, "https://space.bilibili.com/").send()
+            .map_err(|e| network_error("bilibili_unavailable", context, e))?;
+        ensure_http_success(&response)?;
+        let root: Value = response.json().map_err(|e| network_error("invalid_bilibili_response", context, e))?;
+        Ok(api_data(&root, code, context)?.clone())
     }
 
     fn active_cookie(&self) -> Option<&str> {
@@ -771,17 +807,20 @@ fn string_field(value: &Value, name: &str) -> Option<String> {
     value.get(name)?.as_str().map(str::to_owned)
 }
 
+fn normalize_cover_url(cover: String) -> String {
+    if let Some(rest) = cover.strip_prefix("//") {
+        format!("https://{rest}")
+    } else {
+        cover.replacen("http://", "https://", 1)
+    }
+}
+
 fn read_favorite_resource(item: &Value) -> Option<FavoriteResourceItem> {
     let bvid = string_field(item, "bvid")?;
     let title = string_field(item, "title")?
         .replace("<em class=\"keyword\">", "")
         .replace("</em>", "");
-    let cover = string_field(item, "cover").unwrap_or_default();
-    let cover_url = if let Some(rest) = cover.strip_prefix("//") {
-        format!("https://{rest}")
-    } else {
-        cover.replacen("http://", "https://", 1)
-    };
+    let cover_url = normalize_cover_url(string_field(item, "cover").unwrap_or_default());
     Some(FavoriteResourceItem {
         bvid,
         title,
@@ -793,6 +832,34 @@ fn read_favorite_resource(item: &Value) -> Option<FavoriteResourceItem> {
         cover_url,
         folder_title: string_field(item, "folder_title")
             .or_else(|| item.get("folder").and_then(|folder| string_field(folder, "title"))),
+    })
+}
+
+fn read_watch_later_item(item: &Value) -> Option<FavoriteResourceItem> {
+    Some(FavoriteResourceItem {
+        bvid: string_field(item, "bvid")?,
+        title: string_field(item, "title")?,
+        duration_seconds: u64_field(item, "duration").unwrap_or(0),
+        owner_name: item
+            .get("owner")
+            .and_then(|owner| string_field(owner, "name"))
+            .unwrap_or_default(),
+        cover_url: normalize_cover_url(string_field(item, "pic").unwrap_or_default()),
+        folder_title: None,
+    })
+}
+
+fn read_history_item(item: &Value) -> Option<FavoriteResourceItem> {
+    Some(FavoriteResourceItem {
+        bvid: string_field(item, "bvid")?,
+        title: string_field(item, "title")?,
+        duration_seconds: u64_field(item, "duration").unwrap_or(0),
+        owner_name: item
+            .get("owner")
+            .and_then(|owner| string_field(owner, "name"))
+            .unwrap_or_default(),
+        cover_url: normalize_cover_url(string_field(item, "cover43").unwrap_or_default()),
+        folder_title: None,
     })
 }
 

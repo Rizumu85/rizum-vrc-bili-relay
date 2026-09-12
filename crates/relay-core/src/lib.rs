@@ -22,7 +22,7 @@ use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 use settings::SettingsStore;
 
-pub const PROTOCOL_VERSION: u32 = 24;
+pub const PROTOCOL_VERSION: u32 = 25;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -101,6 +101,10 @@ pub enum Command {
     },
     FetchFavoriteCovers {
         urls: Vec<String>,
+    },
+    ListWatchLater,
+    ListHistory {
+        page: u32,
     },
     GetSettings,
     RevealStreamKey,
@@ -945,6 +949,14 @@ impl RelayCore {
             Command::FetchFavoriteCovers { urls } => Ok(Reply::FavoriteCovers {
                 covers: covers::fetch_covers(urls),
             }),
+            Command::ListWatchLater => {
+                let result = self.bilibili.watch_later()?;
+                Ok(Reply::FavoriteResources { items: result.items, page: result.page, has_more: result.has_more })
+            }
+            Command::ListHistory { page } => {
+                let result = self.bilibili.history(page)?;
+                Ok(Reply::FavoriteResources { items: result.items, page: result.page, has_more: result.has_more })
+            }
             Command::GetSettings => Ok(Reply::SettingsState {
                 settings: self.settings.load()?,
             }),

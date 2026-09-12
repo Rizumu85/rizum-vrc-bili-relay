@@ -27,6 +27,11 @@ const initialScene: Scene =
   || requestedScene === "favorites"
     ? requestedScene
     : "idle";
+const requestedLibrary = process.env.VRC_BILI_RELAY_LIBRARY;
+const initialLibrarySource =
+  requestedLibrary === "watchLater" || requestedLibrary === "history"
+    ? requestedLibrary
+    : "favorites";
 
 setProductProcessIdentity();
 registerBundledFonts();
@@ -37,6 +42,7 @@ render(
     initialThemePreference={initialThemePreference}
     initialScene={initialScene}
     initialSource={process.env.VRC_BILI_RELAY_SOURCE}
+    initialLibrarySource={initialLibrarySource}
   />,
   {
     title: PRODUCT_WINDOW_TITLE,

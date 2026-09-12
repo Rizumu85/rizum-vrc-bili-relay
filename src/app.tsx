@@ -55,6 +55,7 @@ import {
 import {
   disposeNativePartPopup,
   hideNativePartPopup,
+  isNativePartPopupOpen,
   showNativePartPopup,
   supportsNativePartPopup,
 } from "./platform/native-part-popup";
@@ -183,6 +184,12 @@ const OUTPUT_RESOLUTION_OPTIONS = [
   { value: "p720", label: "720p" },
   { value: "p1080", label: "1080p" },
 ] as const;
+type LibrarySource = "favorites" | "watchLater" | "history";
+const LIBRARY_MENU_ITEMS: ReadonlyArray<{ value: LibrarySource; label: string; icon: IconName }> = [
+  { value: "favorites", label: "收藏夹", icon: "star" },
+  { value: "watchLater", label: "稍后再看", icon: "clock" },
+  { value: "history", label: "历史记录", icon: "history" },
+];
 const VISIBILITY_OPTIONS = [
   { value: "shown", label: "显示" },
   { value: "hidden", label: "隐藏" },
@@ -681,12 +688,14 @@ function CaptionButton({
 function Header({
   palette,
   scene,
+  libraryTitle,
   onSettings,
   onBack,
   onClose,
 }: {
   palette: Palette;
   scene: Scene;
+  libraryTitle?: string;
   onSettings: () => void;
   onBack: () => void;
   onClose: () => void;
@@ -699,7 +708,7 @@ function Header({
     : isDanmaku
       ? "弹幕样式"
       : scene === "favorites"
-        ? "收藏夹"
+        ? (libraryTitle ?? "收藏夹")
         : "VRC Bili Relay";
   const beginDrag = (event: EventPayload) => {
     if (event.button === 0 && (event.clickCount ?? 1) === 1) {
@@ -874,6 +883,103 @@ function SourceField({
         label="paste-source"
         onClick={() => void paste()}
       />
+    </div>
+  );
+}
+
+function LibraryEntryButton({
+  palette,
+  onOpen,
+}: {
+  palette: Palette;
+  onOpen: (source: LibrarySource) => void;
+}) {
+  const renderer = useGpuixRequired() as ReturnType<typeof useGpuixRequired> & {
+    getElementBounds(elementId: number): number[] | null;
+    getWindowId(): number;
+    getWindowSize(): { width: number; height: number };
+  };
+  const triggerId = useRef<number | null>(null);
+  const nativePopup = supportsNativePartPopup();
+
+  useEffect(() => () => {
+    if (nativePopup) hideNativePartPopup();
+  }, [nativePopup]);
+
+  // Capture hook: keep the menu open so screenshots can verify the native
+  // popup without synthetic input timing. Re-open only after an actual
+  // dismissal (the outside-pointer poll fires when the user clicks elsewhere
+  // on the desktop during a capture); re-showing an open popup would flicker.
+  const captureMenu = process.env.VRC_BILI_RELAY_OPEN_LIBRARY_MENU === "1";
+  useEffect(() => {
+    if (!captureMenu) return;
+    const timer = setInterval(() => {
+      if (!isNativePartPopupOpen()) openMenu();
+    }, 500);
+    return () => clearInterval(timer);
+  }, []);
+
+  const openMenu = () => {
+    // Without the native popup only one action is reachable; fall back to the
+    // primary library instead of a degraded in-window menu that would not fit
+    // the idle window.
+    if (!nativePopup) {
+      onOpen("favorites");
+      return;
+    }
+    const elementId = triggerId.current;
+    const bounds = elementId === null ? null : queryElementBounds(renderer, elementId);
+    const mainWindowSize = queryWindowSize(renderer);
+    if (!bounds || !mainWindowSize) {
+      // Geometry is briefly unavailable between render frames. A real click
+      // falls back to the primary library; the capture hook just retries on
+      // its next interval tick instead of navigating away.
+      if (!captureMenu) onOpen("favorites");
+      return;
+    }
+    const shown = showNativePartPopup({
+      items: LIBRARY_MENU_ITEMS.map(({ value, label, icon }) => ({ value, label, icon })),
+      selectedValue: "",
+      width: 172,
+      palette,
+      parentWindowId: renderer.getWindowId(),
+      anchorBounds: [bounds[0], bounds[1], bounds[2], bounds[3]],
+      mainWindowSize,
+      onSelect: (value) => onOpen(value as LibrarySource),
+      onDismiss: () => undefined,
+    });
+    if (!shown && !captureMenu) onOpen("favorites");
+  };
+
+  return (
+    <div
+      ref={(instance) => {
+        triggerId.current = instance?.id ?? null;
+      }}
+      testId="open-library"
+      tabIndex={0}
+      onClick={openMenu}
+      onKeyDown={(event) => {
+        if (event.key === "enter" || event.key === "space" || event.key === "down") openMenu();
+      }}
+      style={{
+        width: 34,
+        height: 35,
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: RADII.control,
+        borderWidth: 1,
+        borderColor: palette.panelEdge,
+        backgroundColor: palette.surface,
+        cursor: "pointer",
+        userSelect: "none",
+        hover: { backgroundColor: palette.surfaceHover },
+        active: { backgroundColor: palette.surfaceActive },
+      }}
+    >
+      <Icon name="bookmark" size={14.5} color={palette.inkMuted} />
     </div>
   );
 }
@@ -3322,7 +3428,10 @@ const FAVORITE_SCOPE_OPTIONS = [
 ] as const;
 
 type FavoriteScope = (typeof FAVORITE_SCOPE_OPTIONS)[number]["value"];
-type FavoritesLevel = { kind: "folders" } | { kind: "videos"; folder: FavoriteFolder };
+type FavoritesLevel =
+  | { kind: "folders" }
+  | { kind: "videos"; folder: FavoriteFolder }
+  | { kind: "flat" };
 
 function formatFavoriteDuration(totalSeconds: number): string {
   const seconds = Math.max(0, Math.round(totalSeconds));
@@ -3344,24 +3453,32 @@ function FavoritesView({
   palette,
   authenticated,
   displayName,
+  source,
   onOpenSettings,
   onPickVideo,
   listFolders,
   listResources,
   searchResources,
   fetchCovers,
+  listWatchLater,
+  listHistory,
 }: {
   palette: Palette;
   authenticated: boolean;
   displayName: string | null;
+  source: LibrarySource;
   onOpenSettings: () => void;
   onPickVideo: (bvid: string) => void;
   listFolders: () => Promise<FavoriteFolder[]>;
   listResources: (folderId: number, page: number) => Promise<FavoriteResourcePage>;
   searchResources: (folderId: number | null, keyword: string, page: number) => Promise<FavoriteResourcePage>;
   fetchCovers: (urls: string[]) => Promise<FavoriteCover[]>;
+  listWatchLater: () => Promise<FavoriteResourcePage>;
+  listHistory: (page: number) => Promise<FavoriteResourcePage>;
 }) {
-  const [level, setLevel] = useState<FavoritesLevel>({ kind: "folders" });
+  const [level, setLevel] = useState<FavoritesLevel>(() =>
+    source === "favorites" ? { kind: "folders" } : { kind: "flat" },
+  );
   const [folders, setFolders] = useState<FavoriteFolder[] | null>(null);
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [foldersError, setFoldersError] = useState<string | null>(null);
@@ -3393,7 +3510,7 @@ function FavoritesView({
   // Covers arrive after the text rows: ask the worker to cache any missing
   // cover locally, then swap the placeholder for the cached file.
   useEffect(() => {
-    const items = level.kind === "videos" ? (searching ? (searchItems ?? []) : videos) : [];
+    const items = level.kind === "folders" ? [] : (searching ? (searchItems ?? []) : videos);
     const missing = items
       .map((item) => item.cover_url)
       .filter((url) => url && !covers.has(url));
@@ -3472,6 +3589,30 @@ function FavoritesView({
     resetSearch();
     setLevel({ kind: "folders" });
   };
+
+  const loadFlat = async (page: number, append: boolean) => {
+    const epoch = ++videosEpoch.current;
+    setVideosError(null);
+    setVideosLoading(true);
+    try {
+      const result = source === "watchLater" ? await listWatchLater() : await listHistory(page);
+      if (videosEpoch.current !== epoch) return;
+      setVideos((current) => (append ? [...current, ...result.items] : result.items));
+      setVideosPage(result.page);
+      setVideosHasMore(result.hasMore);
+    } catch (error) {
+      if (videosEpoch.current === epoch) setVideosError(favoriteErrorMessage(error));
+    } finally {
+      if (videosEpoch.current === epoch) setVideosLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (source === "favorites") return;
+    resetSearch();
+    setLevel({ kind: "flat" });
+    if (authenticated) void loadFlat(1, false);
+  }, [source, authenticated]);
 
   const runSearch = async (keyword: string, page: number, append: boolean) => {
     const folderId = level.kind === "videos" && searchScope === "folder" ? level.folder.id : null;
@@ -3860,7 +4001,7 @@ function FavoritesView({
           : listBox(content)}
       </>
     );
-  } else {
+  } else if (level.kind === "videos") {
     const folder = level.folder;
     body = (
       <>
@@ -3984,6 +4125,42 @@ function FavoritesView({
                 )}
               </>,
             )}
+      </>
+    );
+  } else {
+    body = (
+      <>
+        <SectionHeading
+          title={source === "watchLater" ? "稍后再看" : "历史记录"}
+          subtitle={displayName ?? undefined}
+          compact
+          palette={palette}
+        />
+        {listBox(
+          <>
+            {videosLoading && videos.length === 0 ? (
+              centerState(<Loading palette={palette} label="正在读取视频" />)
+            ) : videosError ? (
+              centerState(
+                <>
+                  <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{videosError}</text>
+                  <Button label="重试" palette={palette} quiet onClick={() => void loadFlat(1, false)} />
+                </>,
+              )
+            ) : videos.length === 0 ? (
+              centerState(
+                <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 12 }}>
+                  {source === "watchLater" ? "稍后再看是空的" : "还没有历史记录"}
+                </text>,
+              )
+            ) : (
+              <>
+                {videos.map((item) => videoRow(item, false))}
+                {videosHasMore ? moreRow(videosLoading, () => void loadFlat(videosPage + 1, true)) : null}
+              </>
+            )}
+          </>,
+        )}
       </>
     );
   }
@@ -4544,6 +4721,7 @@ export interface AppSurfaceProps {
   initialAppearance?: Appearance;
   initialThemePreference?: ThemePreference;
   initialSource?: string;
+  initialLibrarySource?: LibrarySource;
 }
 
 export function AppSurface({
@@ -4551,6 +4729,7 @@ export function AppSurface({
   initialAppearance = "light",
   initialThemePreference,
   initialSource,
+  initialLibrarySource = "favorites",
 }: AppSurfaceProps) {
   const [scene, setScene] = useState<Scene>(initialScene);
   const [lastMainScene, setLastMainScene] = useState<Scene>(
@@ -5614,6 +5793,12 @@ export function AppSurface({
     void convert(url);
   };
 
+  const [librarySource, setLibrarySource] = useState<LibrarySource>(initialLibrarySource);
+  const openLibrary = (next: LibrarySource) => {
+    setLibrarySource(next);
+    showSubview("favorites");
+  };
+
   return (
     <div
       style={{
@@ -5635,6 +5820,13 @@ export function AppSurface({
       <Header
         palette={palette}
         scene={scene}
+        libraryTitle={
+          librarySource === "watchLater"
+            ? "稍后再看"
+            : librarySource === "history"
+              ? "历史记录"
+              : "收藏夹"
+        }
         onSettings={() => showSubview("settings")}
         onBack={leaveSubview}
         onClose={closeApplication}
@@ -5685,12 +5877,15 @@ export function AppSurface({
             palette={palette}
             authenticated={bilibiliAuth?.stage === "authenticated"}
             displayName={bilibiliAuth?.display_name ?? null}
+            source={librarySource}
             onOpenSettings={() => showSubview("settings")}
             onPickVideo={playFavorite}
             listFolders={() => getRelayWorker().listFavoriteFolders()}
             listResources={(folderId, page) => getRelayWorker().listFavoriteResources(folderId, page)}
             searchResources={(folderId, keyword, page) => getRelayWorker().searchFavoriteResources(folderId, keyword, page)}
             fetchCovers={(urls) => getRelayWorker().fetchFavoriteCovers(urls)}
+            listWatchLater={() => getRelayWorker().listWatchLater()}
+            listHistory={(page) => getRelayWorker().listHistory(page)}
           />
         </MotionFade>
       ) : (
@@ -5705,32 +5900,7 @@ export function AppSurface({
             <div style={{ minWidth: 0, flexGrow: 1 }}>
               <SourceField source={source} setSource={setSource} palette={palette} />
             </div>
-            <div
-              testId="open-favorites"
-              tabIndex={0}
-              onClick={() => showSubview("favorites")}
-              onKeyDown={(event) => {
-                if (event.key === "enter" || event.key === "space") showSubview("favorites");
-              }}
-              style={{
-                width: 34,
-                height: 35,
-                flexShrink: 0,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                borderRadius: RADII.control,
-                borderWidth: 1,
-                borderColor: palette.panelEdge,
-                backgroundColor: palette.surface,
-                cursor: "pointer",
-                userSelect: "none",
-                hover: { backgroundColor: palette.surfaceHover },
-                active: { backgroundColor: palette.surfaceActive },
-              }}
-            >
-              <Icon name="bookmark" size={14.5} color={palette.inkMuted} />
-            </div>
+            <LibraryEntryButton palette={palette} onOpen={openLibrary} />
           </div>
           <div style={{ minHeight: 33, marginTop: 9, display: "flex", flexDirection: "row", alignItems: "center", gap: 9 }}>
             <Button
