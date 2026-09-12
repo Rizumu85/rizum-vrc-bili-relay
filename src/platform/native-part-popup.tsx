@@ -52,6 +52,15 @@ export interface NativePartPopupRequest {
   anchorBounds: readonly [number, number, number, number];
   mainWindowSize: { width: number; height: number };
   width?: number;
+  /** Anchor rect corner the menu attaches to; default `bottomLeft`. */
+  anchor?: string;
+  /**
+   * Direction the menu grows from the anchor corner; default `bottomRight`.
+   * GPUIX names gravity by growth direction, diagonally opposite to GPUI's
+   * attached-corner naming: `bottomRight` grows down-right (menu's top-left
+   * at the anchor corner), `bottomLeft` grows down-left, and so on.
+   */
+  gravity?: string;
   onSelect: (value: string) => void;
   onDismiss: () => void;
 }
@@ -89,7 +98,7 @@ export function showNativePartPopup(request: NativePartPopupRequest): boolean {
   const visibleRows = Math.max(1, Math.min(MENU_MAX_ROWS, request.items.length));
   const panelHeight = visibleRows * MENU_ROW_HEIGHT + MENU_PADDING * 2;
   const parentHandle = findWindowByTitle(PRODUCT_WINDOW_TITLE);
-  const [parentScaleX] = parentHandle
+  const [parentScaleX, parentScaleY] = parentHandle
     ? readClientScale(parentHandle, request.mainWindowSize)
     : [1, 1];
   const renderer = createRenderer();
@@ -107,15 +116,15 @@ export function showNativePartPopup(request: NativePartPopupRequest): boolean {
       focus: true,
       anchoredPopup: {
         parentWindowId: request.parentWindowId,
-        // GPUIX currently reports the horizontal element origin in physical
-        // client pixels on Windows. GPUI's popup API consumes logical pixels,
-        // so normalize X once before the platform applies its DPI scale.
+        // GPUIX reports element geometry in physical client pixels on Windows.
+        // GPUI's popup API consumes logical pixels, so normalize the anchor
+        // rect once before the platform applies its DPI scale.
         anchorX: request.anchorBounds[0] / parentScaleX,
-        anchorY: request.anchorBounds[1],
-        anchorWidth: request.anchorBounds[2],
-        anchorHeight: request.anchorBounds[3],
-        anchor: "bottomLeft",
-        gravity: "bottomRight",
+        anchorY: request.anchorBounds[1] / parentScaleY,
+        anchorWidth: request.anchorBounds[2] / parentScaleX,
+        anchorHeight: request.anchorBounds[3] / parentScaleY,
+        anchor: request.anchor ?? "bottomLeft",
+        gravity: request.gravity ?? "bottomRight",
         offsetY: 6,
         constraintAdjustment: ["flipY", "slideX", "slideY"],
         grab: false,

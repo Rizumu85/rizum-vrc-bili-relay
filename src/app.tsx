@@ -944,6 +944,9 @@ function LibraryEntryButton({
       palette,
       parentWindowId: renderer.getWindowId(),
       anchorBounds: [bounds[0], bounds[1], bounds[2], bounds[3]],
+      // The prototype pins the menu's right edge to the button's right edge.
+      anchor: "bottomRight",
+      gravity: "bottomLeft",
       mainWindowSize,
       onSelect: (value) => onOpen(value as LibrarySource),
       onDismiss: () => undefined,
