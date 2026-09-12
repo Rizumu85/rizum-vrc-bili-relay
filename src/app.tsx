@@ -923,6 +923,10 @@ function LibraryEntryButton({
   }, []);
 
   const openMenu = () => {
+    if (nativePopup && isNativePartPopupOpen()) {
+      hideNativePartPopup();
+      return;
+    }
     // Without the native popup only one action is reachable; fall back to the
     // primary library instead of a degraded in-window menu that would not fit
     // the idle window.
