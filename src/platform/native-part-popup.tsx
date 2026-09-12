@@ -94,14 +94,17 @@ export function isNativePartPopupOpen(): boolean {
 // The native popup is a separate window frozen at its opening geometry; it
 // does not track the parent. Close it when the parent window changes size so
 // it never lingers at a stale anchor — callers re-open on the next intent.
-export function useDismissPopupOnWindowResize(enabled: boolean): void {
+export function useDismissPopupOnWindowResize(enabled: boolean, onDismiss?: () => void): void {
   const size = useWindowSize();
   const previous = useRef(size);
   useEffect(() => {
     if (previous.current.width === size.width && previous.current.height === size.height) return;
     previous.current = size;
-    if (enabled) hideNativePartPopup();
-  }, [size, enabled]);
+    if (enabled) {
+      hideNativePartPopup();
+      onDismiss?.();
+    }
+  }, [size, enabled, onDismiss]);
 }
 
 export function showNativePartPopup(request: NativePartPopupRequest): boolean {

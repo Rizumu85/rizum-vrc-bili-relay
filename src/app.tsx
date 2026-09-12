@@ -1011,7 +1011,7 @@ function PartSelect({
   };
   const triggerId = useRef<number | null>(null);
   const nativePopup = supportsNativePartPopup();
-  useDismissPopupOnWindowResize(nativePopup);
+  useDismissPopupOnWindowResize(nativePopup, () => setOpen(false));
   const selected = parts.find((entry) => entry.value === part) ?? parts[0];
   // Menu panels measure rows * 31 + 2*4 padding + 2*1 border.
   const menuHeight = Math.min(134, Math.max(1, Math.min(4, parts.length)) * 31 + 10);

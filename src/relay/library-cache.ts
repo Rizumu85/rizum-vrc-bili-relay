@@ -1,7 +1,6 @@
 // Session-scoped cache for the login-gated video libraries (favorites,
-// watch-later, history). First pages paint from memory while a stale entry
-// revalidates in the background, so reopening a library is instant instead of
-// waiting on Bilibili every time.
+// watch-later, history). Recent pages paint from memory immediately; expired
+// entries are revalidated before the view replaces them.
 const TTL_MS = 120_000;
 
 interface Entry {
