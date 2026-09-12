@@ -4,6 +4,7 @@ import {
   createRoot,
   flushSync,
   useGpuixRequired,
+  useWindowSize,
   type EventPayload,
   type Root,
 } from "@gpuix/react";
@@ -90,6 +91,19 @@ export function isNativePartPopupOpen(): boolean {
   return popupRenderer !== null;
 }
 
+// The native popup is a separate window frozen at its opening geometry; it
+// does not track the parent. Close it when the parent window changes size so
+// it never lingers at a stale anchor — callers re-open on the next intent.
+export function useDismissPopupOnWindowResize(enabled: boolean): void {
+  const size = useWindowSize();
+  const previous = useRef(size);
+  useEffect(() => {
+    if (previous.current.width === size.width && previous.current.height === size.height) return;
+    previous.current = size;
+    if (enabled) hideNativePartPopup();
+  }, [size, enabled]);
+}
+
 export function showNativePartPopup(request: NativePartPopupRequest): boolean {
   if (!user32 || request.items.length === 0) return false;
   hideNativePartPopup();
@@ -97,10 +111,6 @@ export function showNativePartPopup(request: NativePartPopupRequest): boolean {
   const menuWidth = request.width ?? MENU_WIDTH;
   const visibleRows = Math.max(1, Math.min(MENU_MAX_ROWS, request.items.length));
   const panelHeight = visibleRows * MENU_ROW_HEIGHT + MENU_PADDING * 2;
-  const parentHandle = findWindowByTitle(PRODUCT_WINDOW_TITLE);
-  const [parentScaleX, parentScaleY] = parentHandle
-    ? readClientScale(parentHandle, request.mainWindowSize)
-    : [1, 1];
   const renderer = createRenderer();
   try {
     renderer.init({
@@ -116,13 +126,14 @@ export function showNativePartPopup(request: NativePartPopupRequest): boolean {
       focus: true,
       anchoredPopup: {
         parentWindowId: request.parentWindowId,
-        // GPUIX reports element geometry in physical client pixels on Windows.
-        // GPUI's popup API consumes logical pixels, so normalize the anchor
-        // rect once before the platform applies its DPI scale.
-        anchorX: request.anchorBounds[0] / parentScaleX,
-        anchorY: request.anchorBounds[1] / parentScaleY,
-        anchorWidth: request.anchorBounds[2] / parentScaleX,
-        anchorHeight: request.anchorBounds[3] / parentScaleY,
+        // GPUIX reports element geometry in logical client units, the same
+        // units GPUI's popup API consumes; the platform applies the DPI scale
+        // itself. Do not pre-normalize or the anchor lands short of the
+        // trigger by the scale factor's inverse.
+        anchorX: request.anchorBounds[0],
+        anchorY: request.anchorBounds[1],
+        anchorWidth: request.anchorBounds[2],
+        anchorHeight: request.anchorBounds[3],
         anchor: request.anchor ?? "bottomLeft",
         gravity: request.gravity ?? "bottomRight",
         offsetY: 6,
@@ -231,8 +242,9 @@ function pointInsideAnchor(
   ) return false;
   const [scaleX, scaleY] = readClientScale(mainHandle, request.mainWindowSize, client);
   const [left, top, width, height] = request.anchorBounds;
-  return x >= origin[0] + left
-    && x < origin[0] + left + width * scaleX
+  // anchorBounds are logical client units; the cursor is screen space.
+  return x >= origin[0] + left * scaleX
+    && x < origin[0] + (left + width) * scaleX
     && y >= origin[1] + top * scaleY
     && y < origin[1] + (top + height) * scaleY;
 }
