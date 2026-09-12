@@ -5958,7 +5958,7 @@ export function AppSurface({
           />
         </MotionFade>
       ) : scene === "favorites" ? (
-        <MotionFade key="favorites" style={{ flexGrow: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+        <MotionFade key="favorites" instant style={{ flexGrow: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
           <FavoritesView
             palette={palette}
             authenticated={bilibiliAuth?.stage === "authenticated"}
