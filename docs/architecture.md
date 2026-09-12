@@ -32,15 +32,31 @@ Current commands:
 - `retarget_relay`
 - `relay_status`
 - `set_relay_paused`
+- `set_relay_rate`
 - `stop_relay`
 - `ensure_ffmpeg`
 - `bilibili_auth_status`
 - `begin_bilibili_login`
 - `poll_bilibili_login`
 - `logout_bilibili`
+- `list_favorite_folders`
+- `list_favorite_resources`
+- `search_favorite_resources`
+- `fetch_favorite_covers`
 - `get_settings`
+- `reveal_stream_key`
 - `save_settings`
 - `shutdown`
+
+Favorites browsing is login-gated. `list_favorite_folders` reads the signed-in
+user's folders, `list_favorite_resources` pages one folder, and
+`search_favorite_resources` reuses Bilibili's resource/list endpoint with its
+`type` parameter (`0` = current folder, `1` = all folders; the all-folders mode
+still requires a `media_id`, so the core borrows the first folder). Covers are
+downloaded by `fetch_favorite_covers` into `%LOCALAPPDATA%\VRC Bili
+Relay\covers` (sha-256-derived file names, oldest-first pruning at 300 files)
+because GPUIX `<img>` only loads local paths; the UI renders text rows first
+and swaps placeholders for cached files as they arrive.
 
 The first source inspection classifies video, live-room, short, and generic
 media links and returns the next resolution step without doing I/O. Source

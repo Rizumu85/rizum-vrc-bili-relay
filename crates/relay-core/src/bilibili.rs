@@ -7,10 +7,17 @@ use url::Url;
 
 use crate::bilibili_auth::BilibiliAuthService;
 use crate::{
-    BilibiliAccessMode, BilibiliAuthStatus, LiveStatus, MediaFormat, MediaInput, RelayError,
-    ResolvedSource, RouteDecision, RouteKind, RouteReason, SourceKind, SourceResolution,
-    VideoCollection, VideoCollectionItem, VideoPart, FavoriteFolder, inspect_source, normalize_source_input,
+    BilibiliAccessMode, BilibiliAuthStatus, FavoriteFolder, FavoriteResourceItem, LiveStatus,
+    MediaFormat, MediaInput, RelayError, ResolvedSource, RouteDecision, RouteKind, RouteReason,
+    SourceKind, SourceResolution, VideoCollection, VideoCollectionItem, VideoPart, inspect_source,
+    normalize_source_input,
 };
+
+pub struct FavoriteResourcePage {
+    pub items: Vec<FavoriteResourceItem>,
+    pub page: u32,
+    pub has_more: bool,
+}
 
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
@@ -113,6 +120,54 @@ impl BilibiliClient {
         Ok(data.get("list").and_then(Value::as_array).into_iter().flatten().filter_map(|item| Some(FavoriteFolder {
             id: item.get("id")?.as_u64()?, title: item.get("title")?.as_str()?.to_owned(), media_count: item.get("media_count").and_then(Value::as_u64).unwrap_or(0) as u32,
         })).collect())
+    }
+
+    pub fn favorite_resources(&self, folder_id: u64, page: u32) -> Result<FavoriteResourcePage, RelayError> {
+        self.favorite_resources_endpoint(
+            format!("https://api.bilibili.com/x/v3/fav/resource/list?media_id={folder_id}&pn={page}&ps=20&platform=web"),
+            page,
+        )
+    }
+
+    pub fn search_favorite_resources(&self, folder_id: Option<u64>, keyword: &str, page: u32) -> Result<FavoriteResourcePage, RelayError> {
+        // Favorites search rides on the resource/list endpoint: `type=0` scopes
+        // to `media_id`, `type=1` searches across all of the user's folders but
+        // still requires a media_id, so borrow the first folder for that.
+        let (media_id, scope_all) = match folder_id {
+            Some(id) => (id, false),
+            None => {
+                let folders = self.favorite_folders()?;
+                let first = folders
+                    .first()
+                    .ok_or_else(|| RelayError::new("favorites_empty", "还没有收藏夹"))?
+                    .id;
+                (first, true)
+            }
+        };
+        let endpoint = Url::parse_with_params("https://api.bilibili.com/x/v3/fav/resource/list", &[
+            ("media_id", media_id.to_string()),
+            ("keyword", keyword.trim().to_owned()),
+            ("pn", page.to_string()),
+            ("ps", 20.to_string()),
+            ("platform", "web".to_owned()),
+            ("type", if scope_all { "1".to_owned() } else { "0".to_owned() }),
+        ])
+        .map_err(|error| RelayError::new("invalid_favorite_search", format!("收藏搜索参数无效: {error}")))?;
+        self.favorite_resources_endpoint(endpoint.to_string(), page)
+    }
+
+    fn favorite_resources_endpoint(&self, endpoint: String, page: u32) -> Result<FavoriteResourcePage, RelayError> {
+        let cookie = self.active_cookie().ok_or_else(|| RelayError::new("login_required", "请先登录 Bilibili"))?;
+        let response = self.http.get(endpoint)
+            .header(COOKIE, cookie).header(REFERER, "https://space.bilibili.com/").send()
+            .map_err(|e| network_error("bilibili_unavailable", "无法读取收藏内容", e))?;
+        ensure_http_success(&response)?;
+        let root: Value = response.json().map_err(|e| network_error("invalid_bilibili_response", "无法读取收藏内容", e))?;
+        let data = api_data(&root, "favorites_unavailable", "无法读取收藏内容")?;
+        let medias = data.get("medias").and_then(Value::as_array);
+        let items = medias.into_iter().flatten().filter_map(read_favorite_resource).collect::<Vec<_>>();
+        let has_more = data.get("has_more").and_then(Value::as_bool).unwrap_or(items.len() >= 20);
+        Ok(FavoriteResourcePage { items, page, has_more })
     }
 
     fn active_cookie(&self) -> Option<&str> {
@@ -714,6 +769,31 @@ fn read_part_from_source(source: &str) -> Option<u32> {
 
 fn string_field(value: &Value, name: &str) -> Option<String> {
     value.get(name)?.as_str().map(str::to_owned)
+}
+
+fn read_favorite_resource(item: &Value) -> Option<FavoriteResourceItem> {
+    let bvid = string_field(item, "bvid")?;
+    let title = string_field(item, "title")?
+        .replace("<em class=\"keyword\">", "")
+        .replace("</em>", "");
+    let cover = string_field(item, "cover").unwrap_or_default();
+    let cover_url = if let Some(rest) = cover.strip_prefix("//") {
+        format!("https://{rest}")
+    } else {
+        cover.replacen("http://", "https://", 1)
+    };
+    Some(FavoriteResourceItem {
+        bvid,
+        title,
+        duration_seconds: u64_field(item, "duration").unwrap_or(0),
+        owner_name: item
+            .get("upper")
+            .and_then(|upper| string_field(upper, "name"))
+            .unwrap_or_default(),
+        cover_url,
+        folder_title: string_field(item, "folder_title")
+            .or_else(|| item.get("folder").and_then(|folder| string_field(folder, "title"))),
+    })
 }
 
 fn u64_field(value: &Value, name: &str) -> Option<u64> {

@@ -26,6 +26,9 @@ import {
   type BilibiliAccessMode,
   type BilibiliAuthStatus,
   type BilibiliLoginQr,
+  type FavoriteCover,
+  type FavoriteFolder,
+  type FavoriteResourceItem,
   type FfmpegStatus,
   type HealthReply,
   type PlaybackEndBehavior,
@@ -36,7 +39,7 @@ import {
   type RelayStatus,
   type SourceResolution,
 } from "./relay/protocol";
-import { RelayWorkerClient, RelayWorkerError } from "./relay/worker-client";
+import { RelayWorkerClient, RelayWorkerError, type FavoriteResourcePage } from "./relay/worker-client";
 import { relayFailureMessage } from "./relay/status-message";
 import { queryElementBounds, queryWindowSize } from "./platform/gpuix-geometry";
 import {
@@ -56,7 +59,7 @@ import {
   supportsNativePartPopup,
 } from "./platform/native-part-popup";
 
-export type Scene = "idle" | "loading" | "error" | "ready-vod" | "settings" | "danmaku";
+export type Scene = "idle" | "loading" | "error" | "ready-vod" | "settings" | "danmaku" | "favorites";
 type DanmakuVisibility = "shown" | "hidden";
 
 export function sceneWindowHeight(
@@ -77,12 +80,13 @@ export function sceneWindowHeight(
     return 358 + playbackHeight + danmakuHeight;
   }
   if (scene === "settings") return settingsExpanded ? 400 : 364;
+  if (scene === "favorites") return 548;
   return 572;
 }
 
 export function sceneWindowWidth(scene: Scene): number {
   if (scene === "settings") return 528;
-  if (scene === "danmaku") return 484;
+  if (scene === "danmaku" || scene === "favorites") return 484;
   return 472;
 }
 type DanmakuSize = "small" | "medium" | "large";
@@ -174,6 +178,10 @@ const THEME_OPTION_WEIGHTS = [64, 42, 42] as const;
 const LOGIN_OPTIONS = [
   { value: "guest", label: "访客" },
   { value: "account", label: "扫码登录" },
+] as const;
+const OUTPUT_RESOLUTION_OPTIONS = [
+  { value: "p720", label: "720p" },
+  { value: "p1080", label: "1080p" },
 ] as const;
 const VISIBILITY_OPTIONS = [
   { value: "shown", label: "显示" },
@@ -304,11 +312,10 @@ function relaySettingsReady(settings: ProductSettings): boolean {
   return settings.streamKeyStatus === "available" && Boolean(settings.playbackUrl.trim());
 }
 
-function configuredPlaybackOptions(
+function configuredDanmakuSettings(
   visibility: DanmakuVisibility,
   settings: DanmakuSettings,
-  playbackRate: PlaybackRate,
-): PlaybackOptions {
+): ProtocolDanmakuSettings {
   const font = {
     "microsoft-yahei": "microsoft_yahei",
     "noto-sans-sc": "noto_sans_sc",
@@ -316,19 +323,28 @@ function configuredPlaybackOptions(
     simhei: "simhei",
   } as const;
   return {
-    danmaku: {
-      enabled: visibility === "shown",
-      size: settings.size,
-      area: settings.area,
-      speed: settings.speed,
-      opacity: settings.opacity,
-      font: font[settings.font],
-      weight: settings.weight,
-      outline: settings.outline,
-      hidden_types: settings.hiddenTypes,
-    },
+    enabled: visibility === "shown",
+    size: settings.size,
+    area: settings.area,
+    speed: settings.speed,
+    opacity: settings.opacity,
+    font: font[settings.font],
+    weight: settings.weight,
+    outline: settings.outline,
+    hidden_types: settings.hiddenTypes,
+  };
+}
+
+function configuredPlaybackOptions(
+  visibility: DanmakuVisibility,
+  settings: DanmakuSettings,
+  playbackRate: PlaybackRate,
+  outputResolution: OutputResolution,
+): PlaybackOptions {
+  return {
+    danmaku: configuredDanmakuSettings(visibility, settings),
     playback_rate: playbackRate,
-    output_resolution: "p720",
+    output_resolution: outputResolution,
   };
 }
 
@@ -364,14 +380,19 @@ function playbackPreferenceSignature(
   playbackRate: PlaybackRate,
 ): string {
   return JSON.stringify({
-    danmaku: configuredPlaybackOptions(visibility, settings, playbackRate).danmaku,
+    danmaku: configuredDanmakuSettings(visibility, settings),
     playbackEndBehavior: endBehavior,
     playbackRate,
   });
 }
 
 function playbackOptionsSignature(options: PlaybackOptions): string {
-  return JSON.stringify(options);
+  // Output resolution is only captured when a fresh FFmpeg process spawns; a
+  // running relay always keeps its spawn-time size. Exclude it from the
+  // applied-options bookkeeping so a mid-relay settings change is not
+  // recorded as applied (or mistaken as needing a retarget).
+  const { output_resolution: _outputResolution, ...applied } = options;
+  return JSON.stringify(applied);
 }
 
 function Icon({ name, size, color }: { name: IconName; size: number; color: string }) {
@@ -672,12 +693,14 @@ function Header({
 }) {
   const isSettings = scene === "settings";
   const isDanmaku = scene === "danmaku";
-  const isSubview = isSettings || isDanmaku;
+  const isSubview = isSettings || isDanmaku || scene === "favorites";
   const title = isSettings
     ? "设置"
     : isDanmaku
       ? "弹幕样式"
-      : "VRC Bili Relay";
+      : scene === "favorites"
+        ? "收藏夹"
+        : "VRC Bili Relay";
   const beginDrag = (event: EventPayload) => {
     if (event.button === 0 && (event.clickCount ?? 1) === 1) {
       beginProductWindowDrag();
@@ -2613,11 +2636,30 @@ function HelpButton({
   align = "start",
 }: {
   palette: Palette;
-  kind: "relay" | "media";
+  kind: "relay" | "media" | "resolution";
   align?: "start" | "end";
 }) {
   const [open, setOpen] = useState(false);
-  const relay = kind === "relay";
+  const title = kind === "relay"
+    ? "什么时候需要推流密钥？"
+    : kind === "media"
+      ? "为什么需要 FFmpeg？"
+      : "输出分辨率怎么生效？";
+  const rows: ReadonlyArray<readonly [string, string]> = kind === "relay"
+    ? [
+        [palette.accentViolet, "开启弹幕，或链接无法直接播放时需要"],
+        [palette.accentTeal, "链接可以直接播放且弹幕关闭时不需要"],
+      ]
+    : kind === "media"
+      ? [
+          [palette.accentViolet, "用于转换无法直接播放的视频，或者给视频内置弹幕"],
+          [palette.accentTeal, "电脑已有 FFmpeg？则无需重复下载"],
+        ]
+      : [
+          [palette.accentTeal, "源达到所选清晰度时保持原画质，不再放大"],
+          [palette.accentViolet, "源较低时等比缩放并补边，输出尺寸保持恒定"],
+          [palette.accentViolet, "更改在下次开始推流时生效，不会打断当前推流"],
+        ];
 
   return (
     <div style={{ width: 16, height: 16, position: "relative" }}>
@@ -2673,27 +2715,13 @@ function HelpButton({
           }}
         >
           <text style={{ color: palette.ink, fontFamily: FONT_SERIF, fontSize: 12, fontWeight: 600 }}>
-            {relay ? "什么时候需要推流密钥？" : "为什么需要 FFmpeg？"}
+            {title}
           </text>
-          {relay ? (
-            <>
-              <HelpRow color={palette.accentViolet} palette={palette}>
-                开启弹幕，或链接无法直接播放时需要
-              </HelpRow>
-              <HelpRow color={palette.accentTeal} palette={palette}>
-                链接可以直接播放且弹幕关闭时不需要
-              </HelpRow>
-            </>
-          ) : (
-            <>
-              <HelpRow color={palette.accentViolet} palette={palette}>
-                用于转换无法直接播放的视频，或者给视频内置弹幕
-              </HelpRow>
-              <HelpRow color={palette.accentTeal} palette={palette}>
-                电脑已有 FFmpeg？则无需重复下载
-              </HelpRow>
-            </>
-          )}
+          {rows.map(([color, text]) => (
+            <HelpRow key={text} color={color} palette={palette}>
+              {text}
+            </HelpRow>
+          ))}
         </motion.div>
       ) : null}
     </div>
@@ -3288,6 +3316,696 @@ function DanmakuRow({
   );
 }
 
+const FAVORITE_SCOPE_OPTIONS = [
+  { value: "folder", label: "当前收藏夹" },
+  { value: "all", label: "全部" },
+] as const;
+
+type FavoriteScope = (typeof FAVORITE_SCOPE_OPTIONS)[number]["value"];
+type FavoritesLevel = { kind: "folders" } | { kind: "videos"; folder: FavoriteFolder };
+
+function formatFavoriteDuration(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.round(totalSeconds));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const rest = seconds % 60;
+  const tail = `${String(minutes).padStart(hours > 0 ? 2 : 1, "0")}:${String(rest).padStart(2, "0")}`;
+  return hours > 0 ? `${hours}:${tail}` : tail;
+}
+
+function favoriteErrorMessage(error: unknown): string {
+  if (error instanceof RelayWorkerError && error.code === "login_required") {
+    return "登录已失效，请到设置中重新扫码";
+  }
+  return "暂时无法读取收藏内容，请稍后再试。";
+}
+
+function FavoritesView({
+  palette,
+  authenticated,
+  displayName,
+  onOpenSettings,
+  onPickVideo,
+  listFolders,
+  listResources,
+  searchResources,
+  fetchCovers,
+}: {
+  palette: Palette;
+  authenticated: boolean;
+  displayName: string | null;
+  onOpenSettings: () => void;
+  onPickVideo: (bvid: string) => void;
+  listFolders: () => Promise<FavoriteFolder[]>;
+  listResources: (folderId: number, page: number) => Promise<FavoriteResourcePage>;
+  searchResources: (folderId: number | null, keyword: string, page: number) => Promise<FavoriteResourcePage>;
+  fetchCovers: (urls: string[]) => Promise<FavoriteCover[]>;
+}) {
+  const [level, setLevel] = useState<FavoritesLevel>({ kind: "folders" });
+  const [folders, setFolders] = useState<FavoriteFolder[] | null>(null);
+  const [foldersLoading, setFoldersLoading] = useState(false);
+  const [foldersError, setFoldersError] = useState<string | null>(null);
+  const [videos, setVideos] = useState<FavoriteResourceItem[]>([]);
+  const [videosPage, setVideosPage] = useState(0);
+  const [videosHasMore, setVideosHasMore] = useState(false);
+  const [videosLoading, setVideosLoading] = useState(false);
+  const [videosError, setVideosError] = useState<string | null>(null);
+  const [searchOpen, setSearchOpen] = useState(() =>
+    Boolean(process.env.VRC_BILI_RELAY_FAVORITES_SEARCH),
+  );
+  const [searchText, setSearchText] = useState(
+    () => process.env.VRC_BILI_RELAY_FAVORITES_SEARCH ?? "",
+  );
+  const [searchScope, setSearchScope] = useState<FavoriteScope>("folder");
+  const [searchItems, setSearchItems] = useState<FavoriteResourceItem[] | null>(null);
+  const [searchPage, setSearchPage] = useState(0);
+  const [searchHasMore, setSearchHasMore] = useState(false);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [covers, setCovers] = useState<ReadonlyMap<string, string>>(new Map());
+  const foldersEpoch = useRef(0);
+  const videosEpoch = useRef(0);
+  const searchEpoch = useRef(0);
+  const coversEpoch = useRef(0);
+
+  const searching = searchItems !== null;
+
+  // Covers arrive after the text rows: ask the worker to cache any missing
+  // cover locally, then swap the placeholder for the cached file.
+  useEffect(() => {
+    const items = level.kind === "videos" ? (searching ? (searchItems ?? []) : videos) : [];
+    const missing = items
+      .map((item) => item.cover_url)
+      .filter((url) => url && !covers.has(url));
+    if (missing.length === 0) return;
+    const epoch = ++coversEpoch.current;
+    void fetchCovers(missing)
+      .then((fetched) => {
+        if (coversEpoch.current !== epoch || fetched.length === 0) return;
+        setCovers((current) => {
+          const next = new Map(current);
+          for (const cover of fetched) next.set(cover.url, cover.path);
+          return next;
+        });
+      })
+      .catch(() => undefined);
+  }, [level, searching, videos, searchItems]);
+
+  const loadFolders = async () => {
+    const epoch = ++foldersEpoch.current;
+    setFoldersError(null);
+    setFoldersLoading(true);
+    try {
+      const list = await listFolders();
+      if (foldersEpoch.current === epoch) setFolders(list);
+    } catch (error) {
+      if (foldersEpoch.current === epoch) setFoldersError(favoriteErrorMessage(error));
+    } finally {
+      if (foldersEpoch.current === epoch) setFoldersLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (authenticated && folders === null && !foldersLoading) void loadFolders();
+  }, [authenticated]);
+
+  const resetSearch = () => {
+    searchEpoch.current += 1;
+    setSearchOpen(false);
+    setSearchText("");
+    setSearchScope("folder");
+    setSearchItems(null);
+    setSearchPage(0);
+    setSearchHasMore(false);
+    setSearchLoading(false);
+    setSearchError(null);
+  };
+
+  const loadVideos = async (folder: FavoriteFolder, page: number, append: boolean) => {
+    const epoch = ++videosEpoch.current;
+    setVideosError(null);
+    setVideosLoading(true);
+    try {
+      const result = await listResources(folder.id, page);
+      if (videosEpoch.current !== epoch) return;
+      setVideos((current) => (append ? [...current, ...result.items] : result.items));
+      setVideosPage(result.page);
+      setVideosHasMore(result.hasMore);
+    } catch (error) {
+      if (videosEpoch.current === epoch) setVideosError(favoriteErrorMessage(error));
+    } finally {
+      if (videosEpoch.current === epoch) setVideosLoading(false);
+    }
+  };
+
+  const openFolder = (folder: FavoriteFolder) => {
+    resetSearch();
+    setLevel({ kind: "videos", folder });
+    setVideos([]);
+    setVideosPage(0);
+    setVideosHasMore(false);
+    void loadVideos(folder, 1, false);
+  };
+
+  const backToFolders = () => {
+    videosEpoch.current += 1;
+    resetSearch();
+    setLevel({ kind: "folders" });
+  };
+
+  const runSearch = async (keyword: string, page: number, append: boolean) => {
+    const folderId = level.kind === "videos" && searchScope === "folder" ? level.folder.id : null;
+    const epoch = ++searchEpoch.current;
+    setSearchError(null);
+    setSearchLoading(true);
+    if (!append) setSearchItems((current) => current ?? []);
+    try {
+      const result = await searchResources(folderId, keyword, page);
+      if (searchEpoch.current !== epoch) return;
+      setSearchItems((current) => (append && current ? [...current, ...result.items] : result.items));
+      setSearchPage(result.page);
+      setSearchHasMore(result.hasMore);
+    } catch (error) {
+      if (searchEpoch.current === epoch) setSearchError(favoriteErrorMessage(error));
+    } finally {
+      if (searchEpoch.current === epoch) setSearchLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    const keyword = searchText.trim();
+    if (!keyword) {
+      searchEpoch.current += 1;
+      setSearchItems(null);
+      setSearchError(null);
+      setSearchLoading(false);
+      setSearchPage(0);
+      setSearchHasMore(false);
+      return;
+    }
+    const timer = setTimeout(() => void runSearch(keyword, 1, false), 400);
+    return () => clearTimeout(timer);
+  }, [searchText, searchScope, searchOpen, level]);
+
+  const toggleSearch = () => {
+    if (searchOpen) {
+      resetSearch();
+    } else {
+      setSearchOpen(true);
+    }
+  };
+
+  const searchField = (
+    <div
+      style={{
+        flexGrow: 1,
+        minWidth: 0,
+        height: 34,
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingLeft: 10,
+        paddingRight: 3,
+        borderRadius: RADII.control,
+        borderWidth: 1,
+        borderColor: palette.surfaceLine,
+        backgroundColor: palette.surface,
+      }}
+    >
+      <Icon name="search" size={12} color={palette.caption} />
+      <ProductTextInput
+        testId="favorites-search"
+        value={searchText}
+        placeholder={level.kind === "videos" ? "搜索收藏内容" : "搜索全部收藏的视频"}
+        onChange={setSearchText}
+        palette={palette}
+        style={{
+          flexGrow: 1,
+          minWidth: 0,
+          height: 18,
+          position: "relative",
+          top: -4,
+          color: palette.inkSoft,
+          fontFamily: FONT_UI,
+          fontSize: 12.5,
+          lineHeight: 18,
+        }}
+      />
+      {searchText ? (
+        <IconButton name="close" palette={palette} label="clear-favorites-search" onClick={() => setSearchText("")} />
+      ) : null}
+    </div>
+  );
+
+  const searchToggleButton = (
+    <IconButton name="search" palette={palette} label="toggle-favorites-search" onClick={toggleSearch} />
+  );
+
+  if (!authenticated) {
+    return (
+      <div
+        style={{
+          flexGrow: 1,
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 12,
+          paddingLeft: 26,
+          paddingRight: 26,
+        }}
+      >
+        <Icon name="bookmark" size={22} color={palette.caption} />
+        <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12.5, textAlign: "center" }}>
+          登录后就能浏览和播放你的 B 站收藏夹
+        </text>
+        <Button label="去设置登录" palette={palette} quiet onClick={onOpenSettings} />
+      </div>
+    );
+  }
+
+  const listBox = (children: React.ReactNode) => (
+    <div
+      style={{
+        flexGrow: 1,
+        minHeight: 0,
+        display: "flex",
+        flexDirection: "column",
+        borderRadius: RADII.compactPanel,
+        borderWidth: 1,
+        borderColor: palette.surfaceDivider,
+        backgroundColor: palette.surface,
+        overflow: "hidden",
+      }}
+    >
+      <div style={{ flexGrow: 1, minHeight: 0, overflow: "scroll" }}>{children}</div>
+    </div>
+  );
+
+  const centerState = (children: React.ReactNode) => (
+    <div
+      style={{
+        minHeight: 120,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 8,
+        padding: 16,
+      }}
+    >
+      {children}
+    </div>
+  );
+
+  const videoRow = (item: FavoriteResourceItem, showFolder: boolean) => (
+    <div
+      key={item.bvid}
+      testId={`favorite-video-${item.bvid}`}
+      tabIndex={0}
+      onClick={() => onPickVideo(item.bvid)}
+      onKeyDown={(event) => {
+        if (event.key === "enter" || event.key === "space") onPickVideo(item.bvid);
+      }}
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 11,
+        minHeight: 64,
+        paddingTop: 7,
+        paddingBottom: 7,
+        paddingLeft: 12,
+        paddingRight: 12,
+        borderBottomWidth: 1,
+        borderColor: palette.surfaceDivider,
+        cursor: "pointer",
+        hover: { backgroundColor: palette.surfaceHover },
+      }}
+    >
+      <div
+        style={{
+          width: 86,
+          height: 48,
+          flexShrink: 0,
+          borderRadius: 7,
+          borderWidth: 1,
+          borderColor: palette.surfaceDivider,
+          backgroundColor: palette.segmentedTrack,
+          overflow: "hidden",
+        }}
+      >
+        {covers.get(item.cover_url) ? (
+          <img src={covers.get(item.cover_url)} objectFit="cover" style={{ width: "100%", height: "100%" }} />
+        ) : null}
+      </div>
+      <div style={{ minWidth: 0, flexGrow: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+        <text
+          style={{
+            width: "100%",
+            overflow: "hidden",
+            color: palette.inkSoft,
+            fontFamily: FONT_UI,
+            fontSize: 12.5,
+            lineHeight: 17,
+            whiteSpace: "nowrap",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {item.title}
+        </text>
+        <div style={{ display: "flex", flexDirection: "row", gap: 6, overflow: "hidden" }}>
+          <div style={{ minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center", overflow: "hidden" }}>
+            <text style={{ width: "100%", color: palette.caption, fontFamily: FONT_UI, fontSize: 10.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {item.owner_name}
+            </text>
+          </div>
+          <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 10.5, flexShrink: 0 }}>·</text>
+          <text style={{ color: palette.caption, fontFamily: FONT_MONO, fontSize: 10.5, flexShrink: 0, whiteSpace: "nowrap" }}>
+            {formatFavoriteDuration(item.duration_seconds)}
+          </text>
+          {showFolder && item.folder_title ? (
+            <>
+              <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 10.5, flexShrink: 0 }}>·</text>
+              <div style={{ minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center", overflow: "hidden" }}>
+                <text style={{ width: "100%", color: palette.caption, fontFamily: FONT_UI, fontSize: 10.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {item.folder_title}
+                </text>
+              </div>
+            </>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+
+  const moreRow = (loading: boolean, onMore: () => void) => (
+    <div
+      key="favorites-more"
+      testId="favorites-more"
+      tabIndex={0}
+      onClick={() => {
+        if (!loading) onMore();
+      }}
+      onKeyDown={(event) => {
+        if ((event.key === "enter" || event.key === "space") && !loading) onMore();
+      }}
+      style={{
+        height: 36,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: loading ? "default" : "pointer",
+        hover: loading ? undefined : { backgroundColor: palette.surfaceHover },
+      }}
+    >
+      <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 11.5 }}>
+        {loading ? "正在加载…" : "加载更多"}
+      </text>
+    </div>
+  );
+
+  let body: React.ReactNode;
+  if (level.kind === "folders") {
+    let content: React.ReactNode;
+    if (foldersLoading && folders === null) {
+      content = centerState(<Loading palette={palette} label="正在读取收藏夹" />);
+    } else if (foldersError) {
+      content = centerState(
+        <>
+          <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{foldersError}</text>
+          <Button label="重试" palette={palette} quiet onClick={() => void loadFolders()} />
+        </>,
+      );
+    } else if (folders && folders.length === 0) {
+      content = centerState(
+        <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 12 }}>还没有收藏夹</text>,
+      );
+    } else {
+      content = (folders ?? []).map((folder) => (
+        <div
+          key={folder.id}
+          testId={`favorite-folder-${folder.id}`}
+          tabIndex={0}
+          onClick={() => openFolder(folder)}
+          onKeyDown={(event) => {
+            if (event.key === "enter" || event.key === "space") openFolder(folder);
+          }}
+          style={{
+            display: "flex",
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 10,
+            height: 44,
+            paddingLeft: 12,
+            paddingRight: 12,
+            borderBottomWidth: 1,
+            borderColor: palette.surfaceDivider,
+            cursor: "pointer",
+            hover: { backgroundColor: palette.surfaceHover },
+          }}
+        >
+          <text
+            style={{
+              minWidth: 0,
+              flexGrow: 1,
+              overflow: "hidden",
+              color: palette.inkSoft,
+              fontFamily: FONT_UI,
+              fontSize: 12.5,
+              whiteSpace: "nowrap",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {folder.title}
+          </text>
+          <div style={{ width: 72, flexShrink: 0, display: "flex", flexDirection: "column", justifyContent: "center", overflow: "hidden" }}>
+            <text
+              style={{
+                width: "100%",
+                color: palette.caption,
+                fontFamily: FONT_UI,
+                fontSize: 11,
+                textAlign: "right",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {`${folder.media_count} 个视频`}
+            </text>
+          </div>
+          <Icon name="chevronRight" size={10} color={palette.caption} />
+        </div>
+      ));
+    }
+    body = (
+      <>
+        <SectionHeading
+          title="登录账号的收藏"
+          subtitle={
+            folders
+              ? `${displayName ?? "Bilibili 用户"} · 共 ${folders.length} 个收藏夹`
+              : (displayName ?? undefined)
+          }
+          compact
+          palette={palette}
+          action={searchToggleButton}
+        />
+        {searchOpen ? (
+          <MotionFade
+            key="favorites-search-folders"
+            style={{ display: "flex", flexDirection: "row", gap: 8, marginTop: -2, marginBottom: 12 }}
+          >
+            {searchField}
+          </MotionFade>
+        ) : null}
+        {searching && !searchError ? (
+          <div style={{ marginBottom: 8 }}>
+            <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 11 }}>
+              {searchLoading && (searchItems?.length ?? 0) === 0
+                ? "正在搜索…"
+                : `在全部收藏夹中找到 ${searchItems?.length ?? 0} 个视频`}
+            </text>
+          </div>
+        ) : null}
+        {searching
+          ? listBox(
+              <>
+                {searchError ? (
+                  centerState(
+                    <>
+                      <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{searchError}</text>
+                      <Button label="重试" palette={palette} quiet onClick={() => void runSearch(searchText.trim(), 1, false)} />
+                    </>,
+                  )
+                ) : (searchItems?.length ?? 0) === 0 && !searchLoading ? (
+                  centerState(
+                    <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 12 }}>没有找到相关视频</text>,
+                  )
+                ) : (
+                  <>
+                    {searchItems?.map((item) => videoRow(item, true))}
+                    {searchLoading && (searchItems?.length ?? 0) === 0
+                      ? centerState(<Loading palette={palette} label="正在搜索" />)
+                      : null}
+                    {searchHasMore ? moreRow(searchLoading, () => void runSearch(searchText.trim(), searchPage + 1, true)) : null}
+                  </>
+                )}
+              </>,
+            )
+          : listBox(content)}
+      </>
+    );
+  } else {
+    const folder = level.folder;
+    body = (
+      <>
+        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 10 }}>
+          <div
+            testId="favorites-back-folders"
+            tabIndex={0}
+            onClick={backToFolders}
+            onKeyDown={(event) => {
+              if (event.key === "enter" || event.key === "space") backToFolders();
+            }}
+            style={{
+              display: "flex",
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 3,
+              paddingTop: 3,
+              paddingBottom: 3,
+              paddingLeft: 6,
+              paddingRight: 6,
+              marginLeft: -6,
+              borderRadius: 6,
+              cursor: "pointer",
+              hover: { backgroundColor: palette.surfaceHover },
+            }}
+          >
+            <Icon name="back" size={11} color={palette.inkMuted} />
+            <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>全部收藏夹</text>
+          </div>
+          <div style={{ flexGrow: 1, minWidth: 0, overflow: "hidden", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+            <text
+              style={{
+                width: "100%",
+                color: palette.caption,
+                fontFamily: FONT_UI,
+                fontSize: 11,
+                textAlign: "right",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {`${folder.title} · ${folder.media_count} 个视频`}
+            </text>
+          </div>
+          {searchToggleButton}
+        </div>
+        {searchOpen ? (
+          <MotionFade
+            key="favorites-search-videos"
+            style={{ display: "flex", flexDirection: "row", gap: 8, marginTop: -2, marginBottom: 12 }}
+          >
+            {searchField}
+            <Segmented
+              value={searchScope}
+              onChange={setSearchScope}
+              options={FAVORITE_SCOPE_OPTIONS}
+              optionWeights={[58, 34]}
+              width={150}
+              height={34}
+              palette={palette}
+            />
+          </MotionFade>
+        ) : null}
+        {searching && !searchError ? (
+          <div style={{ marginBottom: 8 }}>
+            <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 11 }}>
+              {searchLoading && (searchItems?.length ?? 0) === 0
+                ? "正在搜索…"
+                : `在${searchScope === "all" ? "全部" : "当前"}收藏夹中找到 ${searchItems?.length ?? 0} 个视频`}
+            </text>
+          </div>
+        ) : null}
+        {searching
+          ? listBox(
+              <>
+                {searchError ? (
+                  centerState(
+                    <>
+                      <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{searchError}</text>
+                      <Button label="重试" palette={palette} quiet onClick={() => void runSearch(searchText.trim(), 1, false)} />
+                    </>,
+                  )
+                ) : (searchItems?.length ?? 0) === 0 && !searchLoading ? (
+                  centerState(
+                    <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 12 }}>没有找到相关视频</text>,
+                  )
+                ) : (
+                  <>
+                    {searchItems?.map((item) => videoRow(item, searchScope === "all"))}
+                    {searchLoading && (searchItems?.length ?? 0) === 0
+                      ? centerState(<Loading palette={palette} label="正在搜索" />)
+                      : null}
+                    {searchHasMore ? moreRow(searchLoading, () => void runSearch(searchText.trim(), searchPage + 1, true)) : null}
+                  </>
+                )}
+              </>,
+            )
+          : listBox(
+              <>
+                {videosLoading && videos.length === 0 ? (
+                  centerState(<Loading palette={palette} label="正在读取视频" />)
+                ) : videosError ? (
+                  centerState(
+                    <>
+                      <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{videosError}</text>
+                      <Button label="重试" palette={palette} quiet onClick={() => void loadVideos(folder, 1, false)} />
+                    </>,
+                  )
+                ) : videos.length === 0 ? (
+                  centerState(
+                    <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 12 }}>这个收藏夹是空的</text>,
+                  )
+                ) : (
+                  <>
+                    {videos.map((item) => videoRow(item, false))}
+                    {videosHasMore
+                      ? moreRow(videosLoading, () => void loadVideos(folder, videosPage + 1, true))
+                      : null}
+                  </>
+                )}
+              </>,
+            )}
+      </>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        flexGrow: 1,
+        minHeight: 0,
+        display: "flex",
+        flexDirection: "column",
+        paddingTop: 17,
+        paddingRight: 26,
+        paddingBottom: 16,
+        paddingLeft: 26,
+      }}
+    >
+      {body}
+    </div>
+  );
+}
+
 function SettingsView({
   palette,
   themePreference,
@@ -3339,7 +4057,6 @@ function SettingsView({
   const [secretInputVersion, setSecretInputVersion] = useState(0);
   const [accountPopoverOpen, setAccountPopoverOpen] = useState(false);
   const [logoutTooltipVisible, setLogoutTooltipVisible] = useState(false);
-  const [favoritesOpen, setFavoritesOpen] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const accountAuthenticated = bilibiliAuth?.stage === "authenticated";
   const accountPending = bilibiliAuth?.stage === "waiting" || bilibiliAuth?.stage === "scanned";
@@ -3522,29 +4239,14 @@ function SettingsView({
             </Field>
           </div>
           <div style={{ marginTop: 10 }}>
-            <Field label="输出分辨率" palette={palette}>
-              <div style={{ display: "flex", flexDirection: "row", gap: 7 }}>
-                {(["p720", "p1080"] as const).map((value) => {
-                  const selected = settings.outputResolution === value;
-                  return (
-                    <div
-                      key={value}
-                      onClick={() => setSettings((current) => ({ ...current, outputResolution: value }))}
-                      style={{
-                        flexGrow: 1,
-                        height: 33,
-                        borderWidth: 1,
-                        borderRadius: RADII.control,
-                        borderColor: selected ? palette.accentTeal : palette.panelEdge,
-                        backgroundColor: selected ? palette.focus : palette.surface,
-                        color: selected ? palette.ink : palette.inkMuted,
-                        fontFamily: FONT_UI,
-                        fontSize: 12.5,
-                      }}
-                    >{value === "p720" ? "720p" : "1080p"}</div>
-                  );
-                })}
-              </div>
+            <Field label="输出分辨率" palette={palette} help={<HelpButton kind="resolution" align="end" palette={palette} />}>
+              <Segmented
+                value={settings.outputResolution}
+                onChange={(value) => setSettings((current) => ({ ...current, outputResolution: value }))}
+                options={OUTPUT_RESOLUTION_OPTIONS}
+                width={249}
+                palette={palette}
+              />
             </Field>
           </div>
           <div
@@ -3635,19 +4337,6 @@ function SettingsView({
             width={170}
             palette={palette}
           />
-          {accountAuthenticated ? (
-            <>
-              <div
-                onClick={() => setFavoritesOpen((open) => !open)}
-                style={{ marginTop: 12, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: RADII.control, borderWidth: 1, borderColor: palette.panelEdge, backgroundColor: palette.surface, color: palette.ink, fontFamily: FONT_UI, fontSize: 12, cursor: "pointer" }}
-              >收藏夹</div>
-              {favoritesOpen ? (
-                <div style={{ marginTop: 7, padding: 10, borderRadius: RADII.control, borderWidth: 1, borderColor: palette.panelEdge, backgroundColor: palette.floatingSurface, color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 11, lineHeight: 1.5 }}>
-                  收藏夹入口已准备好。生成视频时可直接选择收藏内容；也可在 B 站打开“我的收藏夹”。
-                </div>
-              ) : null}
-            </>
-          ) : null}
           <div style={{ height: 1, marginTop: 10, marginRight: 8, marginBottom: 10, marginLeft: 8, backgroundColor: palette.surfaceDivider }} />
           <SectionHeading title="外观" compact palette={palette} />
           <Segmented
@@ -3807,7 +4496,7 @@ function SettingsView({
   );
 }
 
-function Loading({ palette }: { palette: Palette }) {
+function Loading({ palette, label = "正在读取链接" }: { palette: Palette; label?: string }) {
   const [phase, setPhase] = useState(0);
 
   useEffect(() => {
@@ -3845,7 +4534,7 @@ function Loading({ palette }: { palette: Palette }) {
           />
         ))}
       </div>
-      <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 12.5 }}>正在读取链接</text>
+      <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 12.5 }}>{label}</text>
     </div>
   );
 }
@@ -3865,7 +4554,9 @@ export function AppSurface({
 }: AppSurfaceProps) {
   const [scene, setScene] = useState<Scene>(initialScene);
   const [lastMainScene, setLastMainScene] = useState<Scene>(
-    initialScene === "settings" || initialScene === "danmaku" ? "idle" : initialScene,
+    initialScene === "settings" || initialScene === "danmaku" || initialScene === "favorites"
+      ? "idle"
+      : initialScene,
   );
   const [themePreference, setThemePreference] = useState<ThemePreference>(
     () => initialThemePreference ?? DEFAULT_SETTINGS.theme,
@@ -4001,14 +4692,13 @@ export function AppSurface({
     setPlaybackRate(next);
   };
 
-  const currentPlaybackOptions = () => ({
-    ...configuredPlaybackOptions(
-    danmakuRef.current,
-    danmakuSettingsRef.current,
-    playbackRateRef.current,
-    ),
-    output_resolution: productSettings.outputResolution,
-  });
+  const currentPlaybackOptions = () =>
+    configuredPlaybackOptions(
+      danmakuRef.current,
+      danmakuSettingsRef.current,
+      playbackRateRef.current,
+      productSettings.outputResolution,
+    );
 
   const applyProductSettings = (next: ProductSettings): ProductSettings => {
     const visible = initialThemePreference
@@ -4141,7 +4831,7 @@ export function AppSurface({
 
   useEffect(() => {
     if (!preferencesReady) return;
-    const options = configuredPlaybackOptions(danmaku, danmakuSettings, playbackRate);
+    const options = configuredDanmakuSettings(danmaku, danmakuSettings);
     const signature = playbackPreferenceSignature(
       danmaku,
       danmakuSettings,
@@ -4155,7 +4845,7 @@ export function AppSurface({
       preferenceSaveQueue.current = preferenceSaveQueue.current.then(async () => {
         try {
           const saved = await getRelayWorker().saveSettings({
-            danmaku: options.danmaku,
+            danmaku: options,
             playbackEndBehavior,
             playbackRate,
           });
@@ -4184,6 +4874,8 @@ export function AppSurface({
       void refreshProductSettings();
       if (initialScene === "settings") {
         void refreshMediaState();
+      }
+      if (initialScene === "settings" || initialScene === "favorites") {
         void refreshBilibiliAuth();
       }
     }, 0);
@@ -4300,8 +4992,8 @@ export function AppSurface({
     };
   }, [relayStatus?.session_id, relayStatus?.stage, seekInteractionActive, playbackUpdating]);
 
-  const convert = async () => {
-    const normalizedSource = source.trim();
+  const convert = async (sourceOverride?: string) => {
+    const normalizedSource = (sourceOverride ?? source).trim();
     if (!normalizedSource) {
       setScene("idle");
       return;
@@ -4675,6 +5367,7 @@ export function AppSurface({
       danmakuRef.current,
       danmakuSettingsRef.current,
       next,
+      productSettings.outputResolution,
     );
     setPlaybackUpdating("rate");
     setPlaybackMessage(null);
@@ -4722,7 +5415,7 @@ export function AppSurface({
       requestedPart,
       isLive ? 0 : playbackPosition,
       "danmaku",
-      configuredPlaybackOptions(next, danmakuSettingsRef.current, playbackRateRef.current),
+      configuredPlaybackOptions(next, danmakuSettingsRef.current, playbackRateRef.current, productSettings.outputResolution),
     );
   };
 
@@ -4858,12 +5551,12 @@ export function AppSurface({
     }
   };
 
-  const showSubview = (next: "settings" | "danmaku") => {
+  const showSubview = (next: "settings" | "danmaku" | "favorites") => {
     // Opening settings/style is a UI-only transition. Do not invalidate an
     // in-flight conversion: the conversion owns the relay startup and
     // cancelling its epoch here can leave the UI detached from a live
     // publisher while the native worker is still switching inputs.
-    if (scene !== "settings" && scene !== "danmaku") {
+    if (scene !== "settings" && scene !== "danmaku" && scene !== "favorites") {
       setLastMainScene(scene === "loading" ? (sourceResolution ? "ready-vod" : "idle") : scene);
     }
     setScene(next);
@@ -4874,10 +5567,13 @@ export function AppSurface({
       void refreshMediaState();
       void refreshBilibiliAuth();
     }
+    if (next === "favorites") {
+      void refreshBilibiliAuth();
+    }
   };
 
   const leaveSubview = () => {
-    const returnScene = lastMainScene === "settings" || lastMainScene === "danmaku"
+    const returnScene = lastMainScene === "settings" || lastMainScene === "danmaku" || lastMainScene === "favorites"
       ? sourceResolution
         ? "ready-vod"
         : "idle"
@@ -4905,6 +5601,17 @@ export function AppSurface({
         : sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
       void retargetPlayback(requestedPart, isLive ? 0 : playbackPosition, "danmaku", options);
     }
+  };
+
+  // Picking a favorite plays it immediately: the same conversion pipeline as
+  // the main "生成地址" button. While a relay is live the conversion stops and
+  // replaces the current video, so no separate "generate" step is needed.
+  const playFavorite = (bvid: string) => {
+    if (playbackUpdating !== null) return;
+    const url = `https://www.bilibili.com/video/${bvid}`;
+    setSource(url);
+    leaveSubview();
+    void convert(url);
   };
 
   return (
@@ -4972,6 +5679,20 @@ export function AppSurface({
             setSettings={setDanmakuSettingsPreference}
           />
         </MotionFade>
+      ) : scene === "favorites" ? (
+        <MotionFade key="favorites" style={{ flexGrow: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+          <FavoritesView
+            palette={palette}
+            authenticated={bilibiliAuth?.stage === "authenticated"}
+            displayName={bilibiliAuth?.display_name ?? null}
+            onOpenSettings={() => showSubview("settings")}
+            onPickVideo={playFavorite}
+            listFolders={() => getRelayWorker().listFavoriteFolders()}
+            listResources={(folderId, page) => getRelayWorker().listFavoriteResources(folderId, page)}
+            searchResources={(folderId, keyword, page) => getRelayWorker().searchFavoriteResources(folderId, keyword, page)}
+            fetchCovers={(urls) => getRelayWorker().fetchFavoriteCovers(urls)}
+          />
+        </MotionFade>
       ) : (
         <div style={{ flexGrow: 1, minHeight: 0, paddingTop: 17, paddingRight: 26, paddingBottom: 16, paddingLeft: 26 }}>
           <div style={{ height: 17, display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -4980,8 +5701,36 @@ export function AppSurface({
               视频链接
             </text>
           </div>
-          <div style={{ marginTop: 7 }}>
-            <SourceField source={source} setSource={setSource} palette={palette} />
+          <div style={{ marginTop: 7, display: "flex", flexDirection: "row", gap: 8 }}>
+            <div style={{ minWidth: 0, flexGrow: 1 }}>
+              <SourceField source={source} setSource={setSource} palette={palette} />
+            </div>
+            <div
+              testId="open-favorites"
+              tabIndex={0}
+              onClick={() => showSubview("favorites")}
+              onKeyDown={(event) => {
+                if (event.key === "enter" || event.key === "space") showSubview("favorites");
+              }}
+              style={{
+                width: 34,
+                height: 35,
+                flexShrink: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                borderRadius: RADII.control,
+                borderWidth: 1,
+                borderColor: palette.panelEdge,
+                backgroundColor: palette.surface,
+                cursor: "pointer",
+                userSelect: "none",
+                hover: { backgroundColor: palette.surfaceHover },
+                active: { backgroundColor: palette.surfaceActive },
+              }}
+            >
+              <Icon name="bookmark" size={14.5} color={palette.inkMuted} />
+            </div>
           </div>
           <div style={{ minHeight: 33, marginTop: 9, display: "flex", flexDirection: "row", alignItems: "center", gap: 9 }}>
             <Button

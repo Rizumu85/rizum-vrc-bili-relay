@@ -24,6 +24,7 @@ const initialScene: Scene =
   || requestedScene === "ready-vod"
   || requestedScene === "settings"
   || requestedScene === "danmaku"
+  || requestedScene === "favorites"
     ? requestedScene
     : "idle";
 

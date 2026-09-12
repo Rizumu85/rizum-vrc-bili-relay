@@ -1,4 +1,4 @@
-export const RELAY_PROTOCOL_VERSION = 23;
+export const RELAY_PROTOCOL_VERSION = 24;
 
 export type SourceKind = "video" | "live" | "media" | "short_link";
 export type RelayNextStep =
@@ -216,6 +216,23 @@ export interface BilibiliAuthStateReply {
 export interface FavoriteFolder { id: number; title: string; media_count: number; }
 export interface FavoriteFoldersReply { type: "favorite_folders"; folders: FavoriteFolder[]; }
 
+export interface FavoriteResourceItem {
+  bvid: string;
+  title: string;
+  duration_seconds: number;
+  owner_name: string;
+  cover_url: string;
+  folder_title?: string | null;
+}
+export interface FavoriteResourcesReply {
+  type: "favorite_resources";
+  items: FavoriteResourceItem[];
+  page: number;
+  has_more: boolean;
+}
+export interface FavoriteCover { url: string; path: string; }
+export interface FavoriteCoversReply { type: "favorite_covers"; covers: FavoriteCover[]; }
+
 export interface SettingsStateReply {
   type: "settings_state";
   settings: ProductSettings;
@@ -239,6 +256,8 @@ export type RelayReply =
   | FfmpegStateReply
   | BilibiliAuthStateReply
   | FavoriteFoldersReply
+  | FavoriteResourcesReply
+  | FavoriteCoversReply
   | SettingsStateReply
   | StreamKeyValueReply
   | ShutdownAcceptedReply;

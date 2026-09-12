@@ -5,7 +5,9 @@ import {
   RELAY_PROTOCOL_VERSION,
   type BilibiliAuthStateReply,
   type BilibiliAuthStatus,
+  type FavoriteCover,
   type FavoriteFolder,
+  type FavoriteResourceItem,
   type FfmpegStateReply,
   type FfmpegStatus,
   type HealthReply,
@@ -39,6 +41,12 @@ export class RelayWorkerError extends Error {
     super(message);
     this.name = "RelayWorkerError";
   }
+}
+
+export interface FavoriteResourcePage {
+  items: FavoriteResourceItem[];
+  page: number;
+  hasMore: boolean;
 }
 
 export class RelayWorkerClient {
@@ -208,6 +216,24 @@ export class RelayWorkerClient {
     return reply.folders;
   }
 
+  async listFavoriteResources(folderId: number, page: number): Promise<FavoriteResourcePage> {
+    return this.favoriteResourcesRequest({ type: "list_favorite_resources", folder_id: folderId, page });
+  }
+
+  async searchFavoriteResources(folderId: number | null, keyword: string, page: number): Promise<FavoriteResourcePage> {
+    return this.favoriteResourcesRequest({ type: "search_favorite_resources", folder_id: folderId, keyword, page });
+  }
+
+  async fetchFavoriteCovers(urls: string[]): Promise<FavoriteCover[]> {
+    if (urls.length === 0) return [];
+    await this.health();
+    const reply = await this.request({ type: "fetch_favorite_covers", urls }, 30_000);
+    if (reply.type !== "favorite_covers") {
+      throw new RelayWorkerError("protocol_mismatch", `Expected favorite covers, received ${reply.type}`);
+    }
+    return reply.covers;
+  }
+
   async getSettings(): Promise<ProductSettings> {
     return this.settingsRequest({ type: "get_settings" });
   }
@@ -275,6 +301,18 @@ export class RelayWorkerClient {
       );
     }
     return (reply as BilibiliAuthStateReply).auth;
+  }
+
+  private async favoriteResourcesRequest(command: Record<string, unknown>): Promise<FavoriteResourcePage> {
+    await this.health();
+    const reply = await this.request(command, 20_000);
+    if (reply.type !== "favorite_resources") {
+      throw new RelayWorkerError(
+        "protocol_mismatch",
+        `Expected favorite resources, received ${reply.type}`,
+      );
+    }
+    return { items: reply.items, page: reply.page, hasMore: reply.has_more };
   }
 
   private async settingsRequest(command: Record<string, unknown>): Promise<ProductSettings> {

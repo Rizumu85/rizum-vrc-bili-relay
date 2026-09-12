@@ -4,6 +4,7 @@ use url::Url;
 mod bilibili;
 mod bilibili_auth;
 mod bilibili_session;
+mod covers;
 mod danmaku;
 mod danmaku_style;
 mod ffmpeg;
@@ -21,7 +22,7 @@ use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 use settings::SettingsStore;
 
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 24;
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
@@ -89,6 +90,18 @@ pub enum Command {
     },
     LogoutBilibili,
     ListFavoriteFolders,
+    ListFavoriteResources {
+        folder_id: u64,
+        page: u32,
+    },
+    SearchFavoriteResources {
+        folder_id: Option<u64>,
+        keyword: String,
+        page: u32,
+    },
+    FetchFavoriteCovers {
+        urls: Vec<String>,
+    },
     GetSettings,
     RevealStreamKey,
     SaveSettings {
@@ -151,6 +164,12 @@ pub enum Reply {
         auth: BilibiliAuthStatus,
     },
     FavoriteFolders { folders: Vec<FavoriteFolder> },
+    FavoriteResources {
+        items: Vec<FavoriteResourceItem>,
+        page: u32,
+        has_more: bool,
+    },
+    FavoriteCovers { covers: Vec<FavoriteCover> },
     SettingsState {
         settings: ProductSettings,
     },
@@ -165,6 +184,22 @@ pub struct FavoriteFolder {
     pub id: u64,
     pub title: String,
     pub media_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FavoriteResourceItem {
+    pub bvid: String,
+    pub title: String,
+    pub duration_seconds: u64,
+    pub owner_name: String,
+    pub cover_url: String,
+    pub folder_title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FavoriteCover {
+    pub url: String,
+    pub path: String,
 }
 
 impl Reply {
@@ -899,6 +934,17 @@ impl RelayCore {
                 auth: self.bilibili.logout()?,
             }),
             Command::ListFavoriteFolders => Ok(Reply::FavoriteFolders { folders: self.bilibili.favorite_folders()? }),
+            Command::ListFavoriteResources { folder_id, page } => {
+                let result = self.bilibili.favorite_resources(folder_id, page)?;
+                Ok(Reply::FavoriteResources { items: result.items, page: result.page, has_more: result.has_more })
+            }
+            Command::SearchFavoriteResources { folder_id, keyword, page } => {
+                let result = self.bilibili.search_favorite_resources(folder_id, &keyword, page)?;
+                Ok(Reply::FavoriteResources { items: result.items, page: result.page, has_more: result.has_more })
+            }
+            Command::FetchFavoriteCovers { urls } => Ok(Reply::FavoriteCovers {
+                covers: covers::fetch_covers(urls),
+            }),
             Command::GetSettings => Ok(Reply::SettingsState {
                 settings: self.settings.load()?,
             }),

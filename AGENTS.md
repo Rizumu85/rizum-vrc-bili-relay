@@ -46,3 +46,5 @@ This repository is the released GPUIX + Rust implementation of VRC Bili Relay.
 - Keep design tokens centralized in `src/theme.ts`; do not patch individual component instances with replacement colors or spacing.
 - Use native GPUIX inputs and headless controls where available.
 - All visible text must set an explicit color because GPUI does not inherit text color.
+- Give every `<text>` exactly one child: GPUIX renders each JSX child of a `<text>` as its own line, so `{count} 个视频` paints two lines. Compose mixed content into a single template string first (`` {`${count} 个视频`} ``).
+- GPUIX `<img>` loads local file paths only, not remote URLs; route remote images through the Rust cover cache (`fetch_favorite_covers`) instead of hotlinking.

@@ -5,7 +5,7 @@ param(
     [string]$SettingsPath,
     [ValidateSet("light", "dark")]
     [string]$Theme = "light",
-    [ValidateSet("idle", "loading", "error", "ready-vod", "settings", "danmaku")]
+    [ValidateSet("idle", "loading", "error", "ready-vod", "settings", "danmaku", "favorites")]
     [string]$Scene = "ready-vod",
     [switch]$GenerateAddress,
     [switch]$OpenSettings,
@@ -16,6 +16,9 @@ param(
     [switch]$SaveSettings,
     [switch]$OpenDanmakuFont,
     [switch]$OpenPartSelect,
+    [switch]$OpenFavoriteFolder,
+    [switch]$ToggleFavoritesSearch,
+    [string]$TypeFavoritesSearch,
     [switch]$LongPartList,
     [switch]$IncludePopup,
     [switch]$OpenPlaybackEndSelect,
@@ -125,6 +128,9 @@ if ($LongPartList) {
 if ($Source) {
     $startInfo.EnvironmentVariables["VRC_BILI_RELAY_SOURCE"] = $Source
 }
+if ($TypeFavoritesSearch) {
+    $startInfo.EnvironmentVariables["VRC_BILI_RELAY_FAVORITES_SEARCH"] = $TypeFavoritesSearch
+}
 if ($SettingsPath) {
     $startInfo.EnvironmentVariables["VRC_BILI_RELAY_SETTINGS"] = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot $SettingsPath))
 }
@@ -159,7 +165,7 @@ try {
     [GpuixWindowCapture]::GetWindowRect($windowHandle, [ref]$rectangle) | Out-Null
     $width = $rectangle.Right - $rectangle.Left
     $height = $rectangle.Bottom - $rectangle.Top
-    $logicalWidth = if ($Scene -eq "settings") { 528 } elseif ($Scene -eq "danmaku") { 484 } else { 472 }
+    $logicalWidth = if ($Scene -eq "settings") { 528 } elseif ($Scene -eq "danmaku" -or $Scene -eq "favorites") { 484 } else { 472 }
     if ($width -le 0 -or $height -le 0) {
         throw "The GPUIX window reported an invalid size."
     }
@@ -272,6 +278,37 @@ try {
         [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
         [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
         Start-Sleep -Milliseconds 500
+    }
+
+    if ($OpenFavoriteFolder) {
+        if ($Scene -ne "favorites") {
+            throw "OpenFavoriteFolder requires -Scene favorites."
+        }
+        # Click the centre of the first folder row, then allow the worker to
+        # fetch the folder's videos (and their covers) before capture.
+        $scale = $width / $logicalWidth
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](242 * $scale), $rectangle.Top + [int](127 * $scale)) | Out-Null
+        [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Seconds 5
+    }
+
+    if ($ToggleFavoritesSearch) {
+        if ($Scene -ne "favorites") {
+            throw "ToggleFavoritesSearch requires -Scene favorites."
+        }
+        # Click the search icon button on the section heading row.
+        $scale = $width / $logicalWidth
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](443 * $scale), $rectangle.Top + [int](74 * $scale)) | Out-Null
+        [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 600
+    }
+
+    if ($TypeFavoritesSearch) {
+        # The keyword was seeded through VRC_BILI_RELAY_FAVORITES_SEARCH; allow
+        # the 400ms debounce and the worker search request to complete.
+        Start-Sleep -Seconds 5
     }
 
     if ($OpenPartSelect) {
