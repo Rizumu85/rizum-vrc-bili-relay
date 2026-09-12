@@ -57,8 +57,10 @@ user's folders, `list_favorite_resources` pages one folder, and
 still requires a `media_id`, so the core borrows the first folder). Covers are
 downloaded by `fetch_favorite_covers` into `%LOCALAPPDATA%\VRC Bili
 Relay\covers` (sha-256-derived file names, oldest-first pruning at 300 files)
-because GPUIX `<img>` only loads local paths; the UI renders text rows first
-and swaps placeholders for cached files as they arrive.
+because GPUIX `<img>` only loads local paths; Bilibili's CDN does the resize
+server-side (`@224w_140h.jpg`), so the cache holds near-display-size JPEGs
+instead of multi-megabyte originals. The UI renders text rows first and swaps
+placeholders for cached files as they arrive.
 
 `list_watch_later` and `list_history` reuse the same paged resource shape for
 the two other login-gated video libraries. Watch-later maps Bilibili's

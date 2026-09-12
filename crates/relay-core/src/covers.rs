@@ -49,10 +49,16 @@ pub fn fetch_covers(urls: Vec<String>) -> Vec<FavoriteCover> {
 }
 
 fn fetch_one(client: &Client, dir: &Path, url: &str) -> Option<FavoriteCover> {
-    let path = dir.join(file_name_for(url));
+    // Covers are only ever shown at thumbnail size. Bilibili's image service
+    // scales on its CDN when asked, which keeps the cache small and gives the
+    // renderer a near-display-size source instead of a heavy full-size frame
+    // that shimmers when downscaled.
+    let download_url = sized_cover_url(url);
+    let file_name = file_name_for(&download_url);
+    let path = dir.join(&file_name);
     if !path.exists() {
         let response = client
-            .get(url)
+            .get(&download_url)
             .header(REFERER, "https://www.bilibili.com/")
             .send()
             .ok()?;
@@ -60,7 +66,9 @@ fn fetch_one(client: &Client, dir: &Path, url: &str) -> Option<FavoriteCover> {
             return None;
         }
         let bytes = response.bytes().ok()?;
-        let tmp = dir.join(format!("{}.tmp", std::process::id()));
+        // Covers download concurrently; each needs its own temp file or the
+        // threads rename each other's partial writes.
+        let tmp = dir.join(format!("{file_name}.{}.tmp", std::process::id()));
         fs::write(&tmp, &bytes).ok()?;
         fs::rename(&tmp, &path).ok()?;
     }
@@ -68,6 +76,14 @@ fn fetch_one(client: &Client, dir: &Path, url: &str) -> Option<FavoriteCover> {
         url: url.to_owned(),
         path: path.to_string_lossy().into_owned(),
     })
+}
+
+fn sized_cover_url(url: &str) -> String {
+    if url.starts_with("https://") && url.contains("hdslb.com") && !url.contains('@') {
+        format!("{url}@224w_140h.jpg")
+    } else {
+        url.to_owned()
+    }
 }
 
 fn file_name_for(url: &str) -> String {
