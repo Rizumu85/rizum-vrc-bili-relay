@@ -3629,8 +3629,13 @@ function FavoritesView({
       .map((item) => item.cover_url)
       .filter((url) => url && !covers.has(url));
     if (missing.length === 0) return;
+    // Decode covers in small batches. Loading every watch-later thumbnail at
+    // once makes the native renderer compete with the scroll surface during
+    // the first interaction; the effect picks up the next batch after the
+    // current batch is installed in the cache.
+    const batch = missing.slice(0, 8);
     const epoch = ++coversEpoch.current;
-    void fetchCovers(missing)
+    void fetchCovers(batch)
       .then((fetched) => {
         if (coversEpoch.current !== epoch || fetched.length === 0) return;
         setCovers((current) => {
@@ -3640,7 +3645,7 @@ function FavoritesView({
         });
       })
       .catch(() => undefined);
-  }, [level, searching, videos, searchItems]);
+  }, [level, searching, videos, searchItems, covers]);
 
   const loadFolders = async () => {
     const epoch = ++foldersEpoch.current;
