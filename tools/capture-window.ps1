@@ -25,6 +25,7 @@ param(
     [switch]$LongPartList,
     [switch]$IncludePopup,
     [switch]$OpenPlaybackEndSelect,
+    [switch]$OpenRateSelect,
     [switch]$ShowLogoutTooltip,
     [switch]$DragSeekThumb,
     [switch]$FocusSource,
@@ -58,6 +59,9 @@ public static class GpuixWindowCapture
     [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);
+
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
     [DllImport("user32.dll")]
@@ -83,6 +87,9 @@ public static class GpuixWindowCapture
 
     [DllImport("user32.dll")]
     public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+
+    [DllImport("user32.dll")]
+    public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extraInfo);
 
     public static RECT GetVisibleProcessBounds(uint targetProcessId)
     {
@@ -120,6 +127,26 @@ public static class GpuixWindowCapture
                 && processId == targetProcessId)
             {
                 SetWindowPos(window, new IntPtr(-1), 0, 0, 0, 0, 0x0013);
+            }
+            return true;
+        }, IntPtr.Zero);
+    }
+
+    public static void DumpProcessWindows(uint targetProcessId)
+    {
+        EnumWindows((window, _) =>
+        {
+            uint processId;
+            if (IsWindowVisible(window)
+                && GetWindowThreadProcessId(window, out processId) != 0
+                && processId == targetProcessId)
+            {
+                RECT rectangle;
+                GetWindowRect(window, out rectangle);
+                var title = new System.Text.StringBuilder(256);
+                GetWindowText(window, title, title.Capacity);
+                Console.WriteLine(string.Format("[dump] title='{0}' rect=({1},{2})-({3},{4})",
+                    title, rectangle.Left, rectangle.Top, rectangle.Right, rectangle.Bottom));
             }
             return true;
         }, IntPtr.Zero);
@@ -164,7 +191,9 @@ if ($SettingsPath) {
 # Start reference captures with the pointer outside the future window bounds so
 # the first painted frame does not inherit a caption-button hover state.
 [GpuixWindowCapture]::SetCursorPos(0, 0) | Out-Null
+$startInfo.RedirectStandardError = $true
 $process = [System.Diagnostics.Process]::Start($startInfo)
+$stderrTask = $process.StandardError.ReadToEndAsync()
 try {
     $windowHandle = [IntPtr]::Zero
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
@@ -365,6 +394,27 @@ try {
         Start-Sleep -Milliseconds 500
     }
 
+    if ($OpenRateSelect) {
+        if ($Scene -ne "ready-vod") {
+            throw "OpenRateSelect requires -Scene ready-vod."
+        }
+        $scale = $width / $logicalWidth
+        [GpuixWindowCapture]::SetCursorPos($rectangle.Left + [int](235 * $scale), $rectangle.Top + [int](330 * $scale)) | Out-Null
+        [GpuixWindowCapture]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        [GpuixWindowCapture]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 500
+        # Highlight the last item from the keyboard (GPUIX Select.Item styles
+        # only react to the highlighted state, not pointer hover) so the
+        # capture shows the bottom row's fill against the panel edge.
+        for ($i = 0; $i -lt 8; $i++) {
+            [GpuixWindowCapture]::keybd_event(0x28, 0, 0, [UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 40
+            [GpuixWindowCapture]::keybd_event(0x28, 0, 2, [UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 160
+        }
+        Start-Sleep -Milliseconds 250
+    }
+
     if ($DragSeekThumb) {
         if ($Scene -ne "ready-vod") {
             throw "DragSeekThumb requires -Scene ready-vod."
@@ -415,7 +465,7 @@ try {
     # Keep hover-only fills out of reference captures unless a probe explicitly
     # needs them. The pointer can otherwise remain over a caption button after
     # an earlier interaction and make the shared title-bar band look unbalanced.
-    if (-not $IncludePopup -and -not $OpenPlaybackEndSelect -and -not $ShowLogoutTooltip) {
+    if (-not $IncludePopup -and -not $OpenPlaybackEndSelect -and -not $OpenRateSelect -and -not $ShowLogoutTooltip) {
         [GpuixWindowCapture]::SetCursorPos($rectangle.Left - 16, $rectangle.Bottom + 16) | Out-Null
         Start-Sleep -Milliseconds 250
     }
@@ -429,6 +479,7 @@ try {
         # union capture, otherwise CopyFromScreen reads the desktop instead.
         [GpuixWindowCapture]::SetProcessWindowsTopmost([uint32]$process.Id)
         Start-Sleep -Milliseconds 250
+        [GpuixWindowCapture]::DumpProcessWindows([uint32]$process.Id)
         [GpuixWindowCapture]::GetVisibleProcessBounds([uint32]$process.Id)
     } else {
         $rectangle
@@ -454,4 +505,6 @@ finally {
         $process.Kill()
         $process.WaitForExit()
     }
+    $stderrLog = Join-Path $repositoryRoot "artifacts\capture-stderr.log"
+    [System.IO.File]::WriteAllText($stderrLog, $stderrTask.GetAwaiter().GetResult())
 }

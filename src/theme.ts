@@ -127,6 +127,7 @@ export const PALETTES: Record<Appearance, Palette> = {
 export const RADII = {
   control: 8,
   nested: 9,
-  compactPanel: 10,
+  // Floating menu panels: concentric with 7px rows on 4px padding.
+  compactPanel: 11,
   full: 999,
 } as const;

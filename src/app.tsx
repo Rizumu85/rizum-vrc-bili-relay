@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type * as React from "react";
 import { motion, useGpuixRequired, type EventPayload, type StyleDesc } from "@gpuix/react";
 import * as Select from "@gpuix/react/select";
@@ -40,6 +40,7 @@ import {
   type SourceResolution,
 } from "./relay/protocol";
 import { RelayWorkerClient, RelayWorkerError, type FavoriteResourcePage } from "./relay/worker-client";
+import { fillLibraryCache, primeLibraryCache, readLibraryCache } from "./relay/library-cache";
 import { relayFailureMessage } from "./relay/status-message";
 import { queryElementBounds, queryWindowSize } from "./platform/gpuix-geometry";
 import {
@@ -58,6 +59,7 @@ import {
   isNativePartPopupOpen,
   showNativePartPopup,
   supportsNativePartPopup,
+  useDismissPopupOnWindowResize,
 } from "./platform/native-part-popup";
 
 export type Scene = "idle" | "loading" | "error" | "ready-vod" | "settings" | "danmaku" | "favorites";
@@ -80,7 +82,7 @@ export function sceneWindowHeight(
     const danmakuHeight = sourceKind === "media" ? 0 : 47;
     return 358 + playbackHeight + danmakuHeight;
   }
-  if (scene === "settings") return settingsExpanded ? 400 : 364;
+  if (scene === "settings") return settingsExpanded ? 464 : 428;
   if (scene === "favorites") return 548;
   return 572;
 }
@@ -901,6 +903,7 @@ function LibraryEntryButton({
   };
   const triggerId = useRef<number | null>(null);
   const nativePopup = supportsNativePartPopup();
+  useDismissPopupOnWindowResize(nativePopup);
 
   useEffect(() => () => {
     if (nativePopup) hideNativePartPopup();
@@ -1008,8 +1011,10 @@ function PartSelect({
   };
   const triggerId = useRef<number | null>(null);
   const nativePopup = supportsNativePartPopup();
+  useDismissPopupOnWindowResize(nativePopup);
   const selected = parts.find((entry) => entry.value === part) ?? parts[0];
-  const menuHeight = Math.min(132, Math.max(1, Math.min(4, parts.length)) * 31 + 8);
+  // Menu panels measure rows * 31 + 2*4 padding + 2*1 border.
+  const menuHeight = Math.min(134, Math.max(1, Math.min(4, parts.length)) * 31 + 10);
 
   useEffect(() => () => {
     if (nativePopup) hideNativePartPopup();
@@ -1170,7 +1175,7 @@ function PartSelect({
         style={{
           width: 368,
           height: menuHeight,
-          maxHeight: 152,
+          maxHeight: 154,
           backgroundColor: palette.floatingSurface,
         }}
       >
@@ -1183,7 +1188,7 @@ function PartSelect({
             width: "100%",
             height: "100%",
             padding: 4,
-            borderRadius: 10,
+            borderRadius: RADII.compactPanel,
             borderWidth: 1,
             borderColor: palette.floatingEdge,
             backgroundColor: palette.floatingSurface,
@@ -1307,8 +1312,8 @@ function PlaybackEndSelect({
         sideOffset={6}
         style={{
           width: 142,
-          height: 101,
-          maxHeight: 101,
+          height: 103,
+          maxHeight: 103,
           backgroundColor: palette.floatingSurface,
         }}
       >
@@ -1321,7 +1326,7 @@ function PlaybackEndSelect({
             width: "100%",
             height: "100%",
             padding: 4,
-            borderRadius: 10,
+            borderRadius: RADII.compactPanel,
             borderWidth: 1,
             borderColor: palette.floatingEdge,
             backgroundColor: palette.floatingSurface,
@@ -1428,8 +1433,8 @@ function PlaybackRateSelect({
         sideOffset={6}
         style={{
           width: 78,
-          height: 194,
-          maxHeight: 194,
+          height: 196,
+          maxHeight: 196,
           backgroundColor: palette.floatingSurface,
         }}
       >
@@ -1442,7 +1447,7 @@ function PlaybackRateSelect({
             width: "100%",
             height: "100%",
             padding: 4,
-            borderRadius: 10,
+            borderRadius: RADII.compactPanel,
             borderWidth: 1,
             borderColor: palette.floatingEdge,
             backgroundColor: palette.floatingSurface,
@@ -2911,8 +2916,8 @@ function CompactSelect<T extends string>({
         sideOffset={6}
         style={{
           width,
-          height: 132,
-          maxHeight: 144,
+          height: 134,
+          maxHeight: 146,
           backgroundColor: palette.floatingSurface,
         }}
       >
@@ -2924,7 +2929,7 @@ function CompactSelect<T extends string>({
             position: "relative",
             width: "100%",
             padding: 4,
-            borderRadius: 10,
+            borderRadius: RADII.compactPanel,
             borderWidth: 1,
             borderColor: palette.floatingEdge,
             backgroundColor: palette.floatingSurface,
@@ -3452,6 +3457,104 @@ function favoriteErrorMessage(error: unknown): string {
   return "暂时无法读取收藏内容，请稍后再试。";
 }
 
+// Memoized so the relay-status polling re-renders during playback do not drag
+// every visible cover row through reconciliation.
+const FavoriteVideoRow = memo(function FavoriteVideoRow({
+  item,
+  coverPath,
+  showFolder,
+  palette,
+  onPickVideo,
+}: {
+  item: FavoriteResourceItem;
+  coverPath: string | null;
+  showFolder: boolean;
+  palette: Palette;
+  onPickVideo: (bvid: string) => void;
+}) {
+  return (
+    <div
+      testId={`favorite-video-${item.bvid}`}
+      tabIndex={0}
+      onClick={() => onPickVideo(item.bvid)}
+      onKeyDown={(event) => {
+        if (event.key === "enter" || event.key === "space") onPickVideo(item.bvid);
+      }}
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 11,
+        minHeight: 86,
+        paddingTop: 8,
+        paddingBottom: 8,
+        paddingLeft: 12,
+        paddingRight: 12,
+        borderBottomWidth: 1,
+        borderColor: palette.surfaceDivider,
+        cursor: "pointer",
+        hover: { backgroundColor: palette.surfaceHover },
+      }}
+    >
+      <div
+        style={{
+          width: 112,
+          height: 70,
+          flexShrink: 0,
+          borderRadius: 7,
+          borderWidth: 1,
+          borderColor: palette.surfaceDivider,
+          backgroundColor: palette.segmentedTrack,
+          overflow: "hidden",
+        }}
+      >
+        {coverPath ? (
+          // GPUIX does not clip child paint to the parent's rounded path, so
+          // the image carries the radius itself.
+          <img src={coverPath} objectFit="cover" style={{ width: "100%", height: "100%", borderRadius: 7 }} />
+        ) : null}
+      </div>
+      <div style={{ minWidth: 0, flexGrow: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+        <text
+          style={{
+            width: "100%",
+            overflow: "hidden",
+            color: palette.inkSoft,
+            fontFamily: FONT_UI,
+            fontSize: 12.5,
+            lineHeight: 17,
+            textOverflow: "ellipsis",
+            lineClamp: 2,
+          }}
+        >
+          {item.title}
+        </text>
+        <div style={{ display: "flex", flexDirection: "row", gap: 6, overflow: "hidden" }}>
+          <div style={{ minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center", overflow: "hidden" }}>
+            <text style={{ width: "100%", color: palette.caption, fontFamily: FONT_UI, fontSize: 10.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {item.owner_name}
+            </text>
+          </div>
+          <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 10.5, flexShrink: 0 }}>·</text>
+          <text style={{ color: palette.caption, fontFamily: FONT_MONO, fontSize: 10.5, flexShrink: 0, whiteSpace: "nowrap" }}>
+            {formatFavoriteDuration(item.duration_seconds)}
+          </text>
+          {showFolder && item.folder_title ? (
+            <>
+              <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 10.5, flexShrink: 0 }}>·</text>
+              <div style={{ minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center", overflow: "hidden" }}>
+                <text style={{ width: "100%", color: palette.caption, fontFamily: FONT_UI, fontSize: 10.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {item.folder_title}
+                </text>
+              </div>
+            </>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+});
+
 function FavoritesView({
   palette,
   authenticated,
@@ -3507,13 +3610,17 @@ function FavoritesView({
   const videosEpoch = useRef(0);
   const searchEpoch = useRef(0);
   const coversEpoch = useRef(0);
+  const pickVideoRef = useRef(onPickVideo);
+  pickVideoRef.current = onPickVideo;
+  const stablePickVideo = useMemo(() => (bvid: string) => pickVideoRef.current(bvid), []);
 
   const searching = searchItems !== null;
 
   // Covers arrive after the text rows: ask the worker to cache any missing
-  // cover locally, then swap the placeholder for the cached file.
+  // cover locally, then swap the placeholder for the cached file. Search
+  // results render above any level, including the folder list.
   useEffect(() => {
-    const items = level.kind === "folders" ? [] : (searching ? (searchItems ?? []) : videos);
+    const items = searching ? (searchItems ?? []) : level.kind === "folders" ? [] : videos;
     const missing = items
       .map((item) => item.cover_url)
       .filter((url) => url && !covers.has(url));
@@ -3534,12 +3641,18 @@ function FavoritesView({
   const loadFolders = async () => {
     const epoch = ++foldersEpoch.current;
     setFoldersError(null);
-    setFoldersLoading(true);
+    const cached = readLibraryCache<FavoriteFolder[]>("folders");
+    if (cached) {
+      setFolders(cached.value);
+      if (cached.fresh) return;
+    } else {
+      setFoldersLoading(true);
+    }
     try {
-      const list = await listFolders();
+      const list = await fillLibraryCache("folders", listFolders);
       if (foldersEpoch.current === epoch) setFolders(list);
     } catch (error) {
-      if (foldersEpoch.current === epoch) setFoldersError(favoriteErrorMessage(error));
+      if (foldersEpoch.current === epoch && !cached) setFoldersError(favoriteErrorMessage(error));
     } finally {
       if (foldersEpoch.current === epoch) setFoldersLoading(false);
     }
@@ -3564,15 +3677,26 @@ function FavoritesView({
   const loadVideos = async (folder: FavoriteFolder, page: number, append: boolean) => {
     const epoch = ++videosEpoch.current;
     setVideosError(null);
-    setVideosLoading(true);
+    const cacheKey = `folder:${folder.id}:${page}`;
+    const cached = !append ? readLibraryCache<FavoriteResourcePage>(cacheKey) : null;
+    if (cached) {
+      setVideos(cached.value.items);
+      setVideosPage(cached.value.page);
+      setVideosHasMore(cached.value.hasMore);
+      if (cached.fresh) return;
+    } else {
+      setVideosLoading(true);
+    }
     try {
-      const result = await listResources(folder.id, page);
+      const result = page === 1
+        ? await fillLibraryCache(cacheKey, () => listResources(folder.id, page))
+        : await listResources(folder.id, page);
       if (videosEpoch.current !== epoch) return;
       setVideos((current) => (append ? [...current, ...result.items] : result.items));
       setVideosPage(result.page);
       setVideosHasMore(result.hasMore);
     } catch (error) {
-      if (videosEpoch.current === epoch) setVideosError(favoriteErrorMessage(error));
+      if (videosEpoch.current === epoch && !cached) setVideosError(favoriteErrorMessage(error));
     } finally {
       if (videosEpoch.current === epoch) setVideosLoading(false);
     }
@@ -3596,15 +3720,26 @@ function FavoritesView({
   const loadFlat = async (page: number, append: boolean) => {
     const epoch = ++videosEpoch.current;
     setVideosError(null);
-    setVideosLoading(true);
+    const cacheKey = source === "watchLater" ? "watch-later" : `history:${page}`;
+    const cacheable = source === "watchLater" || page === 1;
+    const cached = !append && cacheable ? readLibraryCache<FavoriteResourcePage>(cacheKey) : null;
+    if (cached) {
+      setVideos(cached.value.items);
+      setVideosPage(cached.value.page);
+      setVideosHasMore(cached.value.hasMore);
+      if (cached.fresh) return;
+    } else {
+      setVideosLoading(true);
+    }
     try {
-      const result = source === "watchLater" ? await listWatchLater() : await listHistory(page);
+      const fetchPage = () => (source === "watchLater" ? listWatchLater() : listHistory(page));
+      const result = cacheable ? await fillLibraryCache(cacheKey, fetchPage) : await fetchPage();
       if (videosEpoch.current !== epoch) return;
       setVideos((current) => (append ? [...current, ...result.items] : result.items));
       setVideosPage(result.page);
       setVideosHasMore(result.hasMore);
     } catch (error) {
-      if (videosEpoch.current === epoch) setVideosError(favoriteErrorMessage(error));
+      if (videosEpoch.current === epoch && !cached) setVideosError(favoriteErrorMessage(error));
     } finally {
       if (videosEpoch.current === epoch) setVideosLoading(false);
     }
@@ -3766,84 +3901,14 @@ function FavoritesView({
   );
 
   const videoRow = (item: FavoriteResourceItem, showFolder: boolean) => (
-    <div
+    <FavoriteVideoRow
       key={item.bvid}
-      testId={`favorite-video-${item.bvid}`}
-      tabIndex={0}
-      onClick={() => onPickVideo(item.bvid)}
-      onKeyDown={(event) => {
-        if (event.key === "enter" || event.key === "space") onPickVideo(item.bvid);
-      }}
-      style={{
-        display: "flex",
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 11,
-        minHeight: 64,
-        paddingTop: 7,
-        paddingBottom: 7,
-        paddingLeft: 12,
-        paddingRight: 12,
-        borderBottomWidth: 1,
-        borderColor: palette.surfaceDivider,
-        cursor: "pointer",
-        hover: { backgroundColor: palette.surfaceHover },
-      }}
-    >
-      <div
-        style={{
-          width: 86,
-          height: 48,
-          flexShrink: 0,
-          borderRadius: 7,
-          borderWidth: 1,
-          borderColor: palette.surfaceDivider,
-          backgroundColor: palette.segmentedTrack,
-          overflow: "hidden",
-        }}
-      >
-        {covers.get(item.cover_url) ? (
-          <img src={covers.get(item.cover_url)} objectFit="cover" style={{ width: "100%", height: "100%" }} />
-        ) : null}
-      </div>
-      <div style={{ minWidth: 0, flexGrow: 1, display: "flex", flexDirection: "column", gap: 4 }}>
-        <text
-          style={{
-            width: "100%",
-            overflow: "hidden",
-            color: palette.inkSoft,
-            fontFamily: FONT_UI,
-            fontSize: 12.5,
-            lineHeight: 17,
-            whiteSpace: "nowrap",
-            textOverflow: "ellipsis",
-          }}
-        >
-          {item.title}
-        </text>
-        <div style={{ display: "flex", flexDirection: "row", gap: 6, overflow: "hidden" }}>
-          <div style={{ minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center", overflow: "hidden" }}>
-            <text style={{ width: "100%", color: palette.caption, fontFamily: FONT_UI, fontSize: 10.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-              {item.owner_name}
-            </text>
-          </div>
-          <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 10.5, flexShrink: 0 }}>·</text>
-          <text style={{ color: palette.caption, fontFamily: FONT_MONO, fontSize: 10.5, flexShrink: 0, whiteSpace: "nowrap" }}>
-            {formatFavoriteDuration(item.duration_seconds)}
-          </text>
-          {showFolder && item.folder_title ? (
-            <>
-              <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 10.5, flexShrink: 0 }}>·</text>
-              <div style={{ minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center", overflow: "hidden" }}>
-                <text style={{ width: "100%", color: palette.caption, fontFamily: FONT_UI, fontSize: 10.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {item.folder_title}
-                </text>
-              </div>
-            </>
-          ) : null}
-        </div>
-      </div>
-    </div>
+      item={item}
+      coverPath={covers.get(item.cover_url) ?? null}
+      showFolder={showFolder}
+      palette={palette}
+      onPickVideo={stablePickVideo}
+    />
   );
 
   const moreRow = (loading: boolean, onMore: () => void) => (
@@ -4835,6 +4900,20 @@ export function AppSurface({
     );
     return () => clearTimeout(resize);
   }, [scene, settingsExpanded, playbackSelectionRows, sourceResolution?.kind]);
+
+  // Warm the video-library session cache shortly after login is known so the
+  // first library open paints from memory instead of waiting on Bilibili.
+  const bilibiliAuthenticated = bilibiliAuth?.stage === "authenticated";
+  useEffect(() => {
+    if (!bilibiliAuthenticated) return;
+    const timer = setTimeout(() => {
+      const worker = getRelayWorker();
+      primeLibraryCache("folders", () => worker.listFavoriteFolders());
+      primeLibraryCache("watch-later", () => worker.listWatchLater());
+      primeLibraryCache("history:1", () => worker.listHistory(1));
+    }, 1200);
+    return () => clearTimeout(timer);
+  }, [bilibiliAuthenticated]);
 
   const getRelayWorker = () => {
     relayWorker.current ??= new RelayWorkerClient();
