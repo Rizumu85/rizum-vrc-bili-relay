@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
@@ -50,9 +50,13 @@ for (const assetName of ["danmaku-preview-backdrop.png", "VRCBiliRelay.ico"]) {
   );
 }
 
-// bsdtar parses a leading `E:` in the archive path as a remote host, so run
-// tar inside the package directory with relative paths only.
-run(["tar", "-a", "-c", "-f", `${packageName}.zip`, packageName], packageRoot);
+// Git Bash puts GNU tar first on PATH, and GNU tar silently writes an
+// uncompressed tar when asked for a `.zip`. Call the Windows bsdtar by its
+// system path so the archive is a real zip Explorer can open. bsdtar also
+// parses a leading `E:` in the archive path as a remote host, so run it
+// inside the package directory with relative paths only.
+const windowsTar = "C:\\Windows\\System32\\tar.exe";
+run([existsSync(windowsTar) ? windowsTar : "tar", "-a", "-c", "-f", `${packageName}.zip`, packageName], packageRoot);
 
 console.log(`Created ${archive}`);
 
