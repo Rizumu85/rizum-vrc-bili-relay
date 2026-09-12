@@ -50,13 +50,15 @@ for (const assetName of ["danmaku-preview-backdrop.png", "VRCBiliRelay.ico"]) {
   );
 }
 
-run(["tar", "-a", "-c", "-f", archive, "-C", packageRoot, packageName]);
+// bsdtar parses a leading `E:` in the archive path as a remote host, so run
+// tar inside the package directory with relative paths only.
+run(["tar", "-a", "-c", "-f", `${packageName}.zip`, packageName], packageRoot);
 
 console.log(`Created ${archive}`);
 
-function run(command: string[]): void {
+function run(command: string[], cwd = root): void {
   const result = Bun.spawnSync(command, {
-    cwd: root,
+    cwd,
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",
