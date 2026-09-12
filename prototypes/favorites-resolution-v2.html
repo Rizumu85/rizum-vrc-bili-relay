@@ -1,0 +1,287 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Rizum Glass · 分辨率开关与收藏夹 v2</title>
+<style>
+@font-face{font-family:"MiSans VF";src:url("../assets/fonts/MiSansVF.ttf") format("truetype");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Noto Serif SC";src:url("../assets/fonts/NotoSerifSC-VF.ttf") format("truetype");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Cascadia Mono";src:url("../assets/fonts/CascadiaMono.ttf") format("truetype");font-display:swap}
+:root{
+  --canvas:#F0F0F0;--panel:#FFFFFFF8;--panel-edge:#FFFFFF6B;
+  --ink:#18181B;--ink-soft:#3F3F46;--ink-muted:#71717A;--caption:#A1A1AA;
+  --surface:#FFFFFF85;--surface-hover:#FFFFFFAD;--surface-active:#F4F4F5E8;--button-surface:#FFFFFFD6;--button-hover:#FFFFFFE8;
+  --seg-track:#18181B0A;--seg-thumb:#FFFFFFD0;--seg-shadow:#0000000F;
+  --surface-line:#E4E4E7;--surface-divider:#E4E4E780;--column-divider:#E4E4E78C;
+  --teal:#2DD4BF;--violet:#A78BFA;--rose:#FB7185;--focus:#2DD4BF38;
+  --float-surface:#FEFEFE;--float-edge:#FEFEFE;--float-shadow:#0000001F;
+}
+:root[data-theme="dark"]{
+  --canvas:#111113;--panel:#27272AF5;--panel-edge:#FFFFFF12;
+  --ink:#F4F4F5;--ink-soft:#D4D4D8;--ink-muted:#A1A1AA;--caption:#9898A2;
+  --surface:#FFFFFF09;--surface-hover:#FFFFFF0E;--surface-active:#FFFFFF16;--button-surface:#FFFFFF09;--button-hover:#FFFFFF0E;
+  --seg-track:#F4F4F50A;--seg-thumb:#FFFFFF0E;--seg-shadow:#0000000F;
+  --surface-line:#3F3F46;--surface-divider:#3F3F4680;--column-divider:#3F3F468C;
+  --teal:#2DD4BF;--violet:#A78BFA;--rose:#FB7185;--focus:#2DD4BF2E;
+  --float-surface:#343437;--float-edge:#FFFFFF12;--float-shadow:#00000057;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{min-height:100vh;display:grid;place-items:center;padding:48px 16px 96px;background:radial-gradient(circle at 18% 12%,#fff 0 8%,transparent 32%),var(--canvas);font-family:"MiSans VF","Segoe UI",sans-serif;color:var(--ink);transition:background .22s cubic-bezier(.23,1,.32,1)}
+:root[data-theme="dark"] body{background:radial-gradient(circle at 18% 12%,#ffffff08 0 8%,transparent 32%),var(--canvas)}
+.window{position:relative;border:1px solid var(--panel-edge);border-radius:12px;background:var(--panel);box-shadow:0 18px 44px #00000012;overflow:hidden;animation:enter .22s cubic-bezier(.23,1,.32,1)}
+@keyframes enter{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.titleband{height:43px;position:relative;display:flex;align-items:center}
+.titleband .ttl{position:absolute;left:16px;font-family:"Noto Serif SC",serif;font-size:14px;font-weight:600;line-height:22px;color:var(--ink)}
+.titleband .ttl.sub{left:47px}
+.backbtn{position:absolute;left:8px;top:7px;width:28px;height:28px;display:grid;place-items:center;border:0;border-radius:8px;background:transparent;color:var(--ink-muted);cursor:pointer}
+.backbtn:hover{background:var(--surface-hover);color:var(--ink-soft)}
+.gear{position:absolute;right:149px;top:7px;width:28px;height:28px;display:grid;place-items:center;border-radius:8px;color:var(--ink-muted);cursor:pointer}
+.gear:hover{background:var(--surface-hover)}
+.captions{position:absolute;right:0;top:0;height:43px;display:flex}
+.captions span{width:47px;height:43px;display:grid;place-items:center;color:var(--ink-muted);font-size:11px}
+.captions span:hover{background:var(--surface-hover)}
+.captions span.close:hover{background:#E81123;color:#fff}
+.rule{height:1px;margin:0 26px;background:var(--surface-divider)}
+.body{padding:17px 26px 16px}
+.label{display:flex;align-items:center;gap:7px;margin-bottom:8px}
+.label .dot{width:7px;height:7px;border-radius:50%;background:var(--teal)}
+.label .dot.violet{background:var(--violet)}
+.label .txt{font-family:"Noto Serif SC",serif;font-size:13px;font-weight:600;color:var(--ink)}
+.label .side{margin-left:auto;font-size:11px;color:var(--caption)}
+.inputrow{display:flex;gap:8px}
+.input{flex:1;height:34px;display:flex;align-items:center;gap:8px;padding:0 10px 0 12px;border:1px solid var(--surface-line);border-radius:8px;background:var(--surface);color:var(--caption);font-size:12.5px}
+.input .ph{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.input .ic{flex:none;display:grid;place-items:center;width:22px;height:22px;border-radius:6px;color:var(--caption);cursor:pointer}
+.input .ic:hover{background:var(--surface-hover);color:var(--ink-muted)}
+.iconbtn{flex:none;width:34px;height:34px;display:grid;place-items:center;border:1px solid var(--surface-line);border-radius:8px;background:var(--surface);color:var(--ink-muted);cursor:pointer;position:relative}
+.iconbtn:hover{background:var(--surface-hover);color:var(--ink-soft)}
+.menu{position:absolute;top:40px;right:0;width:172px;padding:4px;border:1px solid var(--panel-edge);border-radius:10px;background:var(--float-surface);box-shadow:0 16px 36px var(--float-shadow);z-index:5}
+.mrow{display:flex;align-items:center;gap:9px;min-height:32px;padding:0 9px;border-radius:7px;color:var(--ink-soft);font-size:12.5px;cursor:pointer}
+.mrow:hover{background:var(--seg-track)}
+.mrow .mi{flex:none;display:grid;place-items:center;color:var(--ink-muted)}
+.mrow .mq{margin-left:auto;font-size:10px;color:var(--caption)}
+.btn{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 13px;border:1px solid var(--panel-edge);border-radius:8px;background:var(--button-surface);color:var(--ink);font-size:12.5px;cursor:pointer}
+.btn:hover{background:var(--button-hover)}
+.tip{position:absolute;right:-2px;bottom:40px;padding:5px 9px;border:1px solid var(--panel-edge);border-radius:8px;background:var(--float-surface);box-shadow:0 5px 14px var(--float-shadow);color:var(--ink-soft);font-size:11.5px;white-space:nowrap;pointer-events:none}
+/* segmented */
+.seg{position:relative;display:flex;height:33px;padding:2px;border-radius:8px;background:var(--seg-track)}
+.seg-thumb{position:absolute;top:2px;height:29px;border-radius:6px;background:var(--seg-thumb);box-shadow:0 1px 3px var(--seg-shadow);transition:left .24s cubic-bezier(.23,1,.32,1),width .24s cubic-bezier(.23,1,.32,1);pointer-events:none}
+.seg button{position:relative;flex:1;border:0;background:transparent;border-radius:6px;font:inherit;font-size:12px;color:var(--caption);cursor:pointer;white-space:nowrap}
+.seg button.on{color:var(--ink-soft)}
+/* favorites */
+.sechead{margin-bottom:10px}
+.sechead .t{font-family:"Noto Serif SC",serif;font-size:13px;font-weight:600;color:var(--ink)}
+.sechead .s{margin-top:2px;font-size:10.5px;color:var(--caption)}
+.list{border:1px solid var(--surface-divider);border-radius:10px;background:var(--surface);overflow:hidden}
+.listscroll{max-height:336px;overflow-y:auto}
+.listscroll::-webkit-scrollbar{width:8px}
+.listscroll::-webkit-scrollbar-thumb{background:var(--caption);border-radius:4px;border:2px solid transparent;background-clip:content-box}
+.frow{display:flex;align-items:center;gap:10px;height:44px;padding:0 12px;cursor:pointer}
+.frow:hover{background:var(--surface-hover)}
+.frow + .frow{border-top:1px solid var(--surface-divider)}
+.frow .name{flex:1;min-width:0;font-size:12.5px;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.frow .meta{flex:none;font-size:11px;color:var(--caption)}
+.frow .chev{flex:none;color:var(--caption)}
+.vrow{display:flex;align-items:center;gap:11px;min-height:64px;padding:7px 12px;cursor:pointer}
+.vrow:hover{background:var(--surface-hover)}
+.vrow + .vrow{border-top:1px solid var(--surface-divider)}
+.vrow .cover{flex:none;width:86px;height:48px;border-radius:7px;border:1px solid var(--surface-divider);background:var(--seg-track);object-fit:cover}
+.vrow .vtx{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.vrow .vt{font-size:12.5px;line-height:1.35;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vrow .vm{display:flex;gap:6px;font-size:10.5px;color:var(--caption)}
+.vrow .vm .dur{font-family:"Cascadia Mono",monospace}
+.crumb{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.crumb .back{display:inline-flex;align-items:center;gap:3px;border:0;background:transparent;color:var(--ink-muted);font:inherit;font-size:12px;cursor:pointer;padding:3px 6px;margin-left:-6px;border-radius:6px}
+.crumb .back:hover{background:var(--surface-hover);color:var(--ink-soft)}
+.crumb .where{margin-left:auto;font-size:11px;color:var(--caption)}
+.sbar{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.sinput{flex:1;min-width:0;height:34px;display:flex;align-items:center;gap:8px;padding:0 11px;border:1px solid var(--surface-line);border-radius:8px;background:var(--surface);color:var(--ink-soft);font-size:12.5px}
+.sinput .mag{flex:none;display:grid;place-items:center;color:var(--caption)}
+.sinput .ph{color:var(--caption);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sinput .clr{flex:none;display:grid;place-items:center;width:18px;height:18px;border-radius:50%;color:var(--caption);cursor:pointer}
+.sinput .clr:hover{background:var(--surface-active);color:var(--ink-muted)}
+.seg.slim{height:34px;flex:none}
+.resultcap{margin-bottom:10px;font-size:11px;color:var(--caption)}
+.sechead{display:flex;align-items:center;margin-bottom:10px}
+.sechead .stx{flex:1;min-width:0}
+.siconbtn{flex:none;width:24px;height:24px;display:grid;place-items:center;border:0;border-radius:7px;background:transparent;color:var(--caption);cursor:pointer}
+.siconbtn:hover{background:var(--surface-hover);color:var(--ink-muted)}
+.sexpand{display:flex;align-items:center;gap:8px;margin:-2px 0 12px}
+.sexpand[hidden]{display:none}
+.crumb .siconbtn{margin-left:4px}
+.foot{margin-top:10px;text-align:center;font-size:10.5px;color:var(--caption)}
+.more{display:flex;align-items:center;justify-content:center;height:36px;font-size:11.5px;color:var(--ink-muted);cursor:pointer}
+.more:hover{background:var(--surface-hover);color:var(--ink-soft)}
+/* settings */
+.cols{display:flex;gap:20px}
+.col-l{flex:1;min-width:0}
+.col-r{flex:none;width:188px;padding-left:19px;border-left:1px solid var(--column-divider)}
+.shead .t{font-family:"Noto Serif SC",serif;font-size:13.5px;font-weight:600;color:var(--ink)}
+.shead .s{margin-top:3px;font-size:10.5px;color:var(--caption);margin-bottom:10px}
+.flabel{display:flex;align-items:center;gap:4px;font-size:11.5px;color:var(--ink-muted);margin-bottom:5px}
+.flabel .q{width:15px;height:15px;display:grid;place-items:center;border-radius:50%;color:var(--caption);cursor:pointer}
+.flabel .q:hover{color:var(--ink-muted);background:var(--surface-hover)}
+.field{margin-bottom:10px}
+.textinput{height:33px;display:flex;align-items:center;padding:0 11px;border:1px solid var(--surface-line);border-radius:8px;background:var(--surface);color:var(--ink-soft);font-size:12.5px}
+.textinput.mono{font-family:"Cascadia Mono",monospace;font-size:11.5px}
+.statusdot{display:flex;align-items:center;gap:7px;height:18px;margin-top:2px}
+.statusdot .d{width:6px;height:6px;border-radius:50%;background:var(--teal)}
+.statusdot span{font-size:12px;color:var(--caption)}
+.hr{height:1px;margin:10px 8px;background:var(--surface-divider)}
+.bottomrow{display:flex;align-items:center;gap:10px;margin-top:14px;padding:14px 8px 0;border-top:1px solid var(--surface-divider)}
+.bottomrow .vt{font-family:"Noto Serif SC",serif;font-size:13px;font-weight:600;color:var(--ink-muted)}
+.bottomrow .cap{flex:1;display:flex;align-items:center;gap:7px;font-size:11px;color:var(--caption)}
+.bottomrow .cap .d{width:6px;height:6px;border-radius:50%;background:var(--teal)}
+.ghostbtn{height:30px;padding:0 11px;display:inline-flex;align-items:center;gap:6px;border:0;border-radius:8px;background:transparent;color:var(--ink-muted);font:inherit;font-size:12px;cursor:pointer}
+.ghostbtn:hover{background:var(--surface-hover)}
+/* picker */
+.picker{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:2147483647;display:flex;align-items:center;gap:2px;padding:4px;border:1px solid var(--panel-edge);border-radius:12px;background:var(--float-surface);box-shadow:0 18px 44px var(--float-shadow)}
+.picker .hl{position:absolute;top:4px;bottom:4px;border-radius:8px;background:var(--seg-track);transition:left .24s cubic-bezier(.23,1,.32,1),width .24s cubic-bezier(.23,1,.32,1)}
+.picker button{position:relative;border:0;background:transparent;padding:7px 13px;border-radius:8px;font:inherit;font-size:12px;color:var(--ink-muted);cursor:pointer;white-space:nowrap}
+.picker button[aria-current="true"]{color:var(--ink)}
+.picker .div{width:1px;height:18px;margin:0 3px;background:var(--surface-divider)}
+.picker .theme{min-width:32px}
+</style>
+<main id="stage"></main>
+<nav class="picker" aria-label="原型屏切换">
+  <span class="hl" aria-hidden="true"></span>
+  <button data-active aria-current="true">主界面入口</button>
+  <button>收藏夹</button>
+  <button>视频列表</button>
+  <button>搜索结果</button>
+  <button>设置 · 分辨率</button>
+  <span class="div" aria-hidden="true"></span>
+  <button class="theme" aria-label="切换明暗 (T)">◐</button>
+</nav>
+<script>
+const $=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)];
+const svg={
+  settings:'<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z" stroke="currentColor" stroke-width="1.7"/><path d="M19.2 13.3a7.8 7.8 0 0 0 0-2.6l2-1.5-2-3.4-2.5 1a8.8 8.8 0 0 0-2.2-1.3L14.2 3h-4.4l-.3 2.5a8.8 8.8 0 0 0-2.2 1.3l-2.5-1-2 3.4 2 1.5a7.8 7.8 0 0 0 0 2.6l-2 1.5 2 3.4 2.5-1a8.8 8.8 0 0 0 2.2 1.3l.3 2.5h4.4l.3 2.5a8.8 8.8 0 0 0-2.2-1.3l2.5 1 2-3.4-2-1.5Z" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/></svg>',
+  clipboard:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M9 5.5H6.8A1.8 1.8 0 0 0 5 7.3v11A1.8 1.8 0 0 0 6.8 20h10.4a1.8 1.8 0 0 0 1.8-1.8v-11a1.8 1.8 0 0 0-1.8-1.8H15" stroke="currentColor" stroke-width="1.7"/><path d="M9 4.7A1.7 1.7 0 0 1 10.7 3h2.6A1.7 1.7 0 0 1 15 4.7V7H9V4.7Z" stroke="currentColor" stroke-width="1.7"/></svg>',
+  star:'<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="m12 4.4 2.3 4.6 5.1.8-3.7 3.6.9 5-4.6-2.4-4.6 2.4.9-5L4.6 9.8l5.1-.8L12 4.4Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>',
+  back:'<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="m14.5 6-6 6 6 6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  chevR:'<svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  play:'<svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="m5 3 7 5-7 5V3Z" fill="#2DD4BF"/></svg>',
+  search:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.7"/><path d="m16 16 4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
+  bookmark:'<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M7 4.5h10a1 1 0 0 1 1 1v13.7l-6-4.1-6 4.1V5.5a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>',
+  clock:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 7.5V12l3 2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  history:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4.5 8.5V5m0 3.5H8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M5.3 8.5a7.5 7.5 0 1 1-.9 5.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M12 8.5V12l2.8 1.9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  help:'<svg width="10" height="10" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.5"/><path d="M9.9 9.4a2.35 2.35 0 0 1 4.5 1c0 1.9-2.4 2-2.4 3.7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="12" cy="17" r=".9" fill="currentColor"/></svg>',
+};
+const captions=`<div class="captions"><span>—</span><span>▢</span><span class="close">✕</span></div>`;
+function band(title,sub){return `<div class="titleband">${sub?`<button class="backbtn">${svg.back}</button>`:""}<div class="ttl${sub?" sub":""}">${title}</div>${sub?"":`<div class="gear">${svg.settings}</div>`}${captions}</div><div class="rule"></div>`}
+function seg(options,active,width){return `<div class="seg" style="width:${width}px"><span class="seg-thumb"></span>${options.map(o=>`<button class="${o===active?"on":""}">${o}</button>`).join("")}</div>`}
+const folders=[["默认收藏夹",128],["音乐合集",36],["VRChat 参考",12],["演唱会",24],["稍后看的整理",7]];
+const videos=[
+  ["【原神】原神红白机 纳塔篇 8BitOST（月之一版本前的音乐回忆）","屈云岚","55:26","https://i1.hdslb.com/bfs/archive/84843ca3acec00c6d4079121130b509fa807fd45.jpg"],
+  ["【8-bit】原神枫丹战斗曲：咏歌与凯旋【chiptune cover】","褪色的田屋","03:50","https://i1.hdslb.com/bfs/archive/de7bd8149bd818e746d4a857b1f731efbbb8b032.jpg"],
+  ["《原神：空月之歌》6.3周本BOSS「赝月的异端者-赞迪克」全阶段战斗曲","JLRS-jayfm","08:39","https://i2.hdslb.com/bfs/archive/34a66619b3420e609a5f5716a7d90d4ae6ff7255.jpg"],
+  ["【原神】原神红白机 枫丹篇 8BitOST(4.4前的音乐回忆)","屈云岚","40:52","https://i2.hdslb.com/bfs/archive/9263efffc3d5215fe107f0fac45c5a1942f7b819.jpg"],
+  ["白鸽之诗，又名广寒白鸽月下荡魔破阵曲","风灯长明","04:26","https://i0.hdslb.com/bfs/archive/c5b72daf9ea2a1196b33aaf0ab850db54a3f1f7c.jpg"],
+  ["愚人众の小曲——动机全收集","路回风","02:45","https://i2.hdslb.com/bfs/archive/fffaefc7e4142f188510c8965630d9fe5135ddd6.jpg"],
+  ["⌈8bit⌋ 《希望有羽毛和翅膀》，但是8bit改编","Oct_Autumn","02:56","https://i0.hdslb.com/bfs/archive/3c67ef336e897f795c5089902fc4b231fc3cd986.jpg"],
+  ["当原神的音乐由pvz2乐器演奏！","NeonTang","01:58","https://i0.hdslb.com/bfs/archive/538c6b0ea0f068b96cd7cfd41ead0a69176d01b0.jpg"],
+];
+const screens=[
+()=>`<section class="window" style="width:472px;overflow:visible">
+  ${band("VRC Bili Relay")}
+  <div class="body">
+    <div class="label"><span class="dot"></span><span class="txt">视频链接</span></div>
+    <div class="inputrow">
+      <div class="input"><span class="ph">粘贴直播或视频链接</span><span class="ic">${svg.clipboard}</span></div>
+      <div class="iconbtn">${svg.bookmark}
+        <div class="menu">
+          <div class="mrow" style="background:var(--seg-track)"><span class="mi">${svg.star}</span>收藏夹</div>
+          <div class="mrow"><span class="mi">${svg.clock}</span>稍后再看<span class="mq">规划中</span></div>
+          <div class="mrow"><span class="mi">${svg.history}</span>历史记录<span class="mq">规划中</span></div>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:12px"><span class="btn">${svg.play}生成地址</span></div>
+  </div>
+</section>`,
+()=>`<section class="window" style="width:484px">
+  ${band("收藏夹",true)}
+  <div class="body">
+    <div class="sechead"><div class="stx"><div class="t">登录账号的收藏</div><div class="s">Rizum · 共 ${folders.length} 个收藏夹</div></div><button class="siconbtn" data-search>${svg.search}</button></div>
+    <div class="sexpand" hidden><div class="sinput"><span class="mag">${svg.search}</span><span class="ph">搜索全部收藏的视频</span></div></div>
+    <div class="list"><div class="listscroll">
+      ${folders.map(([n,c],i)=>`<div class="frow"${i===1?' style="background:var(--surface-hover)"':""}><span class="name">${n}</span><span class="meta">${c} 个视频</span><span class="chev">${svg.chevR}</span></div>`).join("")}
+    </div></div>
+  </div>
+</section>`,
+()=>`<section class="window" style="width:484px">
+  ${band("收藏夹",true)}
+  <div class="body">
+    <div class="crumb"><button class="back">${svg.back}全部收藏夹</button><span class="where">音乐合集 · 36 个视频</span><button class="siconbtn" data-search>${svg.search}</button></div>
+    <div class="sexpand" hidden><div class="sinput"><span class="mag">${svg.search}</span><span class="ph">搜索收藏内容</span></div>${seg(["当前收藏夹","全部"],"当前收藏夹",150)}</div>
+    <div class="list"><div class="listscroll" style="max-height:378px">
+      ${videos.map(([t,u,d,c],i)=>`<div class="vrow"${i===2?' style="background:var(--surface-hover)"':""}><img class="cover" src="${c}" loading="lazy" alt=""><span class="vtx"><span class="vt">${t}</span><span class="vm"><span>${u}</span><span>·</span><span class="dur">${d}</span></span></span></div>`).join("")}
+      <div class="more">加载更多</div>
+    </div></div>
+  </div>
+</section>`,
+()=>`<section class="window" style="width:484px">
+  ${band("收藏夹",true)}
+  <div class="body">
+    <div class="crumb"><button class="back">${svg.back}全部收藏夹</button><span class="where">音乐合集 · 36 个视频</span><button class="siconbtn">${svg.search}</button></div>
+    <div class="sexpand"><div class="sinput"><span class="mag">${svg.search}</span><span>红白机</span><span class="clr">✕</span></div>${seg(["当前收藏夹","全部"],"全部",150)}</div>
+    <div class="resultcap">在全部收藏夹中找到 2 个视频</div>
+    <div class="list"><div class="listscroll" style="max-height:378px">
+      ${[["【原神】原神红白机 纳塔篇 8BitOST（月之一版本前的音乐回忆）","屈云岚","55:26","https://i1.hdslb.com/bfs/archive/84843ca3acec00c6d4079121130b509fa807fd45.jpg","音乐合集"],
+        ["【原神】原神红白机 枫丹篇 8BitOST(4.4前的音乐回忆)","屈云岚","40:52","https://i2.hdslb.com/bfs/archive/9263efffc3d5215fe107f0fac45c5a1942f7b819.jpg","默认收藏夹"]]
+        .map(([t,u,d,c,f],i)=>`<div class="vrow"${i===0?' style="background:var(--surface-hover)"':""}><img class="cover" src="${c}" loading="lazy" alt=""><span class="vtx"><span class="vt">${t}</span><span class="vm"><span>${u}</span><span>·</span><span class="dur">${d}</span><span>·</span><span>${f}</span></span></span></div>`).join("")}
+    </div></div>
+  </div>
+</section>`,
+()=>`<section class="window" style="width:528px">
+  ${band("设置",true)}
+  <div class="body" style="padding-top:14px">
+    <div class="cols">
+      <div class="col-l">
+        <div class="shead"><div class="t">VRCDN</div><div class="s">自动模式只在需要中继时使用</div></div>
+        <div style="display:flex;gap:9px">
+          <div class="field" style="width:108px"><div class="flabel">服务器</div><div class="textinput">vrcdn.live</div></div>
+          <div class="field" style="flex:1;min-width:0"><div class="flabel">推流密钥 <span class="q">${svg.help}</span></div><div class="textinput mono">••••••••••••</div></div>
+        </div>
+        <div class="field"><div class="flabel">播放地址</div><div class="textinput">rtspt://stream.vrcdn.live/live/rizum</div></div>
+        <div class="field"><div class="flabel">输出分辨率 <span class="q" title="源 ≥1080p 时保持原画质；源较低时不放大，按比例缩放并补边，输出恒为所选尺寸。更改在下次推流时生效。">${svg.help}</span></div>${seg(["720p","1080p"],"720p",246)}</div>
+        <div class="statusdot"><span class="d"></span><span>服务可用</span></div>
+      </div>
+      <div class="col-r">
+        <div class="shead"><div class="t">B 站账号</div><div class="s">已登录 · Rizum</div></div>
+        ${seg(["访客","扫码登录"],"扫码登录",170)}
+        <div class="hr"></div>
+        <div class="shead"><div class="t">外观</div><div class="s">跟随系统会自动切换明暗</div></div>
+        ${seg(["跟随系统","浅色","深色"],"跟随系统",170)}
+      </div>
+    </div>
+    <div class="bottomrow">
+      <span class="vt">视频处理</span>
+      <span class="cap"><span class="d"></span>已找到电脑上的 FFmpeg</span>
+      <button class="ghostbtn">恢复默认</button>
+      <button class="ghostbtn" style="color:var(--rose)">保存</button>
+    </div>
+  </div>
+</section>`];
+const stage=$("#stage"),picker=$(".picker"),hl=$(".hl"),items=$$(".picker button:not(.theme)"),themeBtn=$(".theme");
+let current=0;
+function moveHl(){const e=items[current];hl.style.left=e.offsetLeft+"px";hl.style.width=e.offsetWidth+"px"}
+function mount(i){stage.innerHTML=screens[i]();requestAnimationFrame(()=>$$(".seg",stage).forEach(initSeg))}
+function setActive(i){if(i<0||i>=screens.length)return;current=i;items.forEach((e,j)=>{j===i?e.setAttribute("aria-current","true"):e.removeAttribute("aria-current")});moveHl();const u=new URL(location);u.searchParams.set("v",i+1);history.replaceState(null,"",u);mount(i)}
+function initSeg(seg){const btns=$$("button",seg),thumb=$(".seg-thumb",seg);const place=b=>{thumb.style.left=b.offsetLeft+"px";thumb.style.width=b.offsetWidth+"px"};btns.forEach(b=>b.onclick=()=>{btns.forEach(x=>x.classList.remove("on"));b.classList.add("on");place(b)});requestAnimationFrame(()=>place(seg.querySelector("button.on")||btns[0]))}
+items.forEach((e,i)=>e.onclick=()=>setActive(i));
+stage.addEventListener("click",e=>{
+  const b=e.target.closest("[data-search]");
+  if(!b)return;
+  const row=b.closest(".body")?.querySelector(".sexpand");
+  if(!row)return;
+  row.hidden=!row.hidden;
+});
+themeBtn.onclick=()=>{const r=document.documentElement;r.dataset.theme=r.dataset.theme==="dark"?"":"dark"};
+onresize=moveHl;
+onkeydown=e=>{if(/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)||e.metaKey||e.ctrlKey||e.altKey)return;const n=parseInt(e.key);if(n>=1&&n<=screens.length)setActive(n-1);else if(e.key==="ArrowRight")setActive((current+1)%screens.length);else if(e.key==="ArrowLeft")setActive((current+screens.length-1)%screens.length);else if(e.key.toLowerCase()==="t")themeBtn.onclick()};
+const params=new URLSearchParams(location.search);
+if(params.get("theme")==="dark")document.documentElement.dataset.theme="dark";
+setActive((parseInt(params.get("v"))||1)-1);
+if(params.get("search")==="1")requestAnimationFrame(()=>stage.querySelector("[data-search]")?.click());
+requestAnimationFrame(()=>requestAnimationFrame(moveHl));
+</script>
