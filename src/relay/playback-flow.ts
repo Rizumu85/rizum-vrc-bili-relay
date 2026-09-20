@@ -3,15 +3,16 @@ import { RelayWorkerError } from "./worker-rpc";
 
 export interface PlaybackBackend {
   ready(): Promise<number>;
+  invalidateGeneration(generation: number): void;
   isGenerationCurrent(generation: number): boolean;
   onGenerationEnded(listener: (generation: number, error: RelayWorkerError) => void): () => void;
-  resolveSource(source: string, part?: number, generation?: number): Promise<SourceResolution>;
-  startRelay(id: string, options: PlaybackOptions, start?: number, paused?: boolean, generation?: number): Promise<RelayStatus>;
-  retargetRelay(id: string | undefined, source: string, part: number, options: PlaybackOptions, start: number, paused?: boolean, generation?: number): Promise<{ resolution: SourceResolution; relay: RelayStatus }>;
-  relayStatus(id: string, generation?: number): Promise<RelayStatus>;
-  stopRelay(id: string, generation?: number): Promise<RelayStatus>;
-  setRelayPaused(id: string, paused: boolean, options: PlaybackOptions, start: number, generation?: number): Promise<RelayStatus>;
-  setRelayRate(id: string, options: PlaybackOptions, generation?: number): Promise<RelayStatus>;
+  resolveSource(source: string, part?: number, generation?: number, operationId?: number): Promise<SourceResolution>;
+  startRelay(id: string, options: PlaybackOptions, start?: number, paused?: boolean, generation?: number, operationId?: number): Promise<RelayStatus>;
+  retargetRelay(id: string | undefined, source: string, part: number, options: PlaybackOptions, start: number, paused?: boolean, generation?: number, operationId?: number): Promise<{ resolution: SourceResolution; relay: RelayStatus }>;
+  relayStatus(id: string, generation?: number, operationId?: number): Promise<RelayStatus>;
+  stopRelay(id: string, generation?: number, operationId?: number): Promise<RelayStatus>;
+  setRelayPaused(id: string, paused: boolean, options: PlaybackOptions, start: number, generation?: number, operationId?: number): Promise<RelayStatus>;
+  setRelayRate(id: string, options: PlaybackOptions, generation?: number, operationId?: number): Promise<RelayStatus>;
 }
 export type PlaybackAction = "convert" | "retarget" | "pause" | "rate" | "stop" | "resume" | "completion";
 export interface PlaybackIntent { readonly id: number; readonly action: PlaybackAction; }
@@ -39,6 +40,7 @@ export class PlaybackFailure extends Error {
  */
 export class PlaybackFlow {
   private revision = 0;
+  private latestPending: number | null = null;
   private tail: Promise<unknown> = Promise.resolve();
   private lease: Lease | null = null;
   private nextLease = 0;
@@ -52,6 +54,7 @@ export class PlaybackFlow {
   ) {
     this.unsubscribe = backend.onGenerationEnded((generation, error) => {
       this.revision++;
+      this.latestPending = null;
       this.prepared.clear();
       if (this.lease?.generation === generation) this.lease = null;
       this.trace("ui_generation_lost", { generation, operation_id: this.revision });
@@ -61,14 +64,17 @@ export class PlaybackFlow {
 
   get status(): RelayStatus | null { return this.lease?.status ?? null; }
   get epoch(): number { return this.revision; }
+  get busy(): boolean { return this.latestPending !== null; }
   isCurrent(intent: PlaybackIntent): boolean { return intent.id === this.revision; }
   begin(action: PlaybackAction): PlaybackIntent {
     const intent = { id: ++this.revision, action };
+    this.latestPending = intent.id;
     this.trace(`ui_${action}_intent`, { operation_id: intent.id });
     return intent;
   }
   cancel(): void {
     ++this.revision;
+    this.latestPending = null;
     this.trace("ui_intent_cancelled", { operation_id: this.revision });
   }
   dispose(): void { this.cancel(); this.unsubscribe(); }
@@ -81,7 +87,7 @@ export class PlaybackFlow {
       try {
         generation = await this.backend.ready();
         check();
-        const task = new PlaybackTask(this.backend, generation, check,
+        const task = new PlaybackTask(this.backend, generation, intent.id, check,
           (status, acquired) => this.adopt(status, generation!, intent, acquired),
           () => this.lease,
           (id) => this.prepared.get(id) === generation,
@@ -94,22 +100,24 @@ export class PlaybackFlow {
       } catch (error) {
         if (!this.isCurrent(intent) || error instanceof PlaybackSuperseded) throw new PlaybackSuperseded();
         // Do not start a replacement worker to ask about a dead generation.
-        const confirmed = generation === undefined ? null : await this.reconcile(generation);
+        const confirmed = generation === undefined ? null : await this.reconcile(generation, intent.id);
         check();
         this.trace("ui_operation_failed", { operation_id: intent.id, restored: Number(hasActivePublisher(confirmed)) });
         throw new PlaybackFailure(error, confirmed);
       } finally {
+        if (this.latestPending === intent.id) this.latestPending = null;
         if (!this.isCurrent(intent) && this.lease?.acquiredBy === intent.id) {
           const stale = this.lease;
           this.trace("ui_stale_lease_release", { operation_id: intent.id, lease_id: stale.number, generation: stale.generation });
           if (this.backend.isGenerationCurrent(stale.generation)) {
-            try { await this.backend.stopRelay(stale.status.session_id, stale.generation); }
+            try { await this.backend.stopRelay(stale.status.session_id, stale.generation, intent.id); }
             catch (error) {
-              // Retain ownership on an unconfirmed stop. A following replace
-              // must stop this lease first; never silently forget a process.
+              // No newer mutation can have dispatched (we still own the
+              // serialized slot). End this exact generation rather than leave
+              // an unobserved publisher or release a newer session by mistake.
               this.trace("ui_stale_release_unconfirmed", { lease_id: stale.number });
-              this.invalidated(error);
-              return Promise.reject(error);
+              this.backend.invalidateGeneration(stale.generation);
+              throw error;
             }
           }
           if (this.lease === stale) this.lease = null;
@@ -129,7 +137,7 @@ export class PlaybackFlow {
       const lease = this.lease;
       if (revision !== this.revision || !lease || !this.backend.isGenerationCurrent(lease.generation)) return null;
       try {
-        const status = await this.backend.relayStatus(lease.status.session_id, lease.generation);
+        const status = await this.backend.relayStatus(lease.status.session_id, lease.generation, revision);
         if (revision !== this.revision || this.lease !== lease || !this.backend.isGenerationCurrent(lease.generation)) return null;
         lease.status = status;
         return status;
@@ -160,11 +168,11 @@ export class PlaybackFlow {
     this.trace("ui_lease_observed", { operation_id: intent.id, lease_id: this.lease.number, generation,
       active: Number(hasActivePublisher(status)), paused: Number(status.paused) });
   }
-  private async reconcile(generation: number): Promise<RelayStatus | null> {
+  private async reconcile(generation: number, operationId: number): Promise<RelayStatus | null> {
     const lease = this.lease;
     if (!lease || lease.generation !== generation || !this.backend.isGenerationCurrent(generation)) return null;
     try {
-      const observed = await this.backend.relayStatus(lease.status.session_id, generation);
+      const observed = await this.backend.relayStatus(lease.status.session_id, generation, operationId);
       if (this.lease !== lease || !this.backend.isGenerationCurrent(generation)) return null;
       lease.status = observed;
       this.trace("ui_failure_state_observed", { lease_id: lease.number, generation, active: Number(hasActivePublisher(observed)) });
@@ -178,7 +186,7 @@ export class PlaybackFlow {
 
 export class PlaybackTask {
   constructor(
-    private readonly backend: PlaybackBackend, private readonly generation: number,
+    private readonly backend: PlaybackBackend, private readonly generation: number, private readonly operationId: number,
     readonly check: () => void,
     private readonly adopt: (status: RelayStatus, acquired: boolean) => void,
     private readonly lease: () => Lease | null,
@@ -195,7 +203,7 @@ export class PlaybackTask {
   }
   async resolve(source: string, part?: number): Promise<SourceResolution> {
     this.check();
-    const resolution = await this.backend.resolveSource(source, part, this.generation);
+    const resolution = await this.backend.resolveSource(source, part, this.generation, this.operationId);
     this.check(); this.remember(resolution); return resolution;
   }
   async start(id: string, options: PlaybackOptions, start = 0, paused = false): Promise<RelayStatus> {
@@ -203,28 +211,28 @@ export class PlaybackTask {
     if (!this.prepared(id)) throw new RelayWorkerError("media_session_not_found", "Resolve the source again for this worker generation");
     // A previous unconfirmed stale cleanup must finish before a new start.
     if (hasActivePublisher(this.lease()?.status)) await this.stop();
-    const status = await this.backend.startRelay(id, options, start, paused, this.generation);
+    const status = await this.backend.startRelay(id, options, start, paused, this.generation, this.operationId);
     this.adopt(status, true); this.check(); return status;
   }
   async retarget(source: string, part: number, options: PlaybackOptions, start: number, paused = false): Promise<{ resolution: SourceResolution; relay: RelayStatus }> {
     this.check();
     const id = hasActivePublisher(this.lease()?.status) ? this.owned() : undefined;
-    const result = await this.backend.retargetRelay(id, source, part, options, start, paused, this.generation);
+    const result = await this.backend.retargetRelay(id, source, part, options, start, paused, this.generation, this.operationId);
     this.remember(result.resolution); this.adopt(result.relay, true); this.check(); return result;
   }
   async pause(id: string, paused: boolean, options: PlaybackOptions, start: number): Promise<RelayStatus> {
-    const status = await this.backend.setRelayPaused(this.owned(id), paused, options, start, this.generation);
+    const status = await this.backend.setRelayPaused(this.owned(id), paused, options, start, this.generation, this.operationId);
     this.adopt(status, false); this.check(); return status;
   }
   async rate(id: string, options: PlaybackOptions): Promise<RelayStatus> {
-    const status = await this.backend.setRelayRate(this.owned(id), options, this.generation);
+    const status = await this.backend.setRelayRate(this.owned(id), options, this.generation, this.operationId);
     this.adopt(status, false); this.check(); return status;
   }
   async stop(): Promise<RelayStatus | null> {
     this.check();
     const lease = this.lease();
     if (!lease || lease.generation !== this.generation) return null;
-    const status = await this.backend.stopRelay(lease.status.session_id, this.generation);
+    const status = await this.backend.stopRelay(lease.status.session_id, this.generation, this.operationId);
     this.adopt(status, false); this.check(); return status;
   }
 }

@@ -42,6 +42,8 @@ import {
 import { RelayWorkerClient, RelayWorkerError, type FavoriteResourcePage } from "./relay/worker-client";
 import { LibraryCache } from "./relay/library-cache";
 import { CoverLoader } from "./relay/cover-loader";
+import { SettingsPersistence, flushSettingsBeforeClose } from "./relay/settings-persistence";
+import { SettingsDraftState } from "./relay/settings-draft";
 import { relayFailureMessage } from "./relay/status-message";
 import { PlaybackFlow, PlaybackFailure, PlaybackSuperseded, hasActivePublisher } from "./relay/playback-flow";
 import { recordUiState } from "./relay/worker-diagnostics";
@@ -121,14 +123,6 @@ interface DanmakuSettings {
   weight: DanmakuWeight;
   outline: DanmakuOutline;
   hiddenTypes: DanmakuFilter[];
-}
-
-interface SettingsDraft {
-  host: string;
-  key: string;
-  playbackUrl: string;
-  theme: ThemePreference;
-  outputResolution: OutputResolution;
 }
 
 const SAMPLE_VIDEO = "https://www.bilibili.com/video/BV1UCVn66Eww?p=2";
@@ -4295,14 +4289,11 @@ function SettingsView({
   mediaStatus: FfmpegStatus | null;
   onInstallFfmpeg: () => void;
 }) {
-  const [settings, setSettings] = useState<SettingsDraft>({
-    host: storedSettings.host,
-    key: "",
-    playbackUrl: storedSettings.playbackUrl,
-    theme: themePreference,
-    outputResolution: storedSettings.outputResolution,
-  });
-  const [keyDirty, setKeyDirty] = useState(false);
+  const draft = useRef(new SettingsDraftState(storedSettings, themePreference));
+  const [settings, setSettings] = useState(() => draft.current.value);
+  const keyDirty = draft.current.keyDirty;
+  const savingRef = useRef(false);
+  const mounted = useRef(true);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -4330,8 +4321,12 @@ function SettingsView({
   const saveStatusText = saveError ?? settingsError ?? "配置只保存在本机";
 
   useEffect(
-    () => () => {
-      if (savedTimer.current) clearTimeout(savedTimer.current);
+    () => {
+      mounted.current = true;
+      return () => {
+        mounted.current = false;
+        if (savedTimer.current) clearTimeout(savedTimer.current);
+      };
     },
     [],
   );
@@ -4345,15 +4340,8 @@ function SettingsView({
   }, [accountAuthenticated]);
 
   useEffect(() => {
-    setSettings({
-      host: storedSettings.host,
-      key: "",
-      playbackUrl: storedSettings.playbackUrl,
-      theme: storedSettings.theme,
-      outputResolution: storedSettings.outputResolution,
-    });
-    setKeyDirty(false);
-    setSaveError(null);
+    draft.current.hydrate(storedSettings);
+    setSettings(draft.current.value);
   }, [
     storedSettings.host,
     storedSettings.playbackUrl,
@@ -4362,10 +4350,15 @@ function SettingsView({
     storedSettings.outputResolution,
   ]);
 
-  const update = (key: "host" | "key" | "playbackUrl", value: string) =>
-    setSettings((current) => ({ ...current, [key]: value }));
+  const update = (key: "host" | "key" | "playbackUrl", value: string) => {
+    draft.current.edit(key, value);
+    setSettings(draft.current.value);
+    setSaved(false);
+  };
   const updateTheme = (theme: ThemePreference) => {
-    setSettings((current) => ({ ...current, theme }));
+    draft.current.edit("theme", theme);
+    setSettings(draft.current.value);
+    setSaved(false);
     setThemePreference(theme);
   };
   const updateLogin = (next: BilibiliAccessMode) => {
@@ -4380,46 +4373,38 @@ function SettingsView({
     if (!accountPending) onBeginBilibiliLogin();
   };
   const reset = () => {
-    setSettings({
-      host: DEFAULT_SETTINGS.host,
-      key: "",
-      playbackUrl: DEFAULT_SETTINGS.playbackUrl,
-      outputResolution: DEFAULT_SETTINGS.outputResolution,
-      theme: DEFAULT_SETTINGS.theme,
-    });
-    setKeyDirty(true);
+    draft.current.edit("host", DEFAULT_SETTINGS.host);
+    draft.current.edit("key", "");
+    draft.current.edit("playbackUrl", DEFAULT_SETTINGS.playbackUrl);
+    draft.current.edit("outputResolution", DEFAULT_SETTINGS.outputResolution);
+    draft.current.edit("theme", DEFAULT_SETTINGS.theme);
+    setSettings(draft.current.value);
+    setSaved(false);
     setSaveError(null);
     setSecretInputVersion((current) => current + 1);
     setThemePreference("system");
   };
   const save = async () => {
-    if (saving) return;
+    if (savingRef.current) return;
+    savingRef.current = true;
+    const snapshot = draft.current.snapshot();
     setSaving(true);
     setSaveError(null);
     try {
-      const persisted = await onSaveSettings({
-        host: settings.host,
-        playbackUrl: settings.playbackUrl,
-        theme: settings.theme,
-        ...(keyDirty ? { streamKey: settings.key } : {}),
-        outputResolution: settings.outputResolution,
-      });
-      setSettings({
-        host: persisted.host,
-        key: "",
-        playbackUrl: persisted.playbackUrl,
-        theme: persisted.theme,
-        outputResolution: persisted.outputResolution,
-      });
-      setKeyDirty(false);
-      setSecretInputVersion((current) => current + 1);
-      setSaved(true);
+      const persisted = await onSaveSettings(snapshot.update);
+      const clearSecret = draft.current.acknowledge(snapshot, persisted);
+      if (!mounted.current) return;
+      setSettings(draft.current.value);
+      setThemePreference(draft.current.value.theme);
+      if (clearSecret) setSecretInputVersion((current) => current + 1);
+      setSaved(!draft.current.dirty);
       if (savedTimer.current) clearTimeout(savedTimer.current);
       savedTimer.current = setTimeout(() => setSaved(false), 1200);
     } catch (error) {
-      setSaveError(relayErrorMessage(error));
+      if (mounted.current) setSaveError(relayErrorMessage(error));
     } finally {
-      setSaving(false);
+      savingRef.current = false;
+      if (mounted.current) setSaving(false);
     }
   };
 
@@ -4455,7 +4440,6 @@ function SettingsView({
                   value={settings.key}
                   onChange={(value) => {
                     update("key", value);
-                    setKeyDirty(true);
                   }}
                   placeholder={
                     !keyDirty && storedSettings.streamKeyStatus === "available"
@@ -4494,7 +4478,11 @@ function SettingsView({
             <Field label="输出分辨率" palette={palette} help={<HelpButton kind="resolution" align="end" palette={palette} />}>
               <Segmented
                 value={settings.outputResolution}
-                onChange={(value) => setSettings((current) => ({ ...current, outputResolution: value }))}
+                onChange={(value) => {
+                  draft.current.edit("outputResolution", value);
+                  setSettings(draft.current.value);
+                  setSaved(false);
+                }}
                 options={OUTPUT_RESOLUTION_OPTIONS}
                 width={249}
                 palette={palette}
@@ -4860,9 +4848,8 @@ export function AppSurface({
   const sceneBeforeConversion = useRef<Scene>(initialScene);
   const preferencesHydrated = useRef(false);
   const preferencesTouched = useRef(false);
-  const persistedPreferenceSignature = useRef<string | null>(null);
-  const preferenceSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const preferenceSaveQueue = useRef<Promise<void>>(Promise.resolve());
+  const settingsPersistence = useRef<SettingsPersistence | null>(null);
+  const playbackEndBehaviorRef = useRef(playbackEndBehavior);
   const danmakuRef = useRef<DanmakuVisibility>(danmaku);
   const danmakuSettingsRef = useRef<DanmakuSettings>(danmakuSettings);
   const playbackRateRef = useRef<PlaybackRate>(playbackRate);
@@ -4887,17 +4874,26 @@ export function AppSurface({
   const closeApplication = () => {
     if (windowClosing.current) return;
     windowClosing.current = true;
-    const finish = () => {
+    const close = async () => {
+      try {
+        // Read synchronous intent refs, including an edit made before React's
+        // preference effect/debounce has had a chance to run.
+        queuePlaybackPreferences();
+        await flushSettingsBeforeClose(getSettingsPersistence());
+      } catch (error) {
+        windowClosing.current = false;
+        setSettingsError("设置尚未保存，已取消退出。请检查保存状态后再次关闭。");
+        recordUiState("settings_close_cancelled");
+        setScene("settings");
+        return;
+      }
+      playbackFlow.current?.cancel();
+      if (relayWorker.current) await relayWorker.current.close();
       disposeNativePartPopup();
       closeProductWindow();
       setTimeout(() => process.exit(0), 0);
     };
-    const worker = relayWorker.current;
-    if (worker) {
-      void worker.close().finally(finish);
-    } else {
-      finish();
-    }
+    void close();
   };
 
   useEffect(() => {
@@ -4939,7 +4935,7 @@ export function AppSurface({
     playbackFlow.current ??= new PlaybackFlow(relayWorker.current, (error) => {
       setRelayStatus(null);
       appliedPlaybackOptions.current = null;
-      if (error) {
+      if (error && !windowClosing.current) {
         setPlaybackToggling(false);
         setPlaybackUpdating(null);
         setRelayStopping(false);
@@ -4965,31 +4961,38 @@ export function AppSurface({
   };
 
   const setDanmakuPreference = (next: DanmakuVisibility) => {
+    if (windowClosing.current) return;
     preferencesTouched.current = true;
     danmakuRef.current = next;
     setDanmaku(next);
+    queuePlaybackPreferences();
   };
 
   const setDanmakuSettingsPreference: React.Dispatch<React.SetStateAction<DanmakuSettings>> = (
     update,
   ) => {
+    if (windowClosing.current) return;
     preferencesTouched.current = true;
-    setDanmakuSettings((current) => {
-      const next = typeof update === "function" ? update(current) : update;
-      danmakuSettingsRef.current = next;
-      return next;
-    });
+    const next = typeof update === "function" ? update(danmakuSettingsRef.current) : update;
+    danmakuSettingsRef.current = next;
+    setDanmakuSettings(next);
+    queuePlaybackPreferences();
   };
 
   const setPlaybackEndBehaviorPreference = (next: PlaybackEndBehavior) => {
+    if (windowClosing.current) return;
     preferencesTouched.current = true;
+    playbackEndBehaviorRef.current = next;
     setPlaybackEndBehavior(next);
+    queuePlaybackPreferences();
   };
 
   const setPlaybackRatePreference = (next: PlaybackRate) => {
+    if (windowClosing.current) return;
     preferencesTouched.current = true;
     playbackRateRef.current = next;
     setPlaybackRate(next);
+    queuePlaybackPreferences();
   };
 
   const currentPlaybackOptions = () =>
@@ -5006,20 +5009,22 @@ export function AppSurface({
       : next;
     setProductSettings(visible);
     setSettingsReady(true);
-    if (!initialThemePreference) setThemePreference(visible.theme);
+    // A later save/read must not reset a newer, unsaved theme preview.
+    if (!preferencesHydrated.current && !initialThemePreference) setThemePreference(visible.theme);
     if (!preferencesHydrated.current) {
       const decoded = decodedDanmakuPreferences(next.danmaku);
-      persistedPreferenceSignature.current = playbackPreferenceSignature(
+      getSettingsPersistence().baseline(playbackPreferenceSignature(
         decoded.visibility,
         decoded.settings,
         next.playbackEndBehavior,
         next.playbackRate,
-      );
+      ));
       if (!preferencesTouched.current) {
         danmakuRef.current = decoded.visibility;
         danmakuSettingsRef.current = decoded.settings;
         setDanmaku(decoded.visibility);
         setDanmakuSettings(decoded.settings);
+        playbackEndBehaviorRef.current = next.playbackEndBehavior;
         setPlaybackEndBehavior(next.playbackEndBehavior);
         playbackRateRef.current = next.playbackRate;
         setPlaybackRate(next.playbackRate);
@@ -5030,10 +5035,34 @@ export function AppSurface({
     return visible;
   };
 
+  const getSettingsPersistence = () => {
+    settingsPersistence.current ??= new SettingsPersistence(
+      () => getRelayWorker().getSettings(),
+      (update) => getRelayWorker().saveSettings(update),
+      (saved) => { applyProductSettings(saved); setSettingsError(null); },
+      (error) => setSettingsError(relayErrorMessage(error)),
+      recordUiState,
+    );
+    return settingsPersistence.current;
+  };
+
+  const queuePlaybackPreferences = () => {
+    if (!preferencesHydrated.current && !preferencesTouched.current) return;
+    const visibility = danmakuRef.current;
+    const style = danmakuSettingsRef.current;
+    const end = playbackEndBehaviorRef.current;
+    const rate = playbackRateRef.current;
+    getSettingsPersistence().schedule({
+      danmaku: configuredDanmakuSettings(visibility, style),
+      playbackEndBehavior: end,
+      playbackRate: rate,
+    }, playbackPreferenceSignature(visibility, style, end, rate));
+  };
+
   const refreshProductSettings = async (): Promise<ProductSettings> => {
     setSettingsError(null);
     try {
-      return applyProductSettings(await getRelayWorker().getSettings());
+      return await getSettingsPersistence().read();
     } catch (error) {
       setSettingsReady(true);
       setSettingsError(relayErrorMessage(error));
@@ -5046,9 +5075,7 @@ export function AppSurface({
   ): Promise<ProductSettings> => {
     setSettingsError(null);
     try {
-      const saved = applyProductSettings(await getRelayWorker().saveSettings(next));
-      setThemePreference(saved.theme);
-      return saved;
+      return await getSettingsPersistence().save(next);
     } catch (error) {
       setSettingsError(relayErrorMessage(error));
       throw error;
@@ -5151,47 +5178,12 @@ export function AppSurface({
   };
 
   useEffect(() => {
-    if (!preferencesReady) return;
-    const options = configuredDanmakuSettings(danmaku, danmakuSettings);
-    const signature = playbackPreferenceSignature(
-      danmaku,
-      danmakuSettings,
-      playbackEndBehavior,
-      playbackRate,
-    );
-    if (signature === persistedPreferenceSignature.current) return;
-    if (preferenceSaveTimer.current) clearTimeout(preferenceSaveTimer.current);
-    preferenceSaveTimer.current = setTimeout(() => {
-      preferenceSaveTimer.current = null;
-      preferenceSaveQueue.current = preferenceSaveQueue.current.then(async () => {
-        try {
-          const saved = await getRelayWorker().saveSettings({
-            danmaku: options,
-            playbackEndBehavior,
-            playbackRate,
-          });
-          persistedPreferenceSignature.current = signature;
-          setSettingsError(null);
-          setProductSettings(
-            initialThemePreference
-              ? { ...saved, theme: initialThemePreference }
-              : saved,
-          );
-        } catch (error) {
-          setSettingsError(relayErrorMessage(error));
-        }
-      });
-    }, 250);
-    return () => {
-      if (preferenceSaveTimer.current) {
-        clearTimeout(preferenceSaveTimer.current);
-        preferenceSaveTimer.current = null;
-      }
-    };
-  }, [preferencesReady, danmaku, danmakuSettings, playbackEndBehavior, playbackRate]);
+    if (preferencesReady && !windowClosing.current) queuePlaybackPreferences();
+  }, [preferencesReady]);
 
   useEffect(() => {
     const startup = setTimeout(() => {
+      if (windowClosing.current) return;
       void refreshProductSettings();
       if (initialScene === "settings") {
         void refreshMediaState();
@@ -5347,53 +5339,53 @@ export function AppSurface({
     setScene("loading");
     try {
       await flow.run(intent, async (task) => {
-      await task.stop();
-      setRelayStatus(null);
-      const resolution = await task.resolve(normalizedSource);
-      if (!flow.isCurrent(intent)) return;
-      setSource(resolution.canonical_url);
-      setSourceResolution(resolution);
-      if (resolution.selected_part) setPart(String(resolution.selected_part));
-      setCollectionItem(String(resolution.collection?.selected_item ?? 1));
-      setPlaybackPosition(0);
-      setPlaybackPaused(resolution.kind === "video");
-      setScene("ready-vod");
-      if (resolution.routing.kind !== "unavailable" && resolution.session_id) {
-        setPlaybackToggling(true);
-        const runtimeSettings = settingsReady
-          ? productSettings
-          : await refreshProductSettings();
+        await task.stop();
+        setRelayStatus(null);
+        const resolution = await task.resolve(normalizedSource);
         if (!flow.isCurrent(intent)) return;
-        if (!relaySettingsReady(runtimeSettings)) {
-          setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
-          setPlaybackToggling(false);
-          return;
-        }
-        try {
-          const options = currentPlaybackOptions();
-          const started = await task.start(
-            resolution.session_id,
-            options,
-            0,
-            resolution.kind === "video",
-          );
-          if (flow.isCurrent(intent)) {
-            appliedPlaybackOptions.current = started.paused
-              ? null
-              : playbackOptionsSignature(options);
-            setRelayStatus(started);
-            setPlaybackPaused(started.paused);
-            if (
-              started.position_seconds !== undefined
-              && pendingPausedPosition.current === null
-            ) {
-              setPlaybackPosition(started.position_seconds);
-            }
+        setSource(resolution.canonical_url);
+        setSourceResolution(resolution);
+        if (resolution.selected_part) setPart(String(resolution.selected_part));
+        setCollectionItem(String(resolution.collection?.selected_item ?? 1));
+        setPlaybackPosition(0);
+        setPlaybackPaused(resolution.kind === "video");
+        setScene("ready-vod");
+        if (resolution.routing.kind !== "unavailable" && resolution.session_id) {
+          setPlaybackToggling(true);
+          const runtimeSettings = settingsReady
+            ? productSettings
+            : await refreshProductSettings();
+          if (!flow.isCurrent(intent)) return;
+          if (!relaySettingsReady(runtimeSettings)) {
+            setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
+            setPlaybackToggling(false);
+            return;
           }
-        } finally {
-          if (flow.isCurrent(intent)) setPlaybackToggling(false);
+          try {
+            const options = currentPlaybackOptions();
+            const started = await task.start(
+              resolution.session_id,
+              options,
+              0,
+              resolution.kind === "video",
+            );
+            if (flow.isCurrent(intent)) {
+              appliedPlaybackOptions.current = started.paused
+                ? null
+                : playbackOptionsSignature(options);
+              setRelayStatus(started);
+              setPlaybackPaused(started.paused);
+              if (
+                started.position_seconds !== undefined
+                && pendingPausedPosition.current === null
+              ) {
+                setPlaybackPosition(started.position_seconds);
+              }
+            }
+          } finally {
+            if (flow.isCurrent(intent)) setPlaybackToggling(false);
+          }
         }
-      }
       });
     } catch (error) {
       if (!flow.isCurrent(intent)) return;
@@ -5415,7 +5407,8 @@ export function AppSurface({
     const previousResolution = sourceResolution;
     const canRetarget = previousResolution?.kind === "video"
       || (previousResolution?.kind === "live" && update === "danmaku");
-    if (windowClosing.current || !previousResolution || !canRetarget || playbackUpdating !== null) return false;
+    if (windowClosing.current || playbackFlow.current?.busy || !previousResolution || !canRetarget
+      || playbackUpdating !== null || playbackToggling || relayStopping) return false;
 
     const isLiveDanmakuUpdate = previousResolution.kind === "live";
     const effectivePart = isLiveDanmakuUpdate ? 1 : requestedPart;
@@ -5445,53 +5438,54 @@ export function AppSurface({
 
     try {
       return await flow.run(intent, async (task) => {
-      const runtimeSettings = settingsReady
-        ? productSettings
-        : await refreshProductSettings();
-      if (!flow.isCurrent(intent)) return false;
-      if (!relaySettingsReady(runtimeSettings)) {
-        if (previousWasActive) {
-          setPart(previousPart);
-          setPlaybackPosition(previousPosition);
-          pendingPausedPosition.current = previousPendingPosition;
-          setPlaybackMessage("需要先完成 VRCDN 设置");
+        const runtimeSettings = settingsReady
+          ? productSettings
+          : await refreshProductSettings();
+        if (!flow.isCurrent(intent)) return false;
+        if (!relaySettingsReady(runtimeSettings)) {
+          if (previousWasActive) {
+            setPart(previousPart);
+            setCollectionItem(previousCollectionItem);
+            setPlaybackPosition(previousPosition);
+            pendingPausedPosition.current = previousPendingPosition;
+            setPlaybackMessage("需要先完成 VRCDN 设置");
+            return false;
+          }
+          const resolution = await task.resolve(
+            effectiveSource,
+            effectivePart,
+          );
+          if (!flow.isCurrent(intent)) return false;
+          setSourceResolution(resolution);
+          setSource(resolution.canonical_url);
+          setPart(String(resolution.selected_part ?? effectivePart));
+          setCollectionItem(String(resolution.collection?.selected_item ?? 1));
+          setRelayStatus(null);
+          setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
           return false;
         }
-        const resolution = await task.resolve(
+
+        const playback = await task.retarget(
           effectiveSource,
           effectivePart,
+          options,
+          effectiveStart,
+          remainPaused,
         );
-        if (!flow.isCurrent(intent)) return false;
-        setSourceResolution(resolution);
-        setSource(resolution.canonical_url);
-        setPart(String(resolution.selected_part ?? effectivePart));
-        setCollectionItem(String(resolution.collection?.selected_item ?? 1));
-        setRelayStatus(null);
-        setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
-        return false;
-      }
 
-      const playback = await task.retarget(
-        effectiveSource,
-        effectivePart,
-        options,
-        effectiveStart,
-        remainPaused,
-      );
-
-      setSourceResolution(playback.resolution);
-      setSource(playback.resolution.canonical_url);
-      setPart(String(playback.resolution.selected_part ?? effectivePart));
-      setCollectionItem(String(playback.resolution.collection?.selected_item ?? 1));
-      setPlaybackPosition(playback.relay.position_seconds ?? effectiveStart);
-      setRelayStatus(playback.relay);
-      setPlaybackPaused(playback.relay.paused);
-      setRelayError(null);
-      setPlaybackMessage(null);
-      appliedPlaybackOptions.current = playback.relay.paused
-        ? null
-        : playbackOptionsSignature(options);
-      return true;
+        setSourceResolution(playback.resolution);
+        setSource(playback.resolution.canonical_url);
+        setPart(String(playback.resolution.selected_part ?? effectivePart));
+        setCollectionItem(String(playback.resolution.collection?.selected_item ?? 1));
+        setPlaybackPosition(playback.relay.position_seconds ?? effectiveStart);
+        setRelayStatus(playback.relay);
+        setPlaybackPaused(playback.relay.paused);
+        setRelayError(null);
+        setPlaybackMessage(null);
+        appliedPlaybackOptions.current = playback.relay.paused
+          ? null
+          : playbackOptionsSignature(options);
+        return true;
       });
     } catch (error) {
       if (!flow.isCurrent(intent)) return false;
@@ -5684,7 +5678,7 @@ export function AppSurface({
   };
 
   const changePlaybackRate = (next: PlaybackRate) => {
-    if (windowClosing.current || playbackUpdating !== null || playbackToggling || relayStopping) return;
+    if (windowClosing.current || playbackFlow.current?.busy || playbackUpdating !== null || playbackToggling || relayStopping) return;
     const previous = playbackRateRef.current;
     if (next === previous) return;
     setPlaybackRatePreference(next);
@@ -5743,7 +5737,7 @@ export function AppSurface({
   };
 
   const changeDanmakuVisibility = (next: DanmakuVisibility) => {
-    if (next === danmaku || playbackUpdating !== null) return;
+    if (windowClosing.current || playbackFlow.current?.busy || next === danmaku || playbackUpdating !== null || playbackToggling || relayStopping) return;
     setDanmakuPreference(next);
     const active = relayStatus?.stage === "starting" || relayStatus?.stage === "running";
     const supportsDanmaku = sourceResolution?.kind === "video" || sourceResolution?.kind === "live";
@@ -5784,7 +5778,7 @@ export function AppSurface({
   };
 
   const togglePlayback = async () => {
-    if (windowClosing.current) return;
+    if (windowClosing.current || playbackFlow.current?.busy) return;
     if (sourceResolution === null) {
       setPlaybackPaused((current) => !current);
       return;
@@ -5809,51 +5803,51 @@ export function AppSurface({
     setRelayError(null);
     try {
       await flow.run(intent, async (task) => {
-      const active = relayStatus?.stage === "running";
-      if (active && relayStatus) {
-        const nextPaused = !relayStatus.paused;
+        const active = relayStatus?.stage === "running";
+        if (active && relayStatus) {
+          const nextPaused = !relayStatus.paused;
+          const options = currentPlaybackOptions();
+          const selectedPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
+          const selectedDuration = sourceResolution.parts
+            ?.find((entry) => entry.page === selectedPart)
+            ?.duration_seconds
+            ?? sourceResolution.duration_seconds
+            ?? 0;
+          const selectedPosition = pendingPausedPosition.current ?? playbackPositionRef.current;
+          const requestedPosition = !nextPaused
+            && selectedDuration > 0
+            && selectedPosition >= selectedDuration - 1
+              ? 0
+              : selectedPosition;
+          const updated = await task.pause(
+            relayStatus.session_id,
+            nextPaused,
+            options,
+            requestedPosition,
+          );
+          if (!nextPaused) {
+            appliedPlaybackOptions.current = playbackOptionsSignature(options);
+            pendingPausedPosition.current = null;
+          }
+          setRelayStatus(updated);
+          if (updated.position_seconds !== undefined) setPlaybackPosition(updated.position_seconds);
+          setPlaybackPaused(updated.paused);
+          return;
+        }
+        if (!playbackPaused || !sourceResolution.session_id) return;
         const options = currentPlaybackOptions();
-        const selectedPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
-        const selectedDuration = sourceResolution.parts
-          ?.find((entry) => entry.page === selectedPart)
-          ?.duration_seconds
-          ?? sourceResolution.duration_seconds
-          ?? 0;
-        const selectedPosition = pendingPausedPosition.current ?? playbackPositionRef.current;
-        const requestedPosition = !nextPaused
-          && selectedDuration > 0
-          && selectedPosition >= selectedDuration - 1
-            ? 0
-            : selectedPosition;
-        const updated = await task.pause(
-          relayStatus.session_id,
-          nextPaused,
+        const requestedPosition = pendingPausedPosition.current ?? playbackPositionRef.current;
+        const started = await task.start(
+          sourceResolution.session_id,
           options,
           requestedPosition,
+          false,
         );
-        if (!nextPaused) {
-          appliedPlaybackOptions.current = playbackOptionsSignature(options);
-          pendingPausedPosition.current = null;
-        }
-        setRelayStatus(updated);
-        if (updated.position_seconds !== undefined) setPlaybackPosition(updated.position_seconds);
-        setPlaybackPaused(updated.paused);
-        return;
-      }
-      if (!playbackPaused || !sourceResolution.session_id) return;
-      const options = currentPlaybackOptions();
-      const requestedPosition = pendingPausedPosition.current ?? playbackPositionRef.current;
-      const started = await task.start(
-        sourceResolution.session_id,
-        options,
-        requestedPosition,
-        false,
-      );
-      appliedPlaybackOptions.current = playbackOptionsSignature(options);
-      pendingPausedPosition.current = null;
-      setRelayStatus(started);
-      if (started.position_seconds !== undefined) setPlaybackPosition(started.position_seconds);
-      setPlaybackPaused(false);
+        appliedPlaybackOptions.current = playbackOptionsSignature(options);
+        pendingPausedPosition.current = null;
+        setRelayStatus(started);
+        if (started.position_seconds !== undefined) setPlaybackPosition(started.position_seconds);
+        setPlaybackPaused(false);
       });
     } catch (error) {
       if (!flow.isCurrent(intent)) return;
@@ -6238,10 +6232,13 @@ function relayErrorMessage(error: unknown): string {
     case "invalid_start_position":
     case "seek_not_supported":
       return "这个内容不能跳转到所选位置。";
+    case "playback_session_changed":
     case "media_session_not_found":
       return "媒体信息已经过期，请重新生成地址。";
     case "media_session_not_available":
       return "这个分 P 暂时无法中继。";
+    case "playback_cleanup_failed":
+      return "旧播放任务无法安全清理，中继已停止，请重新生成地址。";
     case "retarget_restore_failed":
       return "切换失败，原来的中继也没有恢复，请重新生成地址。";
     case "danmaku_fetch_failed":

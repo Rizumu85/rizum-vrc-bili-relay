@@ -68,6 +68,7 @@ interface Request {
   bytes: number;
   timeoutMs: number;
   queuedAt: number;
+  operationId?: number;
   startedAt?: number;
   timer?: ReturnType<typeof setTimeout>;
   resolve: (reply: RelayReply) => void;
@@ -86,7 +87,7 @@ export class WorkerRpc {
     private readonly record: (entry: RpcMeasurement) => void,
   ) {}
 
-  request(command: Record<string, unknown>, timeoutMs = 15_000): Promise<RelayReply> {
+  request(command: Record<string, unknown>, timeoutMs = 15_000, operationId?: number): Promise<RelayReply> {
     if (this.terminal) return Promise.reject(this.terminal);
     const type = command.type;
     if (typeof type !== "string" || !Object.hasOwn(REPLIES, type)) {
@@ -107,7 +108,7 @@ export class WorkerRpc {
       return Promise.reject(new RelayWorkerError("invalid_request", "Worker command exceeds the 1 MiB limit; command was not sent"));
     }
     return new Promise((resolve, reject) => {
-      const item: Request = { id, command: type, wire, bytes, timeoutMs, queuedAt: performance.now(), resolve, reject };
+      const item: Request = { id, command: type, wire, bytes, timeoutMs, operationId, queuedAt: performance.now(), resolve, reject };
       item.timer = setTimeout(() => {
         const index = this.queue.indexOf(item);
         if (index < 0) return;
@@ -210,7 +211,7 @@ export class WorkerRpc {
   private measure(item: Request, event: string, code?: string): void {
     const now = performance.now();
     this.record({
-      event, request_id: item.id, command: item.command, bytes: item.bytes,
+      event, operation_id: item.operationId, request_id: item.id, command: item.command, bytes: item.bytes,
       queue_depth: this.queue.length, queue_ms: (item.startedAt ?? now) - item.queuedAt,
       elapsed_ms: item.startedAt === undefined ? undefined : now - item.startedAt, code,
     });

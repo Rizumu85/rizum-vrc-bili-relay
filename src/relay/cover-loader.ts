@@ -23,7 +23,7 @@ export class CoverLoader {
   ) {}
   setUrls(urls: string[]): void {
     if (this.disposed) return;
-    const wanted = new Set(urls.filter(Boolean).slice(0, MAX_VISIBLE_URLS));
+    const wanted = new Set([...new Set(urls.filter(Boolean))].slice(0, MAX_VISIBLE_URLS));
     for (const url of this.jobs.keys()) if (!wanted.has(url)) this.jobs.delete(url);
     for (const url of wanted) if (!this.jobs.has(url)) this.jobs.set(url, { attempts: 0, retryAt: 0, done: false });
     this.wake();
@@ -34,9 +34,9 @@ export class CoverLoader {
     this.timer = null;
     this.jobs.clear();
   }
-  get counts(): { total: number; done: number; exhausted: number } {
+  get counts(): { total: number; done: number; exhausted: number; in_flight: boolean } {
     const values = [...this.jobs.values()];
-    return { total: values.length, done: values.filter((j) => j.done).length,
+    return { in_flight: this.active, total: values.length, done: values.filter((j) => j.done).length,
       exhausted: values.filter((j) => !j.done && j.attempts >= MAX_ATTEMPTS).length };
   }
   private wake(): void {
