@@ -34,9 +34,15 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Type check
         run: bun run typecheck
-      # AGENTS.md permits builds, not functional test suites.
+      # AGENTS.md permits builds and measurements, not functional test suites.
       - name: Build and package Windows portable application
         run: bun run package:windows
+      - name: Measure real worker round trips
+        shell: pwsh
+        run: |
+          $env:VRC_BILI_RELAY_WORKER = Join-Path $PWD 'target/release/relay-worker.exe'
+          $env:VRC_BILI_RELAY_DIAGNOSTICS_DIR = Join-Path $PWD 'artifacts/benchmarks/diagnostics'
+          bun run benchmarks/worker-roundtrip.bench.ts
       - name: Record archive checksums
         shell: pwsh
         run: |
@@ -53,3 +59,11 @@ jobs:
             artifacts/package/*.sha256
           if-no-files-found: error
           retention-days: 14
+      - name: Upload measurement evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-measurements-${{ github.sha }}
+          path: artifacts/benchmarks
+          if-no-files-found: warn
+          retention-days: 30

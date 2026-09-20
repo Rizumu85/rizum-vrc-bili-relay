@@ -1,47 +1,15 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-
-import {
-  RELAY_PROTOCOL_VERSION,
-  type BilibiliAuthStateReply,
-  type BilibiliAuthStatus,
-  type FavoriteCover,
-  type FavoriteFolder,
-  type FavoriteResourceItem,
-  type FfmpegStateReply,
-  type FfmpegStatus,
-  type HealthReply,
-  type PlaybackOptions,
-  type PlaybackStateReply,
-  type ProductSettings,
-  type RelayReply,
-  type RelayResponse,
-  type RelayStateReply,
-  type RelayStatus,
-  type SettingsUpdate,
-  type SourceInspection,
-  type SourceInspectionReply,
-  type SourceResolution,
-  type SourceResolutionReply,
-  type SettingsStateReply,
-  type StreamKeyValueReply,
+import type {
+  BilibiliAuthStatus, FavoriteCover, FavoriteFolder, FavoriteResourceItem,
+  FfmpegStatus, HealthReply, PlaybackOptions, ProductSettings, RelayReply,
+  RelayStatus, SettingsUpdate, SourceInspection, SourceResolution,
 } from "./protocol";
+import { WorkerRpc, RelayWorkerError } from "./worker-rpc";
+import { readWorkerLines } from "./worker-lines";
+import { recordWorkerRpc, recordWorkerStderr } from "./worker-diagnostics";
 
-interface PendingRequest {
-  resolve: (reply: RelayReply) => void;
-  reject: (error: Error) => void;
-  timeout: ReturnType<typeof setTimeout>;
-}
-
-export class RelayWorkerError extends Error {
-  constructor(
-    public readonly code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = "RelayWorkerError";
-  }
-}
+export { RelayWorkerError } from "./worker-rpc";
 
 export interface FavoriteResourcePage {
   items: FavoriteResourceItem[];
@@ -49,130 +17,67 @@ export interface FavoriteResourcePage {
   hasMore: boolean;
 }
 
+interface WorkerContext {
+  child: Bun.PipedSubprocess;
+  rpc: WorkerRpc;
+  generation: number;
+  worker_pid: number;
+  hello: Promise<HealthReply>;
+  handshaken: boolean;
+  failed: RelayWorkerError | null;
+  exited: boolean;
+  responsesDone: Promise<void>;
+}
+
+/** The sole UI-side process adapter. Views express intent; the core owns media.
+ * Each subprocess has its own scheduler/readers/handshake, never shared pending
+ * state that an old pipe callback can accidentally reject after a restart.
+ */
 export class RelayWorkerClient {
-  private child: Bun.PipedSubprocess | null = null;
-  private nextId = 1;
-  private pending = new Map<number, PendingRequest>();
+  private context: WorkerContext | null = null;
+  private generation = 0;
   private closing = false;
+  private closePromise: Promise<void> | null = null;
 
   async health(): Promise<HealthReply> {
-    const reply = await this.request({ type: "health" });
-    if (reply.type !== "health") {
-      throw new RelayWorkerError("protocol_mismatch", `Expected health reply, received ${reply.type}`);
-    }
-    if (reply.protocol_version !== RELAY_PROTOCOL_VERSION) {
-      throw new RelayWorkerError(
-        "protocol_mismatch",
-        `UI protocol ${RELAY_PROTOCOL_VERSION} does not match worker protocol ${reply.protocol_version}`,
-      );
-    }
-    return reply;
+    return this.typedRequest({ type: "health" }, "health");
   }
 
   async inspectSource(source: string): Promise<SourceInspection> {
-    await this.health();
-    const reply = await this.request({ type: "inspect_source", source });
-    if (reply.type !== "source_inspection") {
-      throw new RelayWorkerError(
-        "protocol_mismatch",
-        `Expected source inspection, received ${reply.type}`,
-      );
-    }
-    return (reply as SourceInspectionReply).inspection;
+    return (await this.typedRequest({ type: "inspect_source", source }, "source_inspection")).inspection;
   }
 
   async resolveSource(source: string, requestedPart?: number): Promise<SourceResolution> {
-    await this.health();
-    const reply = await this.request(
-      { type: "resolve_source", source, requested_part: requestedPart },
-      30_000,
-    );
-    if (reply.type !== "source_resolution") {
-      throw new RelayWorkerError(
-        "protocol_mismatch",
-        `Expected source resolution, received ${reply.type}`,
-      );
-    }
-    return (reply as SourceResolutionReply).resolution;
+    return (await this.typedRequest(
+      { type: "resolve_source", source, requested_part: requestedPart }, "source_resolution", 30_000,
+    )).resolution;
   }
 
-  async startRelay(
-    sessionId: string,
-    options: PlaybackOptions,
-    startSeconds = 0,
-    paused = false,
-  ): Promise<RelayStatus> {
-    return this.relayRequest(
-      { type: "start_relay", session_id: sessionId, start_seconds: startSeconds, paused, options },
-      30_000,
-    );
+  async startRelay(sessionId: string, options: PlaybackOptions, startSeconds = 0, paused = false): Promise<RelayStatus> {
+    return this.relayRequest({ type: "start_relay", session_id: sessionId, start_seconds: startSeconds, paused, options }, 30_000);
   }
 
   async retargetRelay(
-    currentSessionId: string | undefined,
-    source: string,
-    requestedPart: number,
-    options: PlaybackOptions,
-    startSeconds: number,
-    paused = false,
+    currentSessionId: string | undefined, source: string, requestedPart: number,
+    options: PlaybackOptions, startSeconds: number, paused = false,
   ): Promise<{ resolution: SourceResolution; relay: RelayStatus }> {
-    await this.health();
-    const reply = await this.request(
-      {
-        type: "retarget_relay",
-        current_session_id: currentSessionId,
-        source,
-        requested_part: requestedPart,
-        start_seconds: startSeconds,
-        paused,
-        options,
-      },
-      50_000,
-    );
-    if (reply.type !== "playback_state") {
-      throw new RelayWorkerError(
-        "protocol_mismatch",
-        `Expected playback state, received ${reply.type}`,
-      );
-    }
-    const playback = reply as PlaybackStateReply;
-    return { resolution: playback.resolution, relay: playback.relay };
+    const reply = await this.typedRequest({
+      type: "retarget_relay", current_session_id: currentSessionId, source,
+      requested_part: requestedPart, start_seconds: startSeconds, paused, options,
+    }, "playback_state", 50_000);
+    return { resolution: reply.resolution, relay: reply.relay };
   }
 
   async relayStatus(sessionId: string): Promise<RelayStatus> {
     return this.relayRequest({ type: "relay_status", session_id: sessionId });
   }
 
-  async setRelayPaused(
-    sessionId: string,
-    paused: boolean,
-    options: PlaybackOptions,
-    startSeconds: number,
-  ): Promise<RelayStatus> {
-    return this.relayRequest(
-      {
-        type: "set_relay_paused",
-        session_id: sessionId,
-        paused,
-        start_seconds: startSeconds,
-        options,
-      },
-      30_000,
-    );
+  async setRelayPaused(sessionId: string, paused: boolean, options: PlaybackOptions, startSeconds: number): Promise<RelayStatus> {
+    return this.relayRequest({ type: "set_relay_paused", session_id: sessionId, paused, start_seconds: startSeconds, options }, 30_000);
   }
 
-  async setRelayRate(
-    sessionId: string,
-    options: PlaybackOptions,
-  ): Promise<RelayStatus> {
-    return this.relayRequest(
-      {
-        type: "set_relay_rate",
-        session_id: sessionId,
-        options,
-      },
-      30_000,
-    );
+  async setRelayRate(sessionId: string, options: PlaybackOptions): Promise<RelayStatus> {
+    return this.relayRequest({ type: "set_relay_rate", session_id: sessionId, options }, 30_000);
   }
 
   async stopRelay(sessionId: string): Promise<RelayStatus> {
@@ -180,15 +85,7 @@ export class RelayWorkerClient {
   }
 
   async ensureFfmpeg(): Promise<FfmpegStatus> {
-    await this.health();
-    const reply = await this.request({ type: "ensure_ffmpeg" });
-    if (reply.type !== "ffmpeg_state") {
-      throw new RelayWorkerError(
-        "protocol_mismatch",
-        `Expected FFmpeg state, received ${reply.type}`,
-      );
-    }
-    return (reply as FfmpegStateReply).ffmpeg;
+    return (await this.typedRequest({ type: "ensure_ffmpeg" }, "ffmpeg_state")).ffmpeg;
   }
 
   async bilibiliAuthStatus(): Promise<BilibiliAuthStatus> {
@@ -200,10 +97,7 @@ export class RelayWorkerClient {
   }
 
   async pollBilibiliLogin(loginId: number): Promise<BilibiliAuthStatus> {
-    return this.bilibiliAuthRequest(
-      { type: "poll_bilibili_login", login_id: loginId },
-      30_000,
-    );
+    return this.bilibiliAuthRequest({ type: "poll_bilibili_login", login_id: loginId }, 30_000);
   }
 
   async logoutBilibili(): Promise<BilibiliAuthStatus> {
@@ -211,9 +105,7 @@ export class RelayWorkerClient {
   }
 
   async listFavoriteFolders(): Promise<FavoriteFolder[]> {
-    const reply = await this.request({ type: "list_favorite_folders" });
-    if (reply.type !== "favorite_folders") throw new RelayWorkerError("protocol_mismatch", `Expected favorite folders, received ${reply.type}`);
-    return reply.folders;
+    return (await this.typedRequest({ type: "list_favorite_folders" }, "favorite_folders")).folders;
   }
 
   async listFavoriteResources(folderId: number, page: number): Promise<FavoriteResourcePage> {
@@ -226,12 +118,7 @@ export class RelayWorkerClient {
 
   async fetchFavoriteCovers(urls: string[]): Promise<FavoriteCover[]> {
     if (urls.length === 0) return [];
-    await this.health();
-    const reply = await this.request({ type: "fetch_favorite_covers", urls }, 30_000);
-    if (reply.type !== "favorite_covers") {
-      throw new RelayWorkerError("protocol_mismatch", `Expected favorite covers, received ${reply.type}`);
-    }
-    return reply.covers;
+    return (await this.typedRequest({ type: "fetch_favorite_covers", urls }, "favorite_covers", 30_000)).covers;
   }
 
   async listWatchLater(): Promise<FavoriteResourcePage> {
@@ -239,237 +126,182 @@ export class RelayWorkerClient {
   }
 
   async listHistory(page: number): Promise<FavoriteResourcePage> {
-    return this.favoriteResourcesRequest({ type: "list_history", page });
+    return this.favoriteResourcesRequest({ type: "list_history", page }, 20_000);
   }
 
   async getSettings(): Promise<ProductSettings> {
-    return this.settingsRequest({ type: "get_settings" });
+    return (await this.typedRequest({ type: "get_settings" }, "settings_state")).settings;
   }
 
   async revealStreamKey(): Promise<string> {
-    await this.health();
-    const reply = await this.request({ type: "reveal_stream_key" });
-    if (reply.type !== "stream_key_value") {
-      throw new RelayWorkerError(
-        "protocol_mismatch",
-        `Expected stream key value, received ${reply.type}`,
-      );
-    }
-    return (reply as StreamKeyValueReply).stream_key;
+    return (await this.typedRequest({ type: "reveal_stream_key" }, "stream_key_value")).stream_key;
   }
 
   async saveSettings(settings: SettingsUpdate): Promise<ProductSettings> {
-    return this.settingsRequest({ type: "save_settings", settings });
+    return (await this.typedRequest({ type: "save_settings", settings }, "settings_state")).settings;
   }
 
-  async close(): Promise<void> {
-    if (this.closing) return;
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
     this.closing = true;
-    const child = this.child;
-    if (!child) return;
-
-    try {
-      // FFmpeg needs a short graceful-stop window, especially when paused
-      // with the generated hold producer still feeding the publisher.
-      await this.request({ type: "shutdown" }, 5_000);
-      await child.exited;
-    } catch {
-      child.kill();
-    } finally {
-      this.child = null;
-      this.rejectPending(new RelayWorkerError("worker_closed", "Rust relay worker closed"));
-    }
+    const context = this.context;
+    this.closePromise = context ? this.closeContext(context) : Promise.resolve();
+    return this.closePromise;
   }
 
-  private async relayRequest(
-    command: Record<string, unknown>,
-    timeoutMs = 15_000,
-  ): Promise<RelayStatus> {
-    await this.health();
-    const reply = await this.request(command, timeoutMs);
-    if (reply.type !== "relay_state") {
-      throw new RelayWorkerError(
-        "protocol_mismatch",
-        `Expected relay state, received ${reply.type}`,
-      );
-    }
-    return (reply as RelayStateReply).relay;
+  private async relayRequest(command: Record<string, unknown>, timeoutMs = 15_000): Promise<RelayStatus> {
+    return (await this.typedRequest(command, "relay_state", timeoutMs)).relay;
   }
 
-  private async bilibiliAuthRequest(
-    command: Record<string, unknown>,
-    timeoutMs = 15_000,
-  ): Promise<BilibiliAuthStatus> {
-    await this.health();
-    const reply = await this.request(command, timeoutMs);
-    if (reply.type !== "bilibili_auth_state") {
-      throw new RelayWorkerError(
-        "protocol_mismatch",
-        `Expected Bilibili auth state, received ${reply.type}`,
-      );
-    }
-    return (reply as BilibiliAuthStateReply).auth;
+  private async bilibiliAuthRequest(command: Record<string, unknown>, timeoutMs = 15_000): Promise<BilibiliAuthStatus> {
+    return (await this.typedRequest(command, "bilibili_auth_state", timeoutMs)).auth;
   }
 
-  private async favoriteResourcesRequest(command: Record<string, unknown>): Promise<FavoriteResourcePage> {
-    await this.health();
-    const reply = await this.request(command, 20_000);
-    if (reply.type !== "favorite_resources") {
-      throw new RelayWorkerError(
-        "protocol_mismatch",
-        `Expected favorite resources, received ${reply.type}`,
-      );
-    }
+  private async favoriteResourcesRequest(command: Record<string, unknown>, timeoutMs = 20_000): Promise<FavoriteResourcePage> {
+    const reply = await this.typedRequest(command, "favorite_resources", timeoutMs);
     return { items: reply.items, page: reply.page, hasMore: reply.has_more };
   }
 
-  private async settingsRequest(command: Record<string, unknown>): Promise<ProductSettings> {
-    await this.health();
-    const reply = await this.request(command);
-    if (reply.type !== "settings_state") {
-      throw new RelayWorkerError(
-        "protocol_mismatch",
-        `Expected settings state, received ${reply.type}`,
-      );
+  private async typedRequest<T extends RelayReply["type"]>(
+    command: Record<string, unknown>, expected: T, timeoutMs = 15_000,
+  ): Promise<Extract<RelayReply, { type: T }>> {
+    const reply = await this.request(command, timeoutMs);
+    if (reply.type !== expected) {
+      throw new RelayWorkerError("protocol_mismatch", `Expected ${expected}, received ${reply.type}`);
     }
-    return (reply as SettingsStateReply).settings;
+    return reply as Extract<RelayReply, { type: T }>;
   }
 
-  private async request(
-    command: Record<string, unknown>,
-    timeoutMs = 15_000,
-  ): Promise<RelayReply> {
-    if (this.closing && command.type !== "shutdown") {
-      throw new RelayWorkerError("worker_closed", "Rust relay worker is closing");
-    }
-
-    const child = this.ensureStarted();
-    const id = this.nextId++;
-    const response = new Promise<RelayReply>((resolveRequest, rejectRequest) => {
-      const timeout = setTimeout(() => {
-        this.pending.delete(id);
-        rejectRequest(new RelayWorkerError("worker_timeout", "Rust relay worker did not respond in time"));
-      }, timeoutMs);
-      this.pending.set(id, { resolve: resolveRequest, reject: rejectRequest, timeout });
-    });
-
-    try {
-      child.stdin.write(`${JSON.stringify({ id, ...command })}\n`);
-      child.stdin.flush();
-    } catch (error) {
-      const pending = this.pending.get(id);
-      if (pending) {
-        clearTimeout(pending.timeout);
-        this.pending.delete(id);
-        pending.reject(asWorkerError(error));
-      }
-    }
-    return response;
+  private async request(command: Record<string, unknown>, timeoutMs: number): Promise<RelayReply> {
+    if (this.closing) throw new RelayWorkerError("worker_closed", "Rust relay worker is closing");
+    const context = this.ensureStarted();
+    // All callers share one compatibility handshake for this generation.
+    // Explicit health calls after startup still refresh FFmpeg install progress.
+    if (command.type === "health" && !context.handshaken) return context.hello;
+    await context.hello;
+    if (this.closing) throw new RelayWorkerError("worker_closed", "Rust relay worker is closing");
+    if (context.failed) throw context.failed;
+    if (this.context !== context) throw new RelayWorkerError("worker_exited", "Rust relay worker generation ended");
+    return context.rpc.request(command, timeoutMs);
   }
 
-  private ensureStarted(): Bun.PipedSubprocess {
-    if (this.child) return this.child;
+  private ensureStarted(): WorkerContext {
+    if (this.context) {
+      if (this.context.failed) throw this.context.failed;
+      return this.context;
+    }
     const executable = findWorkerExecutable();
-    if (!executable) {
-      throw new RelayWorkerError(
-        "worker_unavailable",
-        "relay-worker.exe was not found; build the Rust worker before starting the UI",
-      );
-    }
-
-    const child = Bun.spawn([executable], {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-      windowsHide: true,
+    if (!executable) throw new RelayWorkerError("worker_unavailable", "Rust relay worker was not found; build the worker before starting the UI");
+    const child = Bun.spawn([executable], { stdin: "pipe", stdout: "pipe", stderr: "pipe", windowsHide: true });
+    let context: WorkerContext;
+    const rpc = new WorkerRpc(async (line) => {
+      if (context.failed || context.exited) throw new Error("Worker generation ended");
+      child.stdin.write(line);
+      await child.stdin.flush();
+    }, (error) => this.endContext(context, error), (entry) => recordWorkerRpc(context, entry));
+    context = {
+      child, rpc, generation: ++this.generation, worker_pid: child.pid,
+      handshaken: false, failed: null, exited: false,
+      hello: undefined as unknown as Promise<HealthReply>, responsesDone: Promise.resolve(),
+    };
+    this.context = context;
+    recordWorkerRpc(context, { event: "spawn" });
+    context.responsesDone = this.readResponses(context);
+    void this.readErrors(context);
+    context.hello = rpc.request({ type: "health" }).then((reply) => {
+      if (reply.type !== "health") throw new RelayWorkerError("protocol_mismatch", "Expected worker handshake");
+      context.handshaken = true;
+      return reply;
     });
-    this.child = child;
-    void this.readResponses(child);
-    void this.readErrors(child);
-    void child.exited.then((exitCode) => {
-      if (this.child !== child) return;
-      this.child = null;
-      if (!this.closing) {
-        this.rejectPending(
-          new RelayWorkerError("worker_exited", `Rust relay worker exited with code ${exitCode}`),
-        );
-      }
-    });
-    return child;
+    // Every requester awaits hello. Also observe it during shutdown/restart so
+    // a rejected startup with no remaining requester is never unhandled.
+    void context.hello.catch(() => undefined);
+    void child.exited.then(async (exitCode) => {
+      context.exited = true;
+      // The exit notification can precede delivery of the final stdout chunk.
+      // Drain it before rejecting pending requests, especially shutdown ACKs.
+      await context.responsesDone;
+      recordWorkerRpc(context, { event: "exited", code: `exit_${exitCode}` });
+      if (this.context === context) this.context = null;
+      rpc.fail(new RelayWorkerError(this.closing ? "worker_closed" : "worker_exited", `Rust relay worker exited with code ${exitCode}`));
+    }).catch(() => rpc.fail(new RelayWorkerError("worker_io", "Could not observe worker exit")));
+    return context;
   }
 
-  private async readResponses(child: Bun.PipedSubprocess): Promise<void> {
-    const reader = child.stdout.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
+  private async readResponses(context: WorkerContext): Promise<void> {
     try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let newline = buffer.indexOf("\n");
-        while (newline >= 0) {
-          const line = buffer.slice(0, newline).trim();
-          buffer = buffer.slice(newline + 1);
-          if (line) this.acceptResponse(line);
-          newline = buffer.indexOf("\n");
-        }
+      await readWorkerLines(context.child.stdout, 8 * 1024 * 1024, (line) => context.rpc.accept(line));
+      if (!this.closing && !context.exited) {
+        context.rpc.fail(new RelayWorkerError("worker_exited", "Rust relay worker closed its response pipe"));
       }
     } catch (error) {
-      this.rejectPending(asWorkerError(error));
-    } finally {
-      reader.releaseLock();
+      context.rpc.fail(error instanceof RelayWorkerError ? error : new RelayWorkerError("worker_io", "Could not read worker responses"));
     }
   }
 
-  private async readErrors(child: Bun.PipedSubprocess): Promise<void> {
-    const stderr = (await new Response(child.stderr).text()).trim();
-    if (stderr && !this.closing) console.error(`[relay-worker] ${stderr}`);
-  }
-
-  private acceptResponse(line: string): void {
-    let response: RelayResponse;
+  private async readErrors(context: WorkerContext): Promise<void> {
     try {
-      response = JSON.parse(line) as RelayResponse;
+      await readWorkerLines(context.child.stderr, 8192,
+        (line) => recordWorkerStderr(context, line),
+        (bytes) => recordWorkerRpc(context, { event: "stderr_line_dropped", bytes }));
     } catch {
-      this.rejectPending(new RelayWorkerError("invalid_response", "Rust relay worker returned invalid JSON"));
-      return;
-    }
-
-    const pending = this.pending.get(response.id);
-    if (!pending) return;
-    this.pending.delete(response.id);
-    clearTimeout(pending.timeout);
-    if (response.status === "ok") {
-      pending.resolve(response.result);
-    } else {
-      pending.reject(new RelayWorkerError(response.error.code, response.error.message));
+      recordWorkerRpc(context, { event: "stderr_read_failed" });
     }
   }
 
-  private rejectPending(error: Error): void {
-    for (const pending of this.pending.values()) {
-      clearTimeout(pending.timeout);
-      pending.reject(error);
+  private endContext(context: WorkerContext, error: RelayWorkerError): void {
+    if (context.failed) return;
+    context.failed = error;
+    recordWorkerRpc(context, { event: "generation_ended", code: error.code });
+    if (!context.exited) {
+      try {
+        context.child.kill("SIGKILL");
+        recordWorkerRpc(context, { event: "kill_requested", code: error.code });
+      } catch {
+        recordWorkerRpc(context, { event: "kill_failed" });
+      }
     }
-    this.pending.clear();
+    // Keep the context until child.exited. A failed kill must never permit a
+    // second worker/publisher to start alongside this still-live generation.
+  }
+
+  private async closeContext(context: WorkerContext): Promise<void> {
+    const closed = new RelayWorkerError("worker_closed", "Rust relay worker is closing");
+    context.rpc.cancelQueued(closed);
+    try {
+      await withDeadline((async () => {
+        await context.rpc.request({ type: "shutdown" }, 5_000);
+        await context.child.exited;
+        await context.responsesDone;
+      })(), 5_000);
+    } catch {
+      context.rpc.fail(closed);
+      // A deadline covers actual process exit, not just the shutdown reply.
+      await withDeadline(context.child.exited, 1_000).catch(() => {
+        recordWorkerRpc(context, { event: "exit_wait_expired" });
+      });
+    } finally {
+      context.rpc.fail(closed);
+    }
   }
 }
 
 function findWorkerExecutable(): string | null {
-  const configured = process.env.VRC_BILI_RELAY_WORKER;
-  const candidates = [
-    configured,
-    join(dirname(process.execPath), "relay-worker.exe"),
-    resolve(process.cwd(), "target", "debug", "relay-worker.exe"),
-    resolve(process.cwd(), "target", "release", "relay-worker.exe"),
-  ];
+  const name = process.platform === "win32" ? "relay-worker.exe" : "relay-worker";
+  const candidates = [process.env.VRC_BILI_RELAY_WORKER,
+    join(dirname(process.execPath), name),
+    resolve(process.cwd(), "target", "debug", name),
+    resolve(process.cwd(), "target", "release", name)];
   return candidates.find((candidate): candidate is string => Boolean(candidate && existsSync(candidate))) ?? null;
 }
 
-function asWorkerError(error: unknown): RelayWorkerError {
-  return error instanceof RelayWorkerError
-    ? error
-    : new RelayWorkerError("worker_io", error instanceof Error ? error.message : String(error));
+async function withDeadline<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([promise, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new RelayWorkerError("worker_timeout", "Worker shutdown deadline expired")), milliseconds);
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
