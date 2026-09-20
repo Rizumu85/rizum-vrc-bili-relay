@@ -28,6 +28,13 @@ jobs:
           rustc --version
       - name: Build observation helper (no functional test runner)
         run: cargo build --locked --release -p relay-core --features media-measurements --example media-measurements
+      - name: Build real worker for lifecycle observations
+        run: cargo build --locked --release --bin relay-worker
+      - name: Observe UI ownership and actual worker generation loss
+        run: |
+          export VRC_BILI_RELAY_WORKER="$PWD/target/release/relay-worker"
+          export VRC_BILI_RELAY_DIAGNOSTICS_DIR="$PWD/artifacts/benchmarks/ui-diagnostics"
+          bun run benchmarks/ui-state.bench.ts
       - name: Measure synthetic local media
         env:
           VRC_BILI_RELAY_DIAGNOSTICS_DIR: artifacts/benchmarks/media/diagnostics
@@ -41,6 +48,7 @@ jobs:
           name: linux-media-measurements-${{ github.sha }}
           path: |
             artifacts/benchmarks/*.json
+            artifacts/benchmarks/ui-diagnostics/*.jsonl
             artifacts/benchmarks/media/*.json
             artifacts/benchmarks/media/diagnostics/*.jsonl
             artifacts/benchmarks/ass-clock/**/diagnostics/*.jsonl

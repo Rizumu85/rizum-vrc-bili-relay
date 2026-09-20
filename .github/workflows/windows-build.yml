@@ -43,6 +43,12 @@ jobs:
           $env:VRC_BILI_RELAY_WORKER = Join-Path $PWD 'target/release/relay-worker.exe'
           $env:VRC_BILI_RELAY_DIAGNOSTICS_DIR = Join-Path $PWD 'artifacts/benchmarks/diagnostics'
           bun run benchmarks/worker-roundtrip.bench.ts
+      - name: Measure UI ownership and actual worker generation loss
+        shell: pwsh
+        run: |
+          $env:VRC_BILI_RELAY_WORKER = Join-Path $PWD 'target/release/relay-worker.exe'
+          $env:VRC_BILI_RELAY_DIAGNOSTICS_DIR = Join-Path $PWD 'artifacts/benchmarks/ui-diagnostics'
+          bun run benchmarks/ui-state.bench.ts
       - name: Prepare verified measurement-only FFmpeg
         shell: pwsh
         run: ./tools/prepare-media-measurements.ps1

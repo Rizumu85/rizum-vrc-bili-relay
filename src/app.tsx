@@ -40,8 +40,13 @@ import {
   type SourceResolution,
 } from "./relay/protocol";
 import { RelayWorkerClient, RelayWorkerError, type FavoriteResourcePage } from "./relay/worker-client";
-import { fillLibraryCache, primeLibraryCache, readLibraryCache } from "./relay/library-cache";
+import { LibraryCache } from "./relay/library-cache";
+import { CoverLoader } from "./relay/cover-loader";
+import { SettingsPersistence, flushSettingsBeforeClose } from "./relay/settings-persistence";
+import { SettingsDraftState } from "./relay/settings-draft";
 import { relayFailureMessage } from "./relay/status-message";
+import { PlaybackFlow, PlaybackFailure, PlaybackSuperseded, hasActivePublisher } from "./relay/playback-flow";
+import { recordUiState } from "./relay/worker-diagnostics";
 import { queryElementBounds, queryWindowSize } from "./platform/gpuix-geometry";
 import {
   beginProductWindowDrag,
@@ -118,14 +123,6 @@ interface DanmakuSettings {
   weight: DanmakuWeight;
   outline: DanmakuOutline;
   hiddenTypes: DanmakuFilter[];
-}
-
-interface SettingsDraft {
-  host: string;
-  key: string;
-  playbackUrl: string;
-  theme: ThemePreference;
-  outputResolution: OutputResolution;
 }
 
 const SAMPLE_VIDEO = "https://www.bilibili.com/video/BV1UCVn66Eww?p=2";
@@ -2491,12 +2488,6 @@ function routeDescription(source: SourceResolution): string {
   }
 }
 
-function hasActivePublisher(relay: RelayStatus | null | undefined): boolean {
-  return relay?.stage === "starting"
-    || relay?.stage === "running"
-    || relay?.stage === "draining";
-}
-
 function SectionHeading({
   title,
   subtitle,
@@ -3560,6 +3551,7 @@ const FavoriteVideoRow = memo(function FavoriteVideoRow({
 });
 
 function FavoritesView({
+  cache,
   palette,
   authenticated,
   displayName,
@@ -3573,6 +3565,7 @@ function FavoritesView({
   listWatchLater,
   listHistory,
 }: {
+  cache: LibraryCache;
   palette: Palette;
   authenticated: boolean;
   displayName: string | null;
@@ -3618,39 +3611,38 @@ function FavoritesView({
   pickVideoRef.current = onPickVideo;
   const stablePickVideo = useMemo(() => (bvid: string) => pickVideoRef.current(bvid), []);
 
+  useEffect(() => () => {
+    ++foldersEpoch.current; ++videosEpoch.current; ++searchEpoch.current; ++coversEpoch.current;
+  }, []);
+
   const searching = searchItems !== null;
 
-  // Covers arrive after the text rows: ask the worker to cache any missing
-  // cover locally, then swap the placeholder for the cached file. Search
-  // results render above any level, including the folder list.
+  const fetchCoversRef = useRef(fetchCovers);
+  fetchCoversRef.current = fetchCovers;
+  const coverLoader = useRef<CoverLoader | null>(null);
+  useEffect(() => {
+    const loader = new CoverLoader(
+      (urls) => cache.scoped(() => fetchCoversRef.current(urls)),
+      (fetched) => setCovers((current) => {
+        const next = new Map(current);
+        for (const cover of fetched) next.set(cover.url, cover.path);
+        while (next.size > 600) next.delete(next.keys().next().value!);
+        return next;
+      }),
+      recordUiState,
+    );
+    coverLoader.current = loader;
+    return () => { loader.dispose(); coverLoader.current = null; };
+  }, [cache]);
   useEffect(() => {
     const items = searching ? (searchItems ?? []) : level.kind === "folders" ? [] : videos;
-    const missing = items
-      .map((item) => item.cover_url)
-      .filter((url) => url && !covers.has(url));
-    if (missing.length === 0) return;
-    // Decode covers in small batches. Loading every watch-later thumbnail at
-    // once makes the native renderer compete with the scroll surface during
-    // the first interaction; the effect picks up the next batch after the
-    // current batch is installed in the cache.
-    const batch = missing.slice(0, 8);
-    const epoch = ++coversEpoch.current;
-    void fetchCovers(batch)
-      .then((fetched) => {
-        if (coversEpoch.current !== epoch || fetched.length === 0) return;
-        setCovers((current) => {
-          const next = new Map(current);
-          for (const cover of fetched) next.set(cover.url, cover.path);
-          return next;
-        });
-      })
-      .catch(() => undefined);
-  }, [level, searching, videos, searchItems, covers]);
+    coverLoader.current?.setUrls(items.map((item) => item.cover_url));
+  }, [level, searching, videos, searchItems]);
 
   const loadFolders = async () => {
     const epoch = ++foldersEpoch.current;
     setFoldersError(null);
-    const cached = readLibraryCache<FavoriteFolder[]>("folders");
+    const cached = cache.read<FavoriteFolder[]>("folders");
     if (cached) {
       setFolders(cached.value);
       if (cached.fresh) return;
@@ -3658,7 +3650,7 @@ function FavoritesView({
       setFoldersLoading(true);
     }
     try {
-      const list = await fillLibraryCache("folders", listFolders);
+      const list = await cache.fill("folders", listFolders);
       if (foldersEpoch.current === epoch) setFolders(list);
     } catch (error) {
       if (foldersEpoch.current === epoch && !cached) setFoldersError(favoriteErrorMessage(error));
@@ -3687,7 +3679,7 @@ function FavoritesView({
     const epoch = ++videosEpoch.current;
     setVideosError(null);
     const cacheKey = `folder:${folder.id}:${page}`;
-    const cached = !append ? readLibraryCache<FavoriteResourcePage>(cacheKey) : null;
+    const cached = !append ? cache.read<FavoriteResourcePage>(cacheKey) : null;
     if (cached) {
       setVideos(cached.value.items);
       setVideosPage(cached.value.page);
@@ -3698,8 +3690,8 @@ function FavoritesView({
     }
     try {
       const result = page === 1
-        ? await fillLibraryCache(cacheKey, () => listResources(folder.id, page))
-        : await listResources(folder.id, page);
+        ? await cache.fill(cacheKey, () => listResources(folder.id, page))
+        : await cache.scoped(() => listResources(folder.id, page));
       if (videosEpoch.current !== epoch) return;
       setVideos((current) => (append ? [...current, ...result.items] : result.items));
       setVideosPage(result.page);
@@ -3731,7 +3723,7 @@ function FavoritesView({
     setVideosError(null);
     const cacheKey = source === "watchLater" ? "watch-later" : `history:${page}`;
     const cacheable = source === "watchLater" || page === 1;
-    const cached = !append && cacheable ? readLibraryCache<FavoriteResourcePage>(cacheKey) : null;
+    const cached = !append && cacheable ? cache.read<FavoriteResourcePage>(cacheKey) : null;
     if (cached) {
       setVideos(cached.value.items);
       setVideosPage(cached.value.page);
@@ -3742,7 +3734,7 @@ function FavoritesView({
     }
     try {
       const fetchPage = () => (source === "watchLater" ? listWatchLater() : listHistory(page));
-      const result = cacheable ? await fillLibraryCache(cacheKey, fetchPage) : await fetchPage();
+      const result = cacheable ? await cache.fill(cacheKey, fetchPage) : await cache.scoped(fetchPage);
       if (videosEpoch.current !== epoch) return;
       setVideos((current) => (append ? [...current, ...result.items] : result.items));
       setVideosPage(result.page);
@@ -3768,7 +3760,7 @@ function FavoritesView({
     setSearchLoading(true);
     if (!append) setSearchItems((current) => current ?? []);
     try {
-      const result = await searchResources(folderId, keyword, page);
+      const result = await cache.scoped(() => searchResources(folderId, keyword, page));
       if (searchEpoch.current !== epoch) return;
       setSearchItems((current) => (append && current ? [...current, ...result.items] : result.items));
       setSearchPage(result.page);
@@ -4297,14 +4289,11 @@ function SettingsView({
   mediaStatus: FfmpegStatus | null;
   onInstallFfmpeg: () => void;
 }) {
-  const [settings, setSettings] = useState<SettingsDraft>({
-    host: storedSettings.host,
-    key: "",
-    playbackUrl: storedSettings.playbackUrl,
-    theme: themePreference,
-    outputResolution: storedSettings.outputResolution,
-  });
-  const [keyDirty, setKeyDirty] = useState(false);
+  const draft = useRef(new SettingsDraftState(storedSettings, themePreference));
+  const [settings, setSettings] = useState(() => draft.current.value);
+  const keyDirty = draft.current.keyDirty;
+  const savingRef = useRef(false);
+  const mounted = useRef(true);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -4332,8 +4321,12 @@ function SettingsView({
   const saveStatusText = saveError ?? settingsError ?? "配置只保存在本机";
 
   useEffect(
-    () => () => {
-      if (savedTimer.current) clearTimeout(savedTimer.current);
+    () => {
+      mounted.current = true;
+      return () => {
+        mounted.current = false;
+        if (savedTimer.current) clearTimeout(savedTimer.current);
+      };
     },
     [],
   );
@@ -4347,15 +4340,8 @@ function SettingsView({
   }, [accountAuthenticated]);
 
   useEffect(() => {
-    setSettings({
-      host: storedSettings.host,
-      key: "",
-      playbackUrl: storedSettings.playbackUrl,
-      theme: storedSettings.theme,
-      outputResolution: storedSettings.outputResolution,
-    });
-    setKeyDirty(false);
-    setSaveError(null);
+    draft.current.hydrate(storedSettings);
+    setSettings(draft.current.value);
   }, [
     storedSettings.host,
     storedSettings.playbackUrl,
@@ -4364,10 +4350,15 @@ function SettingsView({
     storedSettings.outputResolution,
   ]);
 
-  const update = (key: "host" | "key" | "playbackUrl", value: string) =>
-    setSettings((current) => ({ ...current, [key]: value }));
+  const update = (key: "host" | "key" | "playbackUrl", value: string) => {
+    draft.current.edit(key, value);
+    setSettings(draft.current.value);
+    setSaved(false);
+  };
   const updateTheme = (theme: ThemePreference) => {
-    setSettings((current) => ({ ...current, theme }));
+    draft.current.edit("theme", theme);
+    setSettings(draft.current.value);
+    setSaved(false);
     setThemePreference(theme);
   };
   const updateLogin = (next: BilibiliAccessMode) => {
@@ -4382,46 +4373,38 @@ function SettingsView({
     if (!accountPending) onBeginBilibiliLogin();
   };
   const reset = () => {
-    setSettings({
-      host: DEFAULT_SETTINGS.host,
-      key: "",
-      playbackUrl: DEFAULT_SETTINGS.playbackUrl,
-      outputResolution: DEFAULT_SETTINGS.outputResolution,
-      theme: DEFAULT_SETTINGS.theme,
-    });
-    setKeyDirty(true);
+    draft.current.edit("host", DEFAULT_SETTINGS.host);
+    draft.current.edit("key", "");
+    draft.current.edit("playbackUrl", DEFAULT_SETTINGS.playbackUrl);
+    draft.current.edit("outputResolution", DEFAULT_SETTINGS.outputResolution);
+    draft.current.edit("theme", DEFAULT_SETTINGS.theme);
+    setSettings(draft.current.value);
+    setSaved(false);
     setSaveError(null);
     setSecretInputVersion((current) => current + 1);
     setThemePreference("system");
   };
   const save = async () => {
-    if (saving) return;
+    if (savingRef.current) return;
+    savingRef.current = true;
+    const snapshot = draft.current.snapshot();
     setSaving(true);
     setSaveError(null);
     try {
-      const persisted = await onSaveSettings({
-        host: settings.host,
-        playbackUrl: settings.playbackUrl,
-        theme: settings.theme,
-        ...(keyDirty ? { streamKey: settings.key } : {}),
-        outputResolution: settings.outputResolution,
-      });
-      setSettings({
-        host: persisted.host,
-        key: "",
-        playbackUrl: persisted.playbackUrl,
-        theme: persisted.theme,
-        outputResolution: persisted.outputResolution,
-      });
-      setKeyDirty(false);
-      setSecretInputVersion((current) => current + 1);
-      setSaved(true);
+      const persisted = await onSaveSettings(snapshot.update);
+      const clearSecret = draft.current.acknowledge(snapshot, persisted);
+      if (!mounted.current) return;
+      setSettings(draft.current.value);
+      setThemePreference(draft.current.value.theme);
+      if (clearSecret) setSecretInputVersion((current) => current + 1);
+      setSaved(!draft.current.dirty);
       if (savedTimer.current) clearTimeout(savedTimer.current);
       savedTimer.current = setTimeout(() => setSaved(false), 1200);
     } catch (error) {
-      setSaveError(relayErrorMessage(error));
+      if (mounted.current) setSaveError(relayErrorMessage(error));
     } finally {
-      setSaving(false);
+      savingRef.current = false;
+      if (mounted.current) setSaving(false);
     }
   };
 
@@ -4457,7 +4440,6 @@ function SettingsView({
                   value={settings.key}
                   onChange={(value) => {
                     update("key", value);
-                    setKeyDirty(true);
                   }}
                   placeholder={
                     !keyDirty && storedSettings.streamKeyStatus === "available"
@@ -4496,7 +4478,11 @@ function SettingsView({
             <Field label="输出分辨率" palette={palette} help={<HelpButton kind="resolution" align="end" palette={palette} />}>
               <Segmented
                 value={settings.outputResolution}
-                onChange={(value) => setSettings((current) => ({ ...current, outputResolution: value }))}
+                onChange={(value) => {
+                  draft.current.edit("outputResolution", value);
+                  setSettings(draft.current.value);
+                  setSaved(false);
+                }}
                 options={OUTPUT_RESOLUTION_OPTIONS}
                 width={249}
                 palette={palette}
@@ -4850,18 +4836,20 @@ export function AppSurface({
   const [bilibiliAuth, setBilibiliAuth] = useState<BilibiliAuthStatus | null>(null);
   const [bilibiliAuthError, setBilibiliAuthError] = useState<string | null>(null);
   const [bilibiliAuthBusy, setBilibiliAuthBusy] = useState(false);
+  const libraryCache = useRef(new LibraryCache(recordUiState));
+  const [libraryEpoch, setLibraryEpoch] = useState(0);
+  const authEpoch = useRef(0);
+  const authChanging = useRef(false);
   const relayWorker = useRef<RelayWorkerClient | null>(null);
   const windowClosing = useRef(false);
-  const conversionEpoch = useRef(0);
-  const playbackEpoch = useRef(0);
+  const playbackFlow = useRef<PlaybackFlow | null>(null);
   const completionActionSession = useRef<string | null>(null);
   const appliedPlaybackOptions = useRef<string | null>(null);
   const sceneBeforeConversion = useRef<Scene>(initialScene);
   const preferencesHydrated = useRef(false);
   const preferencesTouched = useRef(false);
-  const persistedPreferenceSignature = useRef<string | null>(null);
-  const preferenceSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const preferenceSaveQueue = useRef<Promise<void>>(Promise.resolve());
+  const settingsPersistence = useRef<SettingsPersistence | null>(null);
+  const playbackEndBehaviorRef = useRef(playbackEndBehavior);
   const danmakuRef = useRef<DanmakuVisibility>(danmaku);
   const danmakuSettingsRef = useRef<DanmakuSettings>(danmakuSettings);
   const playbackRateRef = useRef<PlaybackRate>(playbackRate);
@@ -4886,17 +4874,26 @@ export function AppSurface({
   const closeApplication = () => {
     if (windowClosing.current) return;
     windowClosing.current = true;
-    const finish = () => {
+    const close = async () => {
+      try {
+        // Read synchronous intent refs, including an edit made before React's
+        // preference effect/debounce has had a chance to run.
+        queuePlaybackPreferences();
+        await flushSettingsBeforeClose(getSettingsPersistence());
+      } catch (error) {
+        windowClosing.current = false;
+        setSettingsError("设置尚未保存，已取消退出。请检查保存状态后再次关闭。");
+        recordUiState("settings_close_cancelled");
+        setScene("settings");
+        return;
+      }
+      playbackFlow.current?.cancel();
+      if (relayWorker.current) await relayWorker.current.close();
       disposeNativePartPopup();
       closeProductWindow();
       setTimeout(() => process.exit(0), 0);
     };
-    const worker = relayWorker.current;
-    if (worker) {
-      void worker.close().finally(finish);
-    } else {
-      finish();
-    }
+    void close();
   };
 
   useEffect(() => {
@@ -4917,16 +4914,45 @@ export function AppSurface({
     if (!bilibiliAuthenticated) return;
     const timer = setTimeout(() => {
       const worker = getRelayWorker();
-      primeLibraryCache("folders", () => worker.listFavoriteFolders());
-      primeLibraryCache("watch-later", () => worker.listWatchLater());
-      primeLibraryCache("history:1", () => worker.listHistory(1));
+      libraryCache.current.prime("folders", () => worker.listFavoriteFolders());
+      libraryCache.current.prime("watch-later", () => worker.listWatchLater());
+      libraryCache.current.prime("history:1", () => worker.listHistory(1));
     }, 1200);
     return () => clearTimeout(timer);
-  }, [bilibiliAuthenticated]);
+  }, [bilibiliAuthenticated, libraryEpoch]);
 
   const getRelayWorker = () => {
-    relayWorker.current ??= new RelayWorkerClient();
+    if (!relayWorker.current) {
+      relayWorker.current = new RelayWorkerClient();
+      relayWorker.current.onGenerationEnded(() => {
+        ++authEpoch.current;
+        authChanging.current = false;
+        setLibraryEpoch(libraryCache.current.setScope(null, true));
+        setBilibiliAuth(null);
+        setBilibiliAuthBusy(false);
+      });
+    }
+    playbackFlow.current ??= new PlaybackFlow(relayWorker.current, (error) => {
+      setRelayStatus(null);
+      appliedPlaybackOptions.current = null;
+      if (error && !windowClosing.current) {
+        setPlaybackToggling(false);
+        setPlaybackUpdating(null);
+        setRelayStopping(false);
+        setPlaybackPaused(false);
+        pendingPausedPosition.current = null;
+        setPlaybackMessage("播放状态已失效，请重新生成地址");
+        setRelayError(relayErrorMessage(error));
+        setConversionError(relayErrorMessage(error));
+        setScene((current) => current === "loading" ? "error" : current);
+      }
+    }, recordUiState);
     return relayWorker.current;
+  };
+
+  const getPlaybackFlow = () => {
+    getRelayWorker();
+    return playbackFlow.current!;
   };
 
   const setPlaybackPosition = (position: number) => {
@@ -4935,31 +4961,38 @@ export function AppSurface({
   };
 
   const setDanmakuPreference = (next: DanmakuVisibility) => {
+    if (windowClosing.current) return;
     preferencesTouched.current = true;
     danmakuRef.current = next;
     setDanmaku(next);
+    queuePlaybackPreferences();
   };
 
   const setDanmakuSettingsPreference: React.Dispatch<React.SetStateAction<DanmakuSettings>> = (
     update,
   ) => {
+    if (windowClosing.current) return;
     preferencesTouched.current = true;
-    setDanmakuSettings((current) => {
-      const next = typeof update === "function" ? update(current) : update;
-      danmakuSettingsRef.current = next;
-      return next;
-    });
+    const next = typeof update === "function" ? update(danmakuSettingsRef.current) : update;
+    danmakuSettingsRef.current = next;
+    setDanmakuSettings(next);
+    queuePlaybackPreferences();
   };
 
   const setPlaybackEndBehaviorPreference = (next: PlaybackEndBehavior) => {
+    if (windowClosing.current) return;
     preferencesTouched.current = true;
+    playbackEndBehaviorRef.current = next;
     setPlaybackEndBehavior(next);
+    queuePlaybackPreferences();
   };
 
   const setPlaybackRatePreference = (next: PlaybackRate) => {
+    if (windowClosing.current) return;
     preferencesTouched.current = true;
     playbackRateRef.current = next;
     setPlaybackRate(next);
+    queuePlaybackPreferences();
   };
 
   const currentPlaybackOptions = () =>
@@ -4976,20 +5009,22 @@ export function AppSurface({
       : next;
     setProductSettings(visible);
     setSettingsReady(true);
-    if (!initialThemePreference) setThemePreference(visible.theme);
+    // A later save/read must not reset a newer, unsaved theme preview.
+    if (!preferencesHydrated.current && !initialThemePreference) setThemePreference(visible.theme);
     if (!preferencesHydrated.current) {
       const decoded = decodedDanmakuPreferences(next.danmaku);
-      persistedPreferenceSignature.current = playbackPreferenceSignature(
+      getSettingsPersistence().baseline(playbackPreferenceSignature(
         decoded.visibility,
         decoded.settings,
         next.playbackEndBehavior,
         next.playbackRate,
-      );
+      ));
       if (!preferencesTouched.current) {
         danmakuRef.current = decoded.visibility;
         danmakuSettingsRef.current = decoded.settings;
         setDanmaku(decoded.visibility);
         setDanmakuSettings(decoded.settings);
+        playbackEndBehaviorRef.current = next.playbackEndBehavior;
         setPlaybackEndBehavior(next.playbackEndBehavior);
         playbackRateRef.current = next.playbackRate;
         setPlaybackRate(next.playbackRate);
@@ -5000,10 +5035,34 @@ export function AppSurface({
     return visible;
   };
 
+  const getSettingsPersistence = () => {
+    settingsPersistence.current ??= new SettingsPersistence(
+      () => getRelayWorker().getSettings(),
+      (update) => getRelayWorker().saveSettings(update),
+      (saved) => { applyProductSettings(saved); setSettingsError(null); },
+      (error) => setSettingsError(relayErrorMessage(error)),
+      recordUiState,
+    );
+    return settingsPersistence.current;
+  };
+
+  const queuePlaybackPreferences = () => {
+    if (!preferencesHydrated.current && !preferencesTouched.current) return;
+    const visibility = danmakuRef.current;
+    const style = danmakuSettingsRef.current;
+    const end = playbackEndBehaviorRef.current;
+    const rate = playbackRateRef.current;
+    getSettingsPersistence().schedule({
+      danmaku: configuredDanmakuSettings(visibility, style),
+      playbackEndBehavior: end,
+      playbackRate: rate,
+    }, playbackPreferenceSignature(visibility, style, end, rate));
+  };
+
   const refreshProductSettings = async (): Promise<ProductSettings> => {
     setSettingsError(null);
     try {
-      return applyProductSettings(await getRelayWorker().getSettings());
+      return await getSettingsPersistence().read();
     } catch (error) {
       setSettingsReady(true);
       setSettingsError(relayErrorMessage(error));
@@ -5016,9 +5075,7 @@ export function AppSurface({
   ): Promise<ProductSettings> => {
     setSettingsError(null);
     try {
-      const saved = applyProductSettings(await getRelayWorker().saveSettings(next));
-      setThemePreference(saved.theme);
-      return saved;
+      return await getSettingsPersistence().save(next);
     } catch (error) {
       setSettingsError(relayErrorMessage(error));
       throw error;
@@ -5045,7 +5102,11 @@ export function AppSurface({
     }
   };
 
-  const applyBilibiliAuth = (next: BilibiliAuthStatus) => {
+  const applyBilibiliAuth = (next: BilibiliAuthStatus, generation: number) => {
+    if (!getRelayWorker().isGenerationCurrent(generation)) return;
+    const scope = next.stage === "authenticated" && next.user_id !== undefined
+      ? `${generation}:${next.user_id}` : null;
+    setLibraryEpoch(libraryCache.current.setScope(scope));
     setBilibiliAuth((current) => {
       if (next.qr || current?.login_id !== next.login_id) return next;
       const qr = current?.qr;
@@ -5054,40 +5115,57 @@ export function AppSurface({
   };
 
   const refreshBilibiliAuth = async () => {
+    if (authChanging.current || windowClosing.current) return;
+    const epoch = authEpoch.current;
     setBilibiliAuthError(null);
     try {
-      applyBilibiliAuth(await getRelayWorker().bilibiliAuthStatus());
+      const worker = getRelayWorker();
+      const generation = await worker.ready();
+      const next = await worker.bilibiliAuthStatus();
+      if (authEpoch.current === epoch) applyBilibiliAuth(next, generation);
     } catch (error) {
-      setBilibiliAuthError(relayErrorMessage(error));
+      if (authEpoch.current === epoch) setBilibiliAuthError(relayErrorMessage(error));
     }
   };
 
-  const beginBilibiliLogin = async () => {
-    if (bilibiliAuthBusy) return;
+  const changeAuthentication = async (action: "login" | "logout") => {
+    if (authChanging.current || windowClosing.current) return;
+    authChanging.current = true;
+    const epoch = ++authEpoch.current;
+    // Revoke cached and visible data BEFORE dispatching the auth mutation.
+    setLibraryEpoch(libraryCache.current.setScope(null, true));
+    setBilibiliAuth(null);
     setBilibiliAuthBusy(true);
     setBilibiliAuthError(null);
+    const worker = getRelayWorker();
+    let generation: number | undefined;
     try {
-      applyBilibiliAuth(await getRelayWorker().beginBilibiliLogin());
+      generation = await worker.ready();
+      if (epoch !== authEpoch.current) return;
+      const next = action === "login" ? await worker.beginBilibiliLogin() : await worker.logoutBilibili();
+      if (epoch !== authEpoch.current) return;
+      applyBilibiliAuth(next, generation);
+      if (action === "logout") changeBilibiliAccessMode("guest");
     } catch (error) {
+      if (epoch !== authEpoch.current) return;
       setBilibiliAuthError(relayErrorMessage(error));
+      // The mutation can fail before credentials change. Observe that fact;
+      // do not restore an old UI snapshot or retry the mutation itself.
+      if (generation !== undefined && worker.isGenerationCurrent(generation)) {
+        try {
+          const next = await worker.bilibiliAuthStatus();
+          if (epoch === authEpoch.current) applyBilibiliAuth(next, generation);
+        } catch { /* scope remains revoked */ }
+      }
     } finally {
-      setBilibiliAuthBusy(false);
+      if (epoch === authEpoch.current) {
+        authChanging.current = false;
+        setBilibiliAuthBusy(false);
+      }
     }
   };
-
-  const logoutBilibili = async () => {
-    if (bilibiliAuthBusy) return;
-    setBilibiliAuthBusy(true);
-    setBilibiliAuthError(null);
-    try {
-      applyBilibiliAuth(await getRelayWorker().logoutBilibili());
-      changeBilibiliAccessMode("guest");
-    } catch (error) {
-      setBilibiliAuthError(relayErrorMessage(error));
-    } finally {
-      setBilibiliAuthBusy(false);
-    }
-  };
+  const beginBilibiliLogin = () => changeAuthentication("login");
+  const logoutBilibili = () => changeAuthentication("logout");
 
   const installFfmpeg = async () => {
     setMediaError(null);
@@ -5100,47 +5178,12 @@ export function AppSurface({
   };
 
   useEffect(() => {
-    if (!preferencesReady) return;
-    const options = configuredDanmakuSettings(danmaku, danmakuSettings);
-    const signature = playbackPreferenceSignature(
-      danmaku,
-      danmakuSettings,
-      playbackEndBehavior,
-      playbackRate,
-    );
-    if (signature === persistedPreferenceSignature.current) return;
-    if (preferenceSaveTimer.current) clearTimeout(preferenceSaveTimer.current);
-    preferenceSaveTimer.current = setTimeout(() => {
-      preferenceSaveTimer.current = null;
-      preferenceSaveQueue.current = preferenceSaveQueue.current.then(async () => {
-        try {
-          const saved = await getRelayWorker().saveSettings({
-            danmaku: options,
-            playbackEndBehavior,
-            playbackRate,
-          });
-          persistedPreferenceSignature.current = signature;
-          setSettingsError(null);
-          setProductSettings(
-            initialThemePreference
-              ? { ...saved, theme: initialThemePreference }
-              : saved,
-          );
-        } catch (error) {
-          setSettingsError(relayErrorMessage(error));
-        }
-      });
-    }, 250);
-    return () => {
-      if (preferenceSaveTimer.current) {
-        clearTimeout(preferenceSaveTimer.current);
-        preferenceSaveTimer.current = null;
-      }
-    };
-  }, [preferencesReady, danmaku, danmakuSettings, playbackEndBehavior, playbackRate]);
+    if (preferencesReady && !windowClosing.current) queuePlaybackPreferences();
+  }, [preferencesReady]);
 
   useEffect(() => {
     const startup = setTimeout(() => {
+      if (windowClosing.current) return;
       void refreshProductSettings();
       if (initialScene === "settings") {
         void refreshMediaState();
@@ -5151,8 +5194,7 @@ export function AppSurface({
     }, 0);
     return () => {
       clearTimeout(startup);
-      conversionEpoch.current += 1;
-      playbackEpoch.current += 1;
+      playbackFlow.current?.dispose();
       if (relayWorker.current) void relayWorker.current.close();
     };
   }, []);
@@ -5167,23 +5209,28 @@ export function AppSurface({
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const loginId = bilibiliAuth.login_id;
+    const epoch = authEpoch.current;
     const poll = async () => {
       try {
-        const next = await getRelayWorker().pollBilibiliLogin(loginId);
-        if (cancelled) return;
+        const worker = getRelayWorker();
+        const generation = await worker.ready();
+        if (cancelled || epoch !== authEpoch.current) return;
+        const next = await worker.pollBilibiliLogin(loginId);
+        if (cancelled || epoch !== authEpoch.current || !worker.isGenerationCurrent(generation)) return;
         setBilibiliAuthError(null);
-        applyBilibiliAuth(next);
+        applyBilibiliAuth(next, generation);
         if (next.stage === "waiting" || next.stage === "scanned") {
           timer = setTimeout(poll, 1400);
         }
       } catch (error) {
-        if (cancelled) return;
+        if (cancelled || epoch !== authEpoch.current) return;
         setBilibiliAuthError(relayErrorMessage(error));
         if (
           error instanceof RelayWorkerError &&
           error.code === "bilibili_login_session_not_found"
         ) {
-          applyBilibiliAuth({ stage: "expired", persistence: "none" });
+          setLibraryEpoch(libraryCache.current.setScope(null));
+          setBilibiliAuth({ stage: "expired", persistence: "none" });
           return;
         }
         timer = setTimeout(poll, 2500);
@@ -5224,13 +5271,17 @@ export function AppSurface({
   }, [mediaStatus?.availability]);
 
   useEffect(() => {
-    if (!relayStatus || !hasActivePublisher(relayStatus)) return;
+    const ownedStatus = relayStatus ?? playbackFlow.current?.status;
+    if (!ownedStatus || !hasActivePublisher(ownedStatus)
+      || playbackUpdating !== null || playbackToggling || relayStopping) return;
+    const flow = getPlaybackFlow();
+    const epoch = flow.epoch;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const poll = async () => {
       try {
-        const latest = await getRelayWorker().relayStatus(relayStatus.session_id);
-        if (!cancelled) {
+        const latest = await flow.poll();
+        if (!cancelled && latest && flow.epoch === epoch) {
           setRelayStatus(latest);
           setPlaybackPaused(latest.paused);
           const preservePausedSeek = latest.paused && pendingPausedPosition.current !== null;
@@ -5255,12 +5306,12 @@ export function AppSurface({
         }
       }
     };
-    timer = setTimeout(poll, relayStatus.stage === "starting" ? 700 : 2000);
+    timer = setTimeout(poll, ownedStatus.stage === "starting" ? 700 : 2000);
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [relayStatus?.session_id, relayStatus?.stage, seekInteractionActive, playbackUpdating]);
+  }, [relayStatus?.session_id, relayStatus?.stage, seekInteractionActive, playbackUpdating, playbackToggling, relayStopping]);
 
   const convert = async (sourceOverride?: string) => {
     const normalizedSource = (sourceOverride ?? source).trim();
@@ -5268,8 +5319,11 @@ export function AppSurface({
       setScene("idle");
       return;
     }
-    const epoch = ++conversionEpoch.current;
-    playbackEpoch.current += 1;
+    if (windowClosing.current) return;
+    const flow = getPlaybackFlow();
+    const intent = flow.begin("convert");
+    setPlaybackToggling(false);
+    setRelayStopping(false);
     sceneBeforeConversion.current = scene;
     setConversionError("链接无法识别，检查后再试。");
     setRelayError(null);
@@ -5284,59 +5338,57 @@ export function AppSurface({
     setSource(normalizedSource);
     setScene("loading");
     try {
-      if (relayStatus && hasActivePublisher(relayStatus)) {
-        await getRelayWorker().stopRelay(relayStatus.session_id);
-      }
-      setRelayStatus(null);
-      const resolution = await getRelayWorker().resolveSource(normalizedSource);
-      if (conversionEpoch.current !== epoch) return;
-      setSource(resolution.canonical_url);
-      setSourceResolution(resolution);
-      if (resolution.selected_part) setPart(String(resolution.selected_part));
-      setCollectionItem(String(resolution.collection?.selected_item ?? 1));
-      setPlaybackPosition(0);
-      setPlaybackPaused(resolution.kind === "video");
-      setScene("ready-vod");
-      if (resolution.routing.kind !== "unavailable" && resolution.session_id) {
-        setPlaybackToggling(true);
-        const runtimeSettings = settingsReady
-          ? productSettings
-          : await refreshProductSettings();
-        if (conversionEpoch.current !== epoch) return;
-        if (!relaySettingsReady(runtimeSettings)) {
-          setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
-          setPlaybackToggling(false);
-          return;
-        }
-        try {
-          const options = currentPlaybackOptions();
-          const started = await getRelayWorker().startRelay(
-            resolution.session_id,
-            options,
-            0,
-            resolution.kind === "video",
-          );
-          if (conversionEpoch.current === epoch) {
-            appliedPlaybackOptions.current = started.paused
-              ? null
-              : playbackOptionsSignature(options);
-            setRelayStatus(started);
-            setPlaybackPaused(started.paused);
-            if (
-              started.position_seconds !== undefined
-              && pendingPausedPosition.current === null
-            ) {
-              setPlaybackPosition(started.position_seconds);
-            }
+      await flow.run(intent, async (task) => {
+        await task.stop();
+        setRelayStatus(null);
+        const resolution = await task.resolve(normalizedSource);
+        if (!flow.isCurrent(intent)) return;
+        setSource(resolution.canonical_url);
+        setSourceResolution(resolution);
+        if (resolution.selected_part) setPart(String(resolution.selected_part));
+        setCollectionItem(String(resolution.collection?.selected_item ?? 1));
+        setPlaybackPosition(0);
+        setPlaybackPaused(resolution.kind === "video");
+        setScene("ready-vod");
+        if (resolution.routing.kind !== "unavailable" && resolution.session_id) {
+          setPlaybackToggling(true);
+          const runtimeSettings = settingsReady
+            ? productSettings
+            : await refreshProductSettings();
+          if (!flow.isCurrent(intent)) return;
+          if (!relaySettingsReady(runtimeSettings)) {
+            setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
+            setPlaybackToggling(false);
+            return;
           }
-        } catch (error) {
-          if (conversionEpoch.current === epoch) setRelayError(relayErrorMessage(error));
-        } finally {
-          if (conversionEpoch.current === epoch) setPlaybackToggling(false);
+          try {
+            const options = currentPlaybackOptions();
+            const started = await task.start(
+              resolution.session_id,
+              options,
+              0,
+              resolution.kind === "video",
+            );
+            if (flow.isCurrent(intent)) {
+              appliedPlaybackOptions.current = started.paused
+                ? null
+                : playbackOptionsSignature(options);
+              setRelayStatus(started);
+              setPlaybackPaused(started.paused);
+              if (
+                started.position_seconds !== undefined
+                && pendingPausedPosition.current === null
+              ) {
+                setPlaybackPosition(started.position_seconds);
+              }
+            }
+          } finally {
+            if (flow.isCurrent(intent)) setPlaybackToggling(false);
+          }
         }
-      }
+      });
     } catch (error) {
-      if (conversionEpoch.current !== epoch) return;
+      if (!flow.isCurrent(intent)) return;
       setPlaybackToggling(false);
       setConversionError(relayErrorMessage(error));
       setScene("error");
@@ -5355,7 +5407,8 @@ export function AppSurface({
     const previousResolution = sourceResolution;
     const canRetarget = previousResolution?.kind === "video"
       || (previousResolution?.kind === "live" && update === "danmaku");
-    if (!previousResolution || !canRetarget || playbackUpdating !== null) return false;
+    if (windowClosing.current || playbackFlow.current?.busy || !previousResolution || !canRetarget
+      || playbackUpdating !== null || playbackToggling || relayStopping) return false;
 
     const isLiveDanmakuUpdate = previousResolution.kind === "live";
     const effectivePart = isLiveDanmakuUpdate ? 1 : requestedPart;
@@ -5364,11 +5417,12 @@ export function AppSurface({
       ? previousResolution.canonical_url
       : sourceUrl ?? previousResolution.canonical_url;
 
-    const epoch = ++playbackEpoch.current;
+    const flow = getPlaybackFlow();
+    const intent = flow.begin("retarget");
     const previousPart = part;
     const previousCollectionItem = collectionItem;
     const previousPosition = playbackPosition;
-    const previousRelay = relayStatus;
+    const previousRelay = flow.status;
     const previousWasActive = hasActivePublisher(previousRelay);
     const previousPendingPosition = pendingPausedPosition.current;
 
@@ -5383,72 +5437,72 @@ export function AppSurface({
     pendingPausedPosition.current = null;
 
     try {
-      const runtimeSettings = settingsReady
-        ? productSettings
-        : await refreshProductSettings();
-      if (playbackEpoch.current !== epoch) return false;
-      if (!relaySettingsReady(runtimeSettings)) {
-        if (previousWasActive) {
-          setPart(previousPart);
-          setPlaybackPosition(previousPosition);
-          pendingPausedPosition.current = previousPendingPosition;
-          setPlaybackMessage("需要先完成 VRCDN 设置");
+      return await flow.run(intent, async (task) => {
+        const runtimeSettings = settingsReady
+          ? productSettings
+          : await refreshProductSettings();
+        if (!flow.isCurrent(intent)) return false;
+        if (!relaySettingsReady(runtimeSettings)) {
+          if (previousWasActive) {
+            setPart(previousPart);
+            setCollectionItem(previousCollectionItem);
+            setPlaybackPosition(previousPosition);
+            pendingPausedPosition.current = previousPendingPosition;
+            setPlaybackMessage("需要先完成 VRCDN 设置");
+            return false;
+          }
+          const resolution = await task.resolve(
+            effectiveSource,
+            effectivePart,
+          );
+          if (!flow.isCurrent(intent)) return false;
+          setSourceResolution(resolution);
+          setSource(resolution.canonical_url);
+          setPart(String(resolution.selected_part ?? effectivePart));
+          setCollectionItem(String(resolution.collection?.selected_item ?? 1));
+          setRelayStatus(null);
+          setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
           return false;
         }
-        const resolution = await getRelayWorker().resolveSource(
+
+        const playback = await task.retarget(
           effectiveSource,
           effectivePart,
+          options,
+          effectiveStart,
+          remainPaused,
         );
-        if (playbackEpoch.current !== epoch) return false;
-        setSourceResolution(resolution);
-        setSource(resolution.canonical_url);
-        setPart(String(resolution.selected_part ?? effectivePart));
-        setCollectionItem(String(resolution.collection?.selected_item ?? 1));
-        setRelayStatus(null);
-        setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
-        return false;
-      }
 
-      const playback = await getRelayWorker().retargetRelay(
-        previousWasActive ? previousRelay?.session_id : undefined,
-        effectiveSource,
-        effectivePart,
-        options,
-        effectiveStart,
-        remainPaused,
-      );
-      if (playbackEpoch.current !== epoch) {
-        await getRelayWorker().stopRelay(playback.relay.session_id).catch(() => undefined);
-        return false;
-      }
-
-      setSourceResolution(playback.resolution);
-      setSource(playback.resolution.canonical_url);
-      setPart(String(playback.resolution.selected_part ?? effectivePart));
-      setCollectionItem(String(playback.resolution.collection?.selected_item ?? 1));
-      setPlaybackPosition(playback.relay.position_seconds ?? effectiveStart);
-      setRelayStatus(playback.relay);
-      setPlaybackPaused(playback.relay.paused);
-      setRelayError(null);
-      setPlaybackMessage(null);
-      appliedPlaybackOptions.current = playback.relay.paused
-        ? null
-        : playbackOptionsSignature(options);
-      return true;
+        setSourceResolution(playback.resolution);
+        setSource(playback.resolution.canonical_url);
+        setPart(String(playback.resolution.selected_part ?? effectivePart));
+        setCollectionItem(String(playback.resolution.collection?.selected_item ?? 1));
+        setPlaybackPosition(playback.relay.position_seconds ?? effectiveStart);
+        setRelayStatus(playback.relay);
+        setPlaybackPaused(playback.relay.paused);
+        setRelayError(null);
+        setPlaybackMessage(null);
+        appliedPlaybackOptions.current = playback.relay.paused
+          ? null
+          : playbackOptionsSignature(options);
+        return true;
+      });
     } catch (error) {
-      if (playbackEpoch.current !== epoch) return false;
+      if (!flow.isCurrent(intent)) return false;
       setPart(previousPart);
       setCollectionItem(previousCollectionItem);
       setPlaybackPosition(previousPosition);
-      const originalRestored = previousWasActive
-        && !(error instanceof RelayWorkerError && error.code === "retarget_restore_failed");
+      const observed = error instanceof PlaybackFailure ? error.confirmedStatus : null;
+      const originalRestored = previousWasActive && hasActivePublisher(observed);
       if (originalRestored) {
-        setRelayStatus(previousRelay);
-        pendingPausedPosition.current = previousPendingPosition;
+        setRelayStatus(observed);
+        setPlaybackPaused(observed!.paused);
+        setPlaybackPosition(observed!.position_seconds ?? previousPosition);
+        pendingPausedPosition.current = observed!.paused ? previousPendingPosition : null;
         setRelayError(null);
         setPlaybackMessage(
-          update === "part"
-            ? "切换失败 · 原内容仍在播放"
+          observed!.paused ? "操作失败 · 已确认原内容处于暂停状态" : update === "part"
+            ? "切换失败 · 已确认原内容仍在播放"
             : update === "seek"
               ? "跳转失败 · 原内容仍在播放"
               : update === "rate"
@@ -5458,7 +5512,8 @@ export function AppSurface({
                 : "播完处理失败 · 结束画面仍会保持",
         );
       } else {
-        setRelayStatus(null);
+        setRelayStatus(observed);
+        setPlaybackPaused(observed?.paused ?? false);
         setRelayError(relayErrorMessage(error));
         setPlaybackMessage(
           update === "part"
@@ -5474,7 +5529,7 @@ export function AppSurface({
       }
       return false;
     } finally {
-      if (playbackEpoch.current === epoch) setPlaybackUpdating(null);
+      if (flow.isCurrent(intent)) setPlaybackUpdating(null);
     }
   };
 
@@ -5527,6 +5582,9 @@ export function AppSurface({
     }
 
     const pauseAtCompletion = async () => {
+      if (windowClosing.current) return;
+      const flow = getPlaybackFlow();
+      const intent = flow.begin("completion");
       setPlaybackToggling(true);
       setPlaybackMessage(null);
       setRelayError(null);
@@ -5534,21 +5592,24 @@ export function AppSurface({
         const completionPosition = relayStatus.position_seconds
           ?? sourceResolution.duration_seconds
           ?? playbackPosition;
-        const updated = await getRelayWorker().setRelayPaused(
+        const updated = await flow.run(intent, (task) => task.pause(
           completionSession,
           true,
           options,
           completionPosition,
-        );
+        ));
+        if (!flow.isCurrent(intent)) return;
         setRelayStatus(updated);
         setPlaybackPosition(updated.position_seconds ?? completionPosition);
         setPlaybackPaused(updated.paused);
         appliedPlaybackOptions.current = null;
       } catch (error) {
+        if (!flow.isCurrent(intent)) return;
+        setRelayStatus(error instanceof PlaybackFailure ? error.confirmedStatus : null);
         setRelayError(relayErrorMessage(error));
-        setPlaybackMessage("播完暂停失败 · 结束画面仍会保持");
+        setPlaybackMessage("播完暂停失败，请查看中继状态");
       } finally {
-        setPlaybackToggling(false);
+        if (flow.isCurrent(intent)) setPlaybackToggling(false);
       }
     };
     void pauseAtCompletion();
@@ -5617,7 +5678,7 @@ export function AppSurface({
   };
 
   const changePlaybackRate = (next: PlaybackRate) => {
-    if (playbackUpdating !== null) return;
+    if (windowClosing.current || playbackFlow.current?.busy || playbackUpdating !== null || playbackToggling || relayStopping) return;
     const previous = playbackRateRef.current;
     if (next === previous) return;
     setPlaybackRatePreference(next);
@@ -5632,7 +5693,8 @@ export function AppSurface({
 
     const activeRelay = relayStatus;
     const previousPosition = playbackPosition;
-    const epoch = ++playbackEpoch.current;
+    const flow = getPlaybackFlow();
+    const intent = flow.begin("rate");
     const options = configuredPlaybackOptions(
       danmakuRef.current,
       danmakuSettingsRef.current,
@@ -5645,34 +5707,37 @@ export function AppSurface({
 
     const applyRate = async () => {
       try {
-        const updated = await getRelayWorker().setRelayRate(activeRelay.session_id, options);
-        if (playbackEpoch.current !== epoch) return;
+        const updated = await flow.run(intent, (task) => task.rate(activeRelay.session_id, options));
+        if (!flow.isCurrent(intent)) return;
         setRelayStatus(updated);
         setPlaybackPosition(updated.position_seconds ?? previousPosition);
         setPlaybackPaused(updated.paused);
         appliedPlaybackOptions.current = playbackOptionsSignature(options);
       } catch (error) {
-        if (playbackEpoch.current !== epoch) return;
+        if (!flow.isCurrent(intent)) return;
         setPlaybackRatePreference(previous);
-        const restored = !(error instanceof RelayWorkerError && error.code === "rate_restore_failed");
+        const observed = error instanceof PlaybackFailure ? error.confirmedStatus : null;
+        const restored = hasActivePublisher(observed);
         if (restored) {
-          setRelayStatus(activeRelay);
-          setPlaybackPosition(previousPosition);
-          setPlaybackMessage("倍速切换失败 · 原内容仍在播放");
+          setRelayStatus(observed);
+          setPlaybackPosition(observed!.position_seconds ?? previousPosition);
+          setPlaybackPaused(observed!.paused);
+          setPlaybackMessage(observed!.paused ? "倍速切换失败 · 已确认原内容已暂停" : "倍速切换失败 · 已确认原内容仍在播放");
         } else {
-          setRelayStatus(null);
+          setRelayStatus(observed);
+          setPlaybackPaused(observed?.paused ?? false);
           setRelayError(relayErrorMessage(error));
           setPlaybackMessage("倍速切换失败 · 请重试");
         }
       } finally {
-        if (playbackEpoch.current === epoch) setPlaybackUpdating(null);
+        if (flow.isCurrent(intent)) setPlaybackUpdating(null);
       }
     };
     void applyRate();
   };
 
   const changeDanmakuVisibility = (next: DanmakuVisibility) => {
-    if (next === danmaku || playbackUpdating !== null) return;
+    if (windowClosing.current || playbackFlow.current?.busy || next === danmaku || playbackUpdating !== null || playbackToggling || relayStopping) return;
     setDanmakuPreference(next);
     const active = relayStatus?.stage === "starting" || relayStatus?.stage === "running";
     const supportsDanmaku = sourceResolution?.kind === "video" || sourceResolution?.kind === "live";
@@ -5690,22 +5755,30 @@ export function AppSurface({
   };
 
   const stopRelay = async () => {
-    if (!relayStatus || relayStopping) return;
+    if (windowClosing.current || relayStopping) return;
+    const flow = getPlaybackFlow();
+    const intent = flow.begin("stop");
     setRelayStopping(true);
+    setPlaybackToggling(false);
+    setPlaybackUpdating(null);
     setPlaybackMessage(null);
     try {
-      const stopped = await getRelayWorker().stopRelay(relayStatus.session_id);
+      const stopped = await flow.run(intent, (task) => task.stop());
+      if (!flow.isCurrent(intent)) return;
       setRelayStatus(stopped);
       setPlaybackPaused(false);
       setRelayError(null);
     } catch (error) {
+      if (!flow.isCurrent(intent)) return;
+      setRelayStatus(error instanceof PlaybackFailure ? error.confirmedStatus : null);
       setRelayError(relayErrorMessage(error));
     } finally {
-      setRelayStopping(false);
+      if (flow.isCurrent(intent)) setRelayStopping(false);
     }
   };
 
   const togglePlayback = async () => {
+    if (windowClosing.current || playbackFlow.current?.busy) return;
     if (sourceResolution === null) {
       setPlaybackPaused((current) => !current);
       return;
@@ -5723,65 +5796,75 @@ export function AppSurface({
       return;
     }
 
+    const flow = getPlaybackFlow();
+    const intent = flow.begin("pause");
     setPlaybackToggling(true);
     setPlaybackMessage(null);
     setRelayError(null);
     try {
-      const active = relayStatus?.stage === "running";
-      if (active && relayStatus) {
-        const nextPaused = !relayStatus.paused;
+      await flow.run(intent, async (task) => {
+        const active = relayStatus?.stage === "running";
+        if (active && relayStatus) {
+          const nextPaused = !relayStatus.paused;
+          const options = currentPlaybackOptions();
+          const selectedPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
+          const selectedDuration = sourceResolution.parts
+            ?.find((entry) => entry.page === selectedPart)
+            ?.duration_seconds
+            ?? sourceResolution.duration_seconds
+            ?? 0;
+          const selectedPosition = pendingPausedPosition.current ?? playbackPositionRef.current;
+          const requestedPosition = !nextPaused
+            && selectedDuration > 0
+            && selectedPosition >= selectedDuration - 1
+              ? 0
+              : selectedPosition;
+          const updated = await task.pause(
+            relayStatus.session_id,
+            nextPaused,
+            options,
+            requestedPosition,
+          );
+          if (!nextPaused) {
+            appliedPlaybackOptions.current = playbackOptionsSignature(options);
+            pendingPausedPosition.current = null;
+          }
+          setRelayStatus(updated);
+          if (updated.position_seconds !== undefined) setPlaybackPosition(updated.position_seconds);
+          setPlaybackPaused(updated.paused);
+          return;
+        }
+        if (!playbackPaused || !sourceResolution.session_id) return;
         const options = currentPlaybackOptions();
-        const selectedPart = sourceResolution.selected_part ?? (Number.parseInt(part, 10) || 1);
-        const selectedDuration = sourceResolution.parts
-          ?.find((entry) => entry.page === selectedPart)
-          ?.duration_seconds
-          ?? sourceResolution.duration_seconds
-          ?? 0;
-        const selectedPosition = pendingPausedPosition.current ?? playbackPositionRef.current;
-        const requestedPosition = !nextPaused
-          && selectedDuration > 0
-          && selectedPosition >= selectedDuration - 1
-            ? 0
-            : selectedPosition;
-        const updated = await getRelayWorker().setRelayPaused(
-          relayStatus.session_id,
-          nextPaused,
+        const requestedPosition = pendingPausedPosition.current ?? playbackPositionRef.current;
+        const started = await task.start(
+          sourceResolution.session_id,
           options,
           requestedPosition,
+          false,
         );
-        if (!nextPaused) {
-          appliedPlaybackOptions.current = playbackOptionsSignature(options);
-          pendingPausedPosition.current = null;
-        }
-        setRelayStatus(updated);
-        if (updated.position_seconds !== undefined) setPlaybackPosition(updated.position_seconds);
-        setPlaybackPaused(updated.paused);
-        return;
-      }
-      if (!playbackPaused || !sourceResolution.session_id) return;
-      const options = currentPlaybackOptions();
-      const requestedPosition = pendingPausedPosition.current ?? playbackPositionRef.current;
-      const started = await getRelayWorker().startRelay(
-        sourceResolution.session_id,
-        options,
-        requestedPosition,
-        false,
-      );
-      appliedPlaybackOptions.current = playbackOptionsSignature(options);
-      pendingPausedPosition.current = null;
-      setRelayStatus(started);
-      if (started.position_seconds !== undefined) setPlaybackPosition(started.position_seconds);
-      setPlaybackPaused(false);
+        appliedPlaybackOptions.current = playbackOptionsSignature(options);
+        pendingPausedPosition.current = null;
+        setRelayStatus(started);
+        if (started.position_seconds !== undefined) setPlaybackPosition(started.position_seconds);
+        setPlaybackPaused(false);
+      });
     } catch (error) {
+      if (!flow.isCurrent(intent)) return;
+      const observed = error instanceof PlaybackFailure ? error.confirmedStatus : null;
+      setRelayStatus(observed);
+      setPlaybackPaused(observed?.paused ?? false);
       setRelayError(relayErrorMessage(error));
       setPlaybackMessage(playbackPaused ? "继续播放失败" : "暂停失败");
     } finally {
-      setPlaybackToggling(false);
+      if (flow.isCurrent(intent)) setPlaybackToggling(false);
     }
   };
 
   const cancelConversion = () => {
-    conversionEpoch.current += 1;
+    getPlaybackFlow().cancel();
+    setPlaybackToggling(false);
+    setPlaybackUpdating(null);
     const previous = sceneBeforeConversion.current;
     const fallback = sourceResolution ? "ready-vod" : "idle";
     setScene(
@@ -5793,20 +5876,22 @@ export function AppSurface({
 
   const resumePreparedRelay = async () => {
     const resolution = sourceResolution;
-    if (!resolution?.session_id) return;
-    const epoch = ++conversionEpoch.current;
+    if (windowClosing.current || !resolution?.session_id) return;
+    const sessionId = resolution.session_id;
+    const flow = getPlaybackFlow();
+    const intent = flow.begin("resume");
     const options = currentPlaybackOptions();
     setRelayStatus(null);
     setRelayError(null);
     setPlaybackMessage("正在继续生成地址");
     try {
-      const started = await getRelayWorker().startRelay(
-        resolution.session_id,
+      const started = await flow.run(intent, (task) => task.start(
+        sessionId,
         options,
         pendingPausedPosition.current ?? playbackPositionRef.current,
         resolution.kind === "video",
-      );
-      if (conversionEpoch.current !== epoch) return;
+      ));
+      if (!flow.isCurrent(intent)) return;
       appliedPlaybackOptions.current = started.paused
         ? null
         : playbackOptionsSignature(options);
@@ -5815,9 +5900,9 @@ export function AppSurface({
       if (started.position_seconds !== undefined) setPlaybackPosition(started.position_seconds);
       pendingPausedPosition.current = null;
     } catch (error) {
-      if (conversionEpoch.current === epoch) setRelayError(relayErrorMessage(error));
+      if (flow.isCurrent(intent)) setRelayError(relayErrorMessage(error));
     } finally {
-      if (conversionEpoch.current === epoch) setPlaybackMessage(null);
+      if (flow.isCurrent(intent)) setPlaybackMessage(null);
     }
   };
 
@@ -5965,6 +6050,8 @@ export function AppSurface({
       ) : scene === "favorites" ? (
         <MotionFade key="favorites" instant style={{ flexGrow: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
           <FavoritesView
+            key={`${libraryEpoch}:${librarySource}`}
+            cache={libraryCache.current}
             palette={palette}
             authenticated={bilibiliAuth?.stage === "authenticated"}
             displayName={bilibiliAuth?.display_name ?? null}
@@ -6000,7 +6087,7 @@ export function AppSurface({
               icon="play"
               iconColor={palette.accentTeal}
               onClick={() => void convert()}
-              disabled={!source.trim() || scene === "loading" || playbackUpdating !== null}
+              disabled={!source.trim() || scene === "loading" || playbackUpdating !== null || playbackToggling || relayStopping}
               testId="convert-source"
             />
             {scene === "loading" ? (
@@ -6082,6 +6169,8 @@ export function AppSurface({
 }
 
 function relayErrorMessage(error: unknown): string {
+  if (error instanceof PlaybackFailure) return relayErrorMessage(error.original);
+  if (error instanceof PlaybackSuperseded) return "操作已由新的播放请求替代";
   if (!(error instanceof RelayWorkerError)) return "暂时无法读取链接，请稍后再试。";
   switch (error.code) {
     case "empty_source":
@@ -6143,10 +6232,13 @@ function relayErrorMessage(error: unknown): string {
     case "invalid_start_position":
     case "seek_not_supported":
       return "这个内容不能跳转到所选位置。";
+    case "playback_session_changed":
     case "media_session_not_found":
       return "媒体信息已经过期，请重新生成地址。";
     case "media_session_not_available":
       return "这个分 P 暂时无法中继。";
+    case "playback_cleanup_failed":
+      return "旧播放任务无法安全清理，中继已停止，请重新生成地址。";
     case "retarget_restore_failed":
       return "切换失败，原来的中继也没有恢复，请重新生成地址。";
     case "danmaku_fetch_failed":
