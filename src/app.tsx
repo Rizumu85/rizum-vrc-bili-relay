@@ -40,7 +40,7 @@ import {
   type SourceResolution,
 } from "./relay/protocol";
 import { RelayWorkerClient, RelayWorkerError, type FavoriteResourcePage } from "./relay/worker-client";
-import { fillLibraryCache, primeLibraryCache, readLibraryCache } from "./relay/library-cache";
+import { LibraryCache } from "./relay/library-cache";
 import { relayFailureMessage } from "./relay/status-message";
 import { PlaybackFlow, PlaybackFailure, PlaybackSuperseded, hasActivePublisher } from "./relay/playback-flow";
 import { recordUiState } from "./relay/worker-diagnostics";
@@ -3556,6 +3556,7 @@ const FavoriteVideoRow = memo(function FavoriteVideoRow({
 });
 
 function FavoritesView({
+  cache,
   palette,
   authenticated,
   displayName,
@@ -3569,6 +3570,7 @@ function FavoritesView({
   listWatchLater,
   listHistory,
 }: {
+  cache: LibraryCache;
   palette: Palette;
   authenticated: boolean;
   displayName: string | null;
@@ -3614,6 +3616,10 @@ function FavoritesView({
   pickVideoRef.current = onPickVideo;
   const stablePickVideo = useMemo(() => (bvid: string) => pickVideoRef.current(bvid), []);
 
+  useEffect(() => () => {
+    ++foldersEpoch.current; ++videosEpoch.current; ++searchEpoch.current; ++coversEpoch.current;
+  }, []);
+
   const searching = searchItems !== null;
 
   // Covers arrive after the text rows: ask the worker to cache any missing
@@ -3646,7 +3652,7 @@ function FavoritesView({
   const loadFolders = async () => {
     const epoch = ++foldersEpoch.current;
     setFoldersError(null);
-    const cached = readLibraryCache<FavoriteFolder[]>("folders");
+    const cached = cache.read<FavoriteFolder[]>("folders");
     if (cached) {
       setFolders(cached.value);
       if (cached.fresh) return;
@@ -3654,7 +3660,7 @@ function FavoritesView({
       setFoldersLoading(true);
     }
     try {
-      const list = await fillLibraryCache("folders", listFolders);
+      const list = await cache.fill("folders", listFolders);
       if (foldersEpoch.current === epoch) setFolders(list);
     } catch (error) {
       if (foldersEpoch.current === epoch && !cached) setFoldersError(favoriteErrorMessage(error));
@@ -3683,7 +3689,7 @@ function FavoritesView({
     const epoch = ++videosEpoch.current;
     setVideosError(null);
     const cacheKey = `folder:${folder.id}:${page}`;
-    const cached = !append ? readLibraryCache<FavoriteResourcePage>(cacheKey) : null;
+    const cached = !append ? cache.read<FavoriteResourcePage>(cacheKey) : null;
     if (cached) {
       setVideos(cached.value.items);
       setVideosPage(cached.value.page);
@@ -3694,8 +3700,8 @@ function FavoritesView({
     }
     try {
       const result = page === 1
-        ? await fillLibraryCache(cacheKey, () => listResources(folder.id, page))
-        : await listResources(folder.id, page);
+        ? await cache.fill(cacheKey, () => listResources(folder.id, page))
+        : await cache.scoped(() => listResources(folder.id, page));
       if (videosEpoch.current !== epoch) return;
       setVideos((current) => (append ? [...current, ...result.items] : result.items));
       setVideosPage(result.page);
@@ -3727,7 +3733,7 @@ function FavoritesView({
     setVideosError(null);
     const cacheKey = source === "watchLater" ? "watch-later" : `history:${page}`;
     const cacheable = source === "watchLater" || page === 1;
-    const cached = !append && cacheable ? readLibraryCache<FavoriteResourcePage>(cacheKey) : null;
+    const cached = !append && cacheable ? cache.read<FavoriteResourcePage>(cacheKey) : null;
     if (cached) {
       setVideos(cached.value.items);
       setVideosPage(cached.value.page);
@@ -3738,7 +3744,7 @@ function FavoritesView({
     }
     try {
       const fetchPage = () => (source === "watchLater" ? listWatchLater() : listHistory(page));
-      const result = cacheable ? await fillLibraryCache(cacheKey, fetchPage) : await fetchPage();
+      const result = cacheable ? await cache.fill(cacheKey, fetchPage) : await cache.scoped(fetchPage);
       if (videosEpoch.current !== epoch) return;
       setVideos((current) => (append ? [...current, ...result.items] : result.items));
       setVideosPage(result.page);
@@ -3764,7 +3770,7 @@ function FavoritesView({
     setSearchLoading(true);
     if (!append) setSearchItems((current) => current ?? []);
     try {
-      const result = await searchResources(folderId, keyword, page);
+      const result = await cache.scoped(() => searchResources(folderId, keyword, page));
       if (searchEpoch.current !== epoch) return;
       setSearchItems((current) => (append && current ? [...current, ...result.items] : result.items));
       setSearchPage(result.page);
@@ -4846,6 +4852,10 @@ export function AppSurface({
   const [bilibiliAuth, setBilibiliAuth] = useState<BilibiliAuthStatus | null>(null);
   const [bilibiliAuthError, setBilibiliAuthError] = useState<string | null>(null);
   const [bilibiliAuthBusy, setBilibiliAuthBusy] = useState(false);
+  const libraryCache = useRef(new LibraryCache(recordUiState));
+  const [libraryEpoch, setLibraryEpoch] = useState(0);
+  const authEpoch = useRef(0);
+  const authChanging = useRef(false);
   const relayWorker = useRef<RelayWorkerClient | null>(null);
   const windowClosing = useRef(false);
   const playbackFlow = useRef<PlaybackFlow | null>(null);
@@ -4912,15 +4922,24 @@ export function AppSurface({
     if (!bilibiliAuthenticated) return;
     const timer = setTimeout(() => {
       const worker = getRelayWorker();
-      primeLibraryCache("folders", () => worker.listFavoriteFolders());
-      primeLibraryCache("watch-later", () => worker.listWatchLater());
-      primeLibraryCache("history:1", () => worker.listHistory(1));
+      libraryCache.current.prime("folders", () => worker.listFavoriteFolders());
+      libraryCache.current.prime("watch-later", () => worker.listWatchLater());
+      libraryCache.current.prime("history:1", () => worker.listHistory(1));
     }, 1200);
     return () => clearTimeout(timer);
-  }, [bilibiliAuthenticated]);
+  }, [bilibiliAuthenticated, libraryEpoch]);
 
   const getRelayWorker = () => {
-    relayWorker.current ??= new RelayWorkerClient();
+    if (!relayWorker.current) {
+      relayWorker.current = new RelayWorkerClient();
+      relayWorker.current.onGenerationEnded(() => {
+        ++authEpoch.current;
+        authChanging.current = false;
+        setLibraryEpoch(libraryCache.current.setScope(null, true));
+        setBilibiliAuth(null);
+        setBilibiliAuthBusy(false);
+      });
+    }
     playbackFlow.current ??= new PlaybackFlow(relayWorker.current, (error) => {
       setRelayStatus(null);
       appliedPlaybackOptions.current = null;
@@ -5060,7 +5079,11 @@ export function AppSurface({
     }
   };
 
-  const applyBilibiliAuth = (next: BilibiliAuthStatus) => {
+  const applyBilibiliAuth = (next: BilibiliAuthStatus, generation: number) => {
+    if (!getRelayWorker().isGenerationCurrent(generation)) return;
+    const scope = next.stage === "authenticated" && next.user_id !== undefined
+      ? `${generation}:${next.user_id}` : null;
+    setLibraryEpoch(libraryCache.current.setScope(scope));
     setBilibiliAuth((current) => {
       if (next.qr || current?.login_id !== next.login_id) return next;
       const qr = current?.qr;
@@ -5069,40 +5092,57 @@ export function AppSurface({
   };
 
   const refreshBilibiliAuth = async () => {
+    if (authChanging.current || windowClosing.current) return;
+    const epoch = authEpoch.current;
     setBilibiliAuthError(null);
     try {
-      applyBilibiliAuth(await getRelayWorker().bilibiliAuthStatus());
+      const worker = getRelayWorker();
+      const generation = await worker.ready();
+      const next = await worker.bilibiliAuthStatus();
+      if (authEpoch.current === epoch) applyBilibiliAuth(next, generation);
     } catch (error) {
-      setBilibiliAuthError(relayErrorMessage(error));
+      if (authEpoch.current === epoch) setBilibiliAuthError(relayErrorMessage(error));
     }
   };
 
-  const beginBilibiliLogin = async () => {
-    if (bilibiliAuthBusy) return;
+  const changeAuthentication = async (action: "login" | "logout") => {
+    if (authChanging.current || windowClosing.current) return;
+    authChanging.current = true;
+    const epoch = ++authEpoch.current;
+    // Revoke cached and visible data BEFORE dispatching the auth mutation.
+    setLibraryEpoch(libraryCache.current.setScope(null, true));
+    setBilibiliAuth(null);
     setBilibiliAuthBusy(true);
     setBilibiliAuthError(null);
+    const worker = getRelayWorker();
+    let generation: number | undefined;
     try {
-      applyBilibiliAuth(await getRelayWorker().beginBilibiliLogin());
+      generation = await worker.ready();
+      if (epoch !== authEpoch.current) return;
+      const next = action === "login" ? await worker.beginBilibiliLogin() : await worker.logoutBilibili();
+      if (epoch !== authEpoch.current) return;
+      applyBilibiliAuth(next, generation);
+      if (action === "logout") changeBilibiliAccessMode("guest");
     } catch (error) {
+      if (epoch !== authEpoch.current) return;
       setBilibiliAuthError(relayErrorMessage(error));
+      // The mutation can fail before credentials change. Observe that fact;
+      // do not restore an old UI snapshot or retry the mutation itself.
+      if (generation !== undefined && worker.isGenerationCurrent(generation)) {
+        try {
+          const next = await worker.bilibiliAuthStatus();
+          if (epoch === authEpoch.current) applyBilibiliAuth(next, generation);
+        } catch { /* scope remains revoked */ }
+      }
     } finally {
-      setBilibiliAuthBusy(false);
+      if (epoch === authEpoch.current) {
+        authChanging.current = false;
+        setBilibiliAuthBusy(false);
+      }
     }
   };
-
-  const logoutBilibili = async () => {
-    if (bilibiliAuthBusy) return;
-    setBilibiliAuthBusy(true);
-    setBilibiliAuthError(null);
-    try {
-      applyBilibiliAuth(await getRelayWorker().logoutBilibili());
-      changeBilibiliAccessMode("guest");
-    } catch (error) {
-      setBilibiliAuthError(relayErrorMessage(error));
-    } finally {
-      setBilibiliAuthBusy(false);
-    }
-  };
+  const beginBilibiliLogin = () => changeAuthentication("login");
+  const logoutBilibili = () => changeAuthentication("logout");
 
   const installFfmpeg = async () => {
     setMediaError(null);
@@ -5181,23 +5221,28 @@ export function AppSurface({
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const loginId = bilibiliAuth.login_id;
+    const epoch = authEpoch.current;
     const poll = async () => {
       try {
-        const next = await getRelayWorker().pollBilibiliLogin(loginId);
-        if (cancelled) return;
+        const worker = getRelayWorker();
+        const generation = await worker.ready();
+        if (cancelled || epoch !== authEpoch.current) return;
+        const next = await worker.pollBilibiliLogin(loginId);
+        if (cancelled || epoch !== authEpoch.current || !worker.isGenerationCurrent(generation)) return;
         setBilibiliAuthError(null);
-        applyBilibiliAuth(next);
+        applyBilibiliAuth(next, generation);
         if (next.stage === "waiting" || next.stage === "scanned") {
           timer = setTimeout(poll, 1400);
         }
       } catch (error) {
-        if (cancelled) return;
+        if (cancelled || epoch !== authEpoch.current) return;
         setBilibiliAuthError(relayErrorMessage(error));
         if (
           error instanceof RelayWorkerError &&
           error.code === "bilibili_login_session_not_found"
         ) {
-          applyBilibiliAuth({ stage: "expired", persistence: "none" });
+          setLibraryEpoch(libraryCache.current.setScope(null));
+          setBilibiliAuth({ stage: "expired", persistence: "none" });
           return;
         }
         timer = setTimeout(poll, 2500);
@@ -6015,6 +6060,8 @@ export function AppSurface({
       ) : scene === "favorites" ? (
         <MotionFade key="favorites" instant style={{ flexGrow: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
           <FavoritesView
+            key={`${libraryEpoch}:${librarySource}`}
+            cache={libraryCache.current}
             palette={palette}
             authenticated={bilibiliAuth?.stage === "authenticated"}
             displayName={bilibiliAuth?.display_name ?? null}
