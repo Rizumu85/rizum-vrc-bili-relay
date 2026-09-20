@@ -1,0 +1,80 @@
+name: ASS clock repair review
+on:
+  push:
+    branches: [fix/ass-clock-binding]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ass-clock-review-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  apply-reviewed-patch:
+    if: github.ref == 'refs/heads/fix/ass-clock-binding'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      revision: ${{ steps.revision.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply exact baseline-checked source changes on repair branch only
+        shell: bash
+        run: |
+          if ! grep -q 'ass_binding(source_start_seconds)' crates/relay-core/src/ffmpeg.rs; then
+            python tools/apply-ass-clock-repair.py
+            git diff --check
+            git add crates/relay-core/src/danmaku.rs crates/relay-core/src/ffmpeg.rs crates/relay-core/src/media_measurements.rs crates/relay-core/src/lib.rs
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'fix: bind immutable ASS origins to each media producer' -m 'AI-assisted change. Share the resource/producer clock conversion across initial playback, resume and both session/rate rollback paths. No UI, codec or transport parameter changes.'
+            git push origin HEAD:refs/heads/fix/ass-clock-binding
+          fi
+      - id: revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+  measure:
+    needs: apply-reviewed-patch
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.apply-reviewed-patch.outputs.revision }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install dependencies and type check
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+      - name: Prepare Linux FFmpeg
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+      - name: Prepare verified Windows measurement FFmpeg
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tools/prepare-media-measurements.ps1
+      - name: Build actual media observation helper
+        run: cargo build --locked --release -p relay-core --features media-measurements --example media-measurements
+      - name: Measure existing media pipeline
+        run: bun run benchmarks/media-pipeline.bench.ts
+      - name: Measure session rollback, source-clock pixels and resources
+        run: bun run benchmarks/ass-clock.bench.ts
+      - name: Package Windows application
+        if: runner.os == 'Windows'
+        run: bun run package:windows
+      - name: Retain observations and exact revision
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ass-clock-${{ runner.os }}-${{ needs.apply-reviewed-patch.outputs.revision }}
+          path: |
+            artifacts/benchmarks/**/*.json
+            artifacts/benchmarks/**/*.jsonl
+          if-no-files-found: warn
+          retention-days: 30
