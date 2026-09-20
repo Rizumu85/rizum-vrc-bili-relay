@@ -54,20 +54,46 @@ pub(crate) struct DanmakuOverlay {
 }
 
 enum DanmakuOverlayKind {
-    Video { path: PathBuf, event_count: u64 },
+    Video {
+        path: PathBuf,
+        event_count: u64,
+        // Immutable origin used by render_ass. Resource reuse must preserve it.
+        source_origin_seconds: f64,
+    },
     Live(LiveDanmakuOverlay),
 }
 
+/// A subtitle resource bound to one producer's source-clock origin.
+/// ASS event time = source time - source_origin_seconds. This binding belongs
+/// to the borrowed resource, not to a mutable global offset or a UI command.
+pub(crate) struct VideoDanmakuBinding<'a> {
+    pub path: &'a Path,
+    pub source_origin_seconds: f64,
+    pub source_start_seconds: f64,
+}
+
+impl VideoDanmakuBinding<'_> {
+    pub fn offset_seconds(&self) -> f64 {
+        self.source_start_seconds - self.source_origin_seconds
+    }
+}
+
 impl DanmakuOverlay {
-    pub(crate) fn video(path: PathBuf, event_count: u64) -> Self {
+    pub(crate) fn video(path: PathBuf, event_count: u64, source_origin_seconds: f64) -> Self {
         Self {
-            kind: DanmakuOverlayKind::Video { path, event_count },
+            kind: DanmakuOverlayKind::Video { path, event_count, source_origin_seconds },
         }
     }
 
-    pub fn ass_path(&self) -> Option<&Path> {
+    // Deliberately no unbound ass_path accessor: every consumer must supply
+    // its actual producer start, including pause fallback and failed rollback.
+    pub fn ass_binding(&self, source_start_seconds: f64) -> Option<VideoDanmakuBinding<'_>> {
         match &self.kind {
-            DanmakuOverlayKind::Video { path, .. } => Some(path),
+            DanmakuOverlayKind::Video { path, source_origin_seconds, .. } => Some(VideoDanmakuBinding {
+                path,
+                source_origin_seconds: *source_origin_seconds,
+                source_start_seconds,
+            }),
             DanmakuOverlayKind::Live(_) => None,
         }
     }
@@ -227,7 +253,7 @@ impl DanmakuService {
             let _ = fs::remove_file(&path);
         }
         result?;
-        Ok(Some(DanmakuOverlay::video(path, event_count)))
+        Ok(Some(DanmakuOverlay::video(path, event_count, start_seconds)))
     }
 
     fn fetch(

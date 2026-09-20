@@ -10,6 +10,8 @@ mod danmaku_style;
 mod ffmpeg;
 #[cfg(feature = "media-measurements")]
 pub mod media_measurements;
+#[cfg(feature = "media-measurements")]
+mod ass_clock_measurements;
 mod filter_syntax;
 mod live_danmaku_render;
 mod ffmpeg_manager;
