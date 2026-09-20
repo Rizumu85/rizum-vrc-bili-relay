@@ -32,6 +32,8 @@ jobs:
         env:
           VRC_BILI_RELAY_DIAGNOSTICS_DIR: artifacts/benchmarks/media/diagnostics
         run: bun run benchmarks/media-pipeline.bench.ts
+      - name: Measure ASS source-clock alignment through actual rollback
+        run: bun run benchmarks/ass-clock.bench.ts
       - name: Retain numeric observations and bounded logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -41,5 +43,6 @@ jobs:
             artifacts/benchmarks/*.json
             artifacts/benchmarks/media/*.json
             artifacts/benchmarks/media/diagnostics/*.jsonl
+            artifacts/benchmarks/ass-clock/**/diagnostics/*.jsonl
           if-no-files-found: warn
           retention-days: 14

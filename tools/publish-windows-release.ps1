@@ -15,9 +15,10 @@ $archive = Join-Path $PackageDirectory $name
 $checksum = "$archive.sha256"
 $report = Join-Path $MeasurementDirectory 'worker-roundtrip.json'
 $mediaReport = Join-Path $MeasurementDirectory 'media-pipeline.json'
+$assClockReport = Join-Path $MeasurementDirectory 'ass-clock.json'
 $toolchainReport = Join-Path $MeasurementDirectory 'ffmpeg-toolchain.json'
 $notes = "docs/releases/$tag.md"
-foreach ($path in @($archive, $checksum, $report, $mediaReport, $toolchainReport, $notes)) {
+foreach ($path in @($archive, $checksum, $report, $mediaReport, $assClockReport, $toolchainReport, $notes)) {
     if (-not (Test-Path $path -PathType Leaf)) { throw "Missing release input: $path" }
 }
 $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -32,7 +33,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not check the tag namespace.' }
 if (@($tags | Where-Object { $_.ref -eq "refs/tags/$tag" }).Count -gt 0) {
     throw "Tag $tag already exists; refusing an unverified tag."
 }
-gh release create $tag $archive $checksum $report $mediaReport $toolchainReport --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --draft --title "$tag - Media timeline and danmaku" --notes-file $notes
+gh release create $tag $archive $checksum $report $mediaReport $assClockReport $toolchainReport --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --draft --title "$tag - Media timeline and danmaku" --notes-file $notes
 if ($LASTEXITCODE -ne 0) { throw 'Could not create/upload the draft release.' }
 
 # Re-download, verify, and expand the exact uploaded bytes; never rebuild here.

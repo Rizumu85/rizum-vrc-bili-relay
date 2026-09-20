@@ -53,6 +53,8 @@ jobs:
         run: |
           $env:VRC_BILI_RELAY_DIAGNOSTICS_DIR = Join-Path $PWD 'artifacts/benchmarks/media/diagnostics'
           bun run benchmarks/media-pipeline.bench.ts
+      - name: Measure ASS source-clock alignment through actual rollback
+        run: bun run benchmarks/ass-clock.bench.ts
       - name: Record archive checksums
         shell: pwsh
         run: |

@@ -59,7 +59,7 @@ B 站临时媒体地址、FLV、弹幕烧录以及其他需要转码的内容需
 
 复现问题后保留 `%LOCALAPPDATA%\VRC Bili Relay\runtime\diagnostics` 下的 `worker-rpc*.jsonl` 和 `relay-health*.jsonl`，附上操作时间、程序版本和 FFmpeg 版本。日志记录请求与媒体进程的数值信息，不默认保存 Cookie、推流密钥、上游媒体地址或弹幕正文；日志有容量上限，`dropped_records` 表示可能缺失的证据。
 
-通信层与媒体层的根因、观察数据和验证范围分别见 [Worker 审查](./docs/worker-transport-audit.md) 与 [媒体链路审查](./docs/media-pipeline-audit.md)。本地合成媒体基准不是 VRChat/真实服务的端到端验收。
+通信层与媒体层的根因、观察数据和验证范围分别见 [Worker 审查](./docs/worker-transport-audit.md)、[媒体链路审查](./docs/media-pipeline-audit.md) 与 [ASS 回滚时钟审查](./docs/ass-clock-audit.md)。`ass_bound` 记录弹幕生成起点、当前生产进程起点和两者的时间转换。本地合成媒体基准不是 VRChat/真实服务的端到端验收。
 
 ## 从源码运行
 

@@ -18,6 +18,7 @@ pub fn run(args: &[String]) -> Result<Value, String> {
     match args[0].as_str() {
         "pipeline" if args.len() == 5 => pipeline(&args[1], &args[2], &args[3], &args[4]),
         "render" if args.len() == 5 => render(&args[1], &args[2], &args[3], &args[4]),
+        "ass-clock" => crate::ass_clock_measurements::run(&args[1..]),
         _ => Err("Unknown observation mode/arguments".into()),
     }
 }
@@ -140,8 +141,8 @@ fn render(ffmpeg: &str, directory: &str, mode: &str, height: &str) -> Result<Val
     if mode=="vod" {
         let (ass,count)=render_ass(&[event.clone()],&settings,30.0);
         let path=root.join("captions.ass"); fs::write(&path,ass).map_err(|e|e.to_string())?;
-        overlay=Some(DanmakuOverlay::video(path,count));
-        graph=crate::ffmpeg::content_video_filter(overlay.as_ref(),PlaybackRate::Normal,resolution);
+        overlay=Some(DanmakuOverlay::video(path,count,30.0));
+        graph=crate::ffmpeg::content_video_filter(overlay.as_ref(),PlaybackRate::Normal,resolution,30.0);
         graph.push_str(",fps=10");
     } else if mode=="live" {
         let listener=TcpListener::bind("127.0.0.1:0").map_err(|e|e.to_string())?;

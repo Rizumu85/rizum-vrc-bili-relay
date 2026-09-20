@@ -847,19 +847,28 @@ fn spawn_content_producer(
             command.args(["-readrate", &format!("{:.3}", playback_rate.factor()), "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0"]);
         }
     }
-    add_standard_transcode(&mut command, overlay, playback_rate, output_resolution, !input.is_live);
+    add_standard_transcode(&mut command, overlay, playback_rate, output_resolution, !input.is_live, start_seconds);
     if !input.is_live || matches!(&input.audio, MediaAudio::Silence) {
         // Generated/padded audio has no natural EOF. It is subordinate to the
         // real video even when an unknown-duration source is classified live.
         command.args(["-shortest"]);
     }
     add_mpegts_output(&mut command, udp_output, timeline_offset_seconds);
-    ManagedChild::spawn(
+    let producer = ManagedChild::spawn(
         command,
         redactions,
         "ffmpeg_start_failed",
         "FFmpeg media producer",
-    )
+    )?;
+    if let Some(binding) = overlay.and_then(|value| value.ass_binding(start_seconds)) {
+        if let Ok(mut health) = producer.health.lock() {
+            health.values.insert("ass_origin_seconds".into(), binding.source_origin_seconds);
+            health.values.insert("ass_source_start_seconds".into(), binding.source_start_seconds);
+            health.values.insert("ass_offset_seconds".into(), binding.offset_seconds());
+        }
+        producer.record_health("ass_bound");
+    }
+    Ok(producer)
 }
 
 fn spawn_hold_producer(
@@ -923,8 +932,9 @@ fn add_standard_transcode(
     playback_rate: PlaybackRate,
     output_resolution: OutputResolution,
     pad_audio: bool,
+    source_start_seconds: f64,
 ) {
-    let filter = content_video_filter(overlay, playback_rate, output_resolution);
+    let filter = content_video_filter(overlay, playback_rate, output_resolution, source_start_seconds);
     let audio_filter = format!(
         "atempo={:.3},asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0{}",
         playback_rate.factor(), if pad_audio { ",apad" } else { "" }
@@ -935,6 +945,7 @@ fn add_standard_transcode(
 pub(crate) fn content_video_filter(
     overlay: Option<&DanmakuOverlay>, playback_rate: PlaybackRate,
     output_resolution: OutputResolution,
+    source_start_seconds: f64,
 ) -> String {
     let (width, height) = output_resolution.dimensions();
     // Bound by display aspect ratio, not just stored raster dimensions. Both
@@ -944,11 +955,16 @@ pub(crate) fn content_video_filter(
          scale=w='max(2,trunc(min({width},min(iw*sar,{height}*dar))/2)*2)':h='max(2,trunc(ow/dar/2)*2)',\
          setsar=1,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
     );
-    if let Some(path) = overlay.and_then(DanmakuOverlay::ass_path) {
-        filter.push_str(&format!(",ass=filename={}", graph_path(path)));
+    if let Some(binding) = overlay.and_then(|value| value.ass_binding(source_start_seconds)) {
+        // Convert producer-relative frames into this immutable ASS resource's
+        // clock only while rasterizing it, then restore the producer clock.
+        // Rate scaling remains downstream; audio and the bridge are untouched.
+        let offset = binding.offset_seconds();
+        filter.push_str(&format!(",setpts=PTS+({offset:.9})/TB,ass=filename={}", graph_path(binding.path)));
         if let Some(fonts) = crate::danmaku_style::font_directory() {
             filter.push_str(&format!(":fontsdir={}", graph_path(&fonts)));
         }
+        filter.push_str(",setpts=PTS-STARTPTS");
     }
     if let Some(live_filter) = overlay.and_then(DanmakuOverlay::live_filter_graph) {
         filter.push(',');
