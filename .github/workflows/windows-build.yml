@@ -2,7 +2,7 @@ name: Windows build
 
 on:
   push:
-    branches: [main, fix/relay-lifecycle-observability]
+    branches: [main, fix/relay-lifecycle-observability, fix/media-timeline-danmaku]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -43,6 +43,16 @@ jobs:
           $env:VRC_BILI_RELAY_WORKER = Join-Path $PWD 'target/release/relay-worker.exe'
           $env:VRC_BILI_RELAY_DIAGNOSTICS_DIR = Join-Path $PWD 'artifacts/benchmarks/diagnostics'
           bun run benchmarks/worker-roundtrip.bench.ts
+      - name: Prepare verified measurement-only FFmpeg
+        shell: pwsh
+        run: ./tools/prepare-media-measurements.ps1
+      - name: Build isolated media observation helper
+        run: cargo build --locked --release -p relay-core --features media-measurements --example media-measurements
+      - name: Measure actual media processes and rasters
+        shell: pwsh
+        run: |
+          $env:VRC_BILI_RELAY_DIAGNOSTICS_DIR = Join-Path $PWD 'artifacts/benchmarks/media/diagnostics'
+          bun run benchmarks/media-pipeline.bench.ts
       - name: Record archive checksums
         shell: pwsh
         run: |
