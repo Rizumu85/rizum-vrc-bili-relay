@@ -1,0 +1,55 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main, fix/relay-lifecycle-observability]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Record toolchain versions
+        run: |
+          bun --version
+          rustc --version
+          cargo --version
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+      - name: Type check
+        run: bun run typecheck
+      # AGENTS.md permits builds, not functional test suites.
+      - name: Build and package Windows portable application
+        run: bun run package:windows
+      - name: Record archive checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem artifacts/package/*.zip | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)" | Set-Content "$($_.FullName).sha256" -Encoding utf8NoBOM
+          }
+      - name: Upload build artifacts (not a formal Release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable-${{ github.sha }}
+          path: |
+            artifacts/package/*.zip
+            artifacts/package/*.sha256
+          if-no-files-found: error
+          retention-days: 14
