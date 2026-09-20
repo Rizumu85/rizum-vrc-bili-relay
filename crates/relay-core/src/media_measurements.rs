@@ -99,6 +99,23 @@ fn pipeline(ffmpeg: &str, av: &str, silent: &str, ingest: &str) -> Result<Value,
         process.switch_content(&silent_source,11.0,None,PlaybackRate::Normal).map_err(|e|e.message)?;
         let state=pump(&mut process,&silent_source,2.8)?;
         rows.push(snapshot(&process,"natural_completion",started,Some(&state)));
+        // Finite bytes standing in for a live source: its synthetic audio
+        // must not keep the process alive after the real video reaches EOF.
+        let mut live_silent = silent_source.clone();
+        live_silent.is_live = true;
+        let started = Instant::now();
+        process.switch_content(&live_silent,0.0,None,PlaybackRate::Normal).map_err(|e|e.message)?;
+        let mut outcome = "observation_deadline";
+        while started.elapsed() < Duration::from_secs(20) {
+            match process.poll(&live_silent,None).map_err(|e|e.message)? {
+                ProcessPoll::Exited { success, source_exit, .. } => {
+          outcome = if success && source_exit { "source_eof" } else { "unexpected_exit" };
+          break;
+                }
+                _ => thread::sleep(Duration::from_millis(80)),
+            }
+        }
+        rows.push(snapshot(&process,"live_video_only_eof",started,Some(outcome)));
         Ok(())
     })();
     let started=Instant::now(); process.stop();

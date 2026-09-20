@@ -49,6 +49,12 @@ impl Progress {
             "udp_overrun"
         } else if line.contains("corrupt") || line.contains("error while decoding") {
             "corrupt_or_decode"
+        } else if line.contains("not a runtime option") {
+            "filter_runtime_option"
+        } else if line.contains("failed to process command") {
+            "filter_command"
+        } else if line.contains("no such filter") || line.contains("error parsing") {
+            "filter_parse"
         } else if line.contains("broken pipe")
             || line.contains("connection reset")
             || line.contains("error writing")

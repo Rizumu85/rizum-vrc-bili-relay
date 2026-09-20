@@ -848,9 +848,9 @@ fn spawn_content_producer(
         }
     }
     add_standard_transcode(&mut command, overlay, playback_rate, output_resolution, !input.is_live);
-    if !input.is_live {
-        // Audio is padded to video EOF; silence must never keep a VOD producer
-        // alive forever. The video stream owns the content lifetime.
+    if !input.is_live || matches!(&input.audio, MediaAudio::Silence) {
+        // Generated/padded audio has no natural EOF. It is subordinate to the
+        // real video even when an unknown-duration source is classified live.
         command.args(["-shortest"]);
     }
     add_mpegts_output(&mut command, udp_output, timeline_offset_seconds);
