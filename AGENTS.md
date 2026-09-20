@@ -48,3 +48,12 @@ This repository is the released GPUIX + Rust implementation of VRC Bili Relay.
 - All visible text must set an explicit color because GPUI does not inherit text color.
 - Give every `<text>` exactly one child: GPUIX renders each JSX child of a `<text>` as its own line, so `{count} 个视频` paints two lines. Compose mixed content into a single template string first (`` {`${count} 个视频`} ``).
 - GPUIX `<img>` loads local file paths only, not remote URLs; route remote images through the Rust cover cache (`fetch_favorite_covers`) instead of hotlinking.
+
+## Root-cause debugging
+
+- Trace a bug through the complete owning workflow: inputs, state transitions, process/resource ownership, failure/rollback paths, and the UI/core boundary. Prefer restoring a shared invariant over adding per-screen or per-source exceptions.
+- Separate observations from hypotheses. Preserve actual measurements, logs, commands, version/platform context, and the reasoning for accepting or rejecting a proposed cause. Do not change timeout constants or timestamp math solely on a plausible guess.
+- Instrument missing evidence with bounded local diagnostics before speculative restructuring. Record correlation ids, process generations, queue versus execution time, and explicit outcomes; never record cookies, stream keys, upstream media URLs, or raw command payloads by default.
+- Keep each patch coherent. Check affected callers and failure paths together; do not duplicate state ownership or introduce concurrent mutable core access to hide a blocking operation.
+- Review permitted benchmark measurements and build/type-check results before publication. Do not equate a green build with verified VRChat/Bilibili/VRCDN end-to-end behavior, and do not claim checks that were not performed.
+- Document remaining uncertainty and operational tradeoffs. See `docs/worker-transport-audit.md` for the current transport invariants, evidence collection, and verification limits.

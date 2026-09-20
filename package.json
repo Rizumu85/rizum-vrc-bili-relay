@@ -1,6 +1,6 @@
 {
   "name": "vrc-bili-relay",
-  "version": "0.1.27",
+  "version": "0.1.28",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,7 +12,8 @@
     "build:worker": "cargo build --release --bin relay-worker",
     "build:ui": "bun run tools/build-ui.ts",
     "typecheck": "tsc --noEmit",
-    "bench": "bun run benchmarks/render.bench.tsx"
+    "bench": "bun run benchmarks/render.bench.tsx",
+    "bench:worker": "bun run benchmarks/worker-roundtrip.bench.ts"
   },
   "dependencies": {
     "@gpuix/native": "file:vendor/gpuix-native",

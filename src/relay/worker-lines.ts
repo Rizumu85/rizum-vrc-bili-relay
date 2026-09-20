@@ -1,7 +1,8 @@
 import { RelayWorkerError } from "./worker-rpc";
 
-/** Read NDJSON without buffering a process's entire output or an unlimited line.
- * Protocol frames are strict; diagnostic frames may be dropped, never fatal.
+/** Bounded NDJSON framing. Protocol overflow is fatal; diagnostic overflow is
+ * discarded through the newline. A byte buffer also bounds overhead when the
+ * underlying stream delivers many tiny chunks instead of whole lines.
  */
 export async function readWorkerLines(
   stream: ReadableStream<Uint8Array>,
@@ -11,17 +12,16 @@ export async function readWorkerLines(
 ): Promise<void> {
   const reader = stream.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: !onDropped });
-  let parts: Uint8Array[] = [];
+  let buffer = new Uint8Array(Math.min(limit, 4096));
   let length = 0;
   let dropped = 0;
   const finish = () => {
     if (dropped) {
       onDropped?.(dropped);
     } else if (length) {
-      const line = decoder.decode(Buffer.concat(parts, length)).trim();
+      const line = decoder.decode(buffer.subarray(0, length)).trim();
       if (line) onLine(line);
     }
-    parts = [];
     length = 0;
     dropped = 0;
   };
@@ -38,10 +38,13 @@ export async function readWorkerLines(
           if (!onDropped) throw new RelayWorkerError("invalid_response", "Worker response exceeds the frame limit");
           dropped += length + bytes;
           length = 0;
-          parts = [];
         } else if (bytes) {
-          // Copy only the retained bytes, not an otherwise consumed big chunk.
-          parts.push(value.slice(start, end));
+          if (length + bytes > buffer.length) {
+            const grown = new Uint8Array(Math.min(limit, Math.max(buffer.length * 2, length + bytes)));
+            grown.set(buffer.subarray(0, length));
+            buffer = grown;
+          }
+          buffer.set(value.subarray(start, end), length);
           length += bytes;
         }
         if (newline >= 0) finish();
