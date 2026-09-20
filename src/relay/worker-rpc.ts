@@ -16,6 +16,16 @@ export interface RpcMeasurement {
   elapsed_ms?: number;
   bytes?: number;
   code?: string;
+  operation_id?: number;
+  lease_id?: number;
+  scope_epoch?: number;
+  settings_revision?: number;
+  active?: number;
+  paused?: number;
+  restored?: number;
+  accepted_count?: number;
+  failed_count?: number;
+  attempt?: number;
 }
 
 // This scheduler knows the wire contract, not Bun processes or product rules.

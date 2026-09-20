@@ -42,6 +42,8 @@ import {
 import { RelayWorkerClient, RelayWorkerError, type FavoriteResourcePage } from "./relay/worker-client";
 import { fillLibraryCache, primeLibraryCache, readLibraryCache } from "./relay/library-cache";
 import { relayFailureMessage } from "./relay/status-message";
+import { PlaybackFlow, PlaybackFailure, PlaybackSuperseded, hasActivePublisher } from "./relay/playback-flow";
+import { recordUiState } from "./relay/worker-diagnostics";
 import { queryElementBounds, queryWindowSize } from "./platform/gpuix-geometry";
 import {
   beginProductWindowDrag,
@@ -2491,12 +2493,6 @@ function routeDescription(source: SourceResolution): string {
   }
 }
 
-function hasActivePublisher(relay: RelayStatus | null | undefined): boolean {
-  return relay?.stage === "starting"
-    || relay?.stage === "running"
-    || relay?.stage === "draining";
-}
-
 function SectionHeading({
   title,
   subtitle,
@@ -4852,8 +4848,7 @@ export function AppSurface({
   const [bilibiliAuthBusy, setBilibiliAuthBusy] = useState(false);
   const relayWorker = useRef<RelayWorkerClient | null>(null);
   const windowClosing = useRef(false);
-  const conversionEpoch = useRef(0);
-  const playbackEpoch = useRef(0);
+  const playbackFlow = useRef<PlaybackFlow | null>(null);
   const completionActionSession = useRef<string | null>(null);
   const appliedPlaybackOptions = useRef<string | null>(null);
   const sceneBeforeConversion = useRef<Scene>(initialScene);
@@ -4926,7 +4921,27 @@ export function AppSurface({
 
   const getRelayWorker = () => {
     relayWorker.current ??= new RelayWorkerClient();
+    playbackFlow.current ??= new PlaybackFlow(relayWorker.current, (error) => {
+      setRelayStatus(null);
+      appliedPlaybackOptions.current = null;
+      if (error) {
+        setPlaybackToggling(false);
+        setPlaybackUpdating(null);
+        setRelayStopping(false);
+        setPlaybackPaused(false);
+        pendingPausedPosition.current = null;
+        setPlaybackMessage("播放状态已失效，请重新生成地址");
+        setRelayError(relayErrorMessage(error));
+        setConversionError(relayErrorMessage(error));
+        setScene((current) => current === "loading" ? "error" : current);
+      }
+    }, recordUiState);
     return relayWorker.current;
+  };
+
+  const getPlaybackFlow = () => {
+    getRelayWorker();
+    return playbackFlow.current!;
   };
 
   const setPlaybackPosition = (position: number) => {
@@ -5151,8 +5166,7 @@ export function AppSurface({
     }, 0);
     return () => {
       clearTimeout(startup);
-      conversionEpoch.current += 1;
-      playbackEpoch.current += 1;
+      playbackFlow.current?.dispose();
       if (relayWorker.current) void relayWorker.current.close();
     };
   }, []);
@@ -5224,13 +5238,17 @@ export function AppSurface({
   }, [mediaStatus?.availability]);
 
   useEffect(() => {
-    if (!relayStatus || !hasActivePublisher(relayStatus)) return;
+    const ownedStatus = relayStatus ?? playbackFlow.current?.status;
+    if (!ownedStatus || !hasActivePublisher(ownedStatus)
+      || playbackUpdating !== null || playbackToggling || relayStopping) return;
+    const flow = getPlaybackFlow();
+    const epoch = flow.epoch;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const poll = async () => {
       try {
-        const latest = await getRelayWorker().relayStatus(relayStatus.session_id);
-        if (!cancelled) {
+        const latest = await flow.poll();
+        if (!cancelled && latest && flow.epoch === epoch) {
           setRelayStatus(latest);
           setPlaybackPaused(latest.paused);
           const preservePausedSeek = latest.paused && pendingPausedPosition.current !== null;
@@ -5255,12 +5273,12 @@ export function AppSurface({
         }
       }
     };
-    timer = setTimeout(poll, relayStatus.stage === "starting" ? 700 : 2000);
+    timer = setTimeout(poll, ownedStatus.stage === "starting" ? 700 : 2000);
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [relayStatus?.session_id, relayStatus?.stage, seekInteractionActive, playbackUpdating]);
+  }, [relayStatus?.session_id, relayStatus?.stage, seekInteractionActive, playbackUpdating, playbackToggling, relayStopping]);
 
   const convert = async (sourceOverride?: string) => {
     const normalizedSource = (sourceOverride ?? source).trim();
@@ -5268,8 +5286,11 @@ export function AppSurface({
       setScene("idle");
       return;
     }
-    const epoch = ++conversionEpoch.current;
-    playbackEpoch.current += 1;
+    if (windowClosing.current) return;
+    const flow = getPlaybackFlow();
+    const intent = flow.begin("convert");
+    setPlaybackToggling(false);
+    setRelayStopping(false);
     sceneBeforeConversion.current = scene;
     setConversionError("链接无法识别，检查后再试。");
     setRelayError(null);
@@ -5284,12 +5305,11 @@ export function AppSurface({
     setSource(normalizedSource);
     setScene("loading");
     try {
-      if (relayStatus && hasActivePublisher(relayStatus)) {
-        await getRelayWorker().stopRelay(relayStatus.session_id);
-      }
+      await flow.run(intent, async (task) => {
+      await task.stop();
       setRelayStatus(null);
-      const resolution = await getRelayWorker().resolveSource(normalizedSource);
-      if (conversionEpoch.current !== epoch) return;
+      const resolution = await task.resolve(normalizedSource);
+      if (!flow.isCurrent(intent)) return;
       setSource(resolution.canonical_url);
       setSourceResolution(resolution);
       if (resolution.selected_part) setPart(String(resolution.selected_part));
@@ -5302,7 +5322,7 @@ export function AppSurface({
         const runtimeSettings = settingsReady
           ? productSettings
           : await refreshProductSettings();
-        if (conversionEpoch.current !== epoch) return;
+        if (!flow.isCurrent(intent)) return;
         if (!relaySettingsReady(runtimeSettings)) {
           setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
           setPlaybackToggling(false);
@@ -5310,13 +5330,13 @@ export function AppSurface({
         }
         try {
           const options = currentPlaybackOptions();
-          const started = await getRelayWorker().startRelay(
+          const started = await task.start(
             resolution.session_id,
             options,
             0,
             resolution.kind === "video",
           );
-          if (conversionEpoch.current === epoch) {
+          if (flow.isCurrent(intent)) {
             appliedPlaybackOptions.current = started.paused
               ? null
               : playbackOptionsSignature(options);
@@ -5329,14 +5349,13 @@ export function AppSurface({
               setPlaybackPosition(started.position_seconds);
             }
           }
-        } catch (error) {
-          if (conversionEpoch.current === epoch) setRelayError(relayErrorMessage(error));
         } finally {
-          if (conversionEpoch.current === epoch) setPlaybackToggling(false);
+          if (flow.isCurrent(intent)) setPlaybackToggling(false);
         }
       }
+      });
     } catch (error) {
-      if (conversionEpoch.current !== epoch) return;
+      if (!flow.isCurrent(intent)) return;
       setPlaybackToggling(false);
       setConversionError(relayErrorMessage(error));
       setScene("error");
@@ -5355,7 +5374,7 @@ export function AppSurface({
     const previousResolution = sourceResolution;
     const canRetarget = previousResolution?.kind === "video"
       || (previousResolution?.kind === "live" && update === "danmaku");
-    if (!previousResolution || !canRetarget || playbackUpdating !== null) return false;
+    if (windowClosing.current || !previousResolution || !canRetarget || playbackUpdating !== null) return false;
 
     const isLiveDanmakuUpdate = previousResolution.kind === "live";
     const effectivePart = isLiveDanmakuUpdate ? 1 : requestedPart;
@@ -5364,11 +5383,12 @@ export function AppSurface({
       ? previousResolution.canonical_url
       : sourceUrl ?? previousResolution.canonical_url;
 
-    const epoch = ++playbackEpoch.current;
+    const flow = getPlaybackFlow();
+    const intent = flow.begin("retarget");
     const previousPart = part;
     const previousCollectionItem = collectionItem;
     const previousPosition = playbackPosition;
-    const previousRelay = relayStatus;
+    const previousRelay = flow.status;
     const previousWasActive = hasActivePublisher(previousRelay);
     const previousPendingPosition = pendingPausedPosition.current;
 
@@ -5383,10 +5403,11 @@ export function AppSurface({
     pendingPausedPosition.current = null;
 
     try {
+      return await flow.run(intent, async (task) => {
       const runtimeSettings = settingsReady
         ? productSettings
         : await refreshProductSettings();
-      if (playbackEpoch.current !== epoch) return false;
+      if (!flow.isCurrent(intent)) return false;
       if (!relaySettingsReady(runtimeSettings)) {
         if (previousWasActive) {
           setPart(previousPart);
@@ -5395,11 +5416,11 @@ export function AppSurface({
           setPlaybackMessage("需要先完成 VRCDN 设置");
           return false;
         }
-        const resolution = await getRelayWorker().resolveSource(
+        const resolution = await task.resolve(
           effectiveSource,
           effectivePart,
         );
-        if (playbackEpoch.current !== epoch) return false;
+        if (!flow.isCurrent(intent)) return false;
         setSourceResolution(resolution);
         setSource(resolution.canonical_url);
         setPart(String(resolution.selected_part ?? effectivePart));
@@ -5409,18 +5430,13 @@ export function AppSurface({
         return false;
       }
 
-      const playback = await getRelayWorker().retargetRelay(
-        previousWasActive ? previousRelay?.session_id : undefined,
+      const playback = await task.retarget(
         effectiveSource,
         effectivePart,
         options,
         effectiveStart,
         remainPaused,
       );
-      if (playbackEpoch.current !== epoch) {
-        await getRelayWorker().stopRelay(playback.relay.session_id).catch(() => undefined);
-        return false;
-      }
 
       setSourceResolution(playback.resolution);
       setSource(playback.resolution.canonical_url);
@@ -5435,20 +5451,23 @@ export function AppSurface({
         ? null
         : playbackOptionsSignature(options);
       return true;
+      });
     } catch (error) {
-      if (playbackEpoch.current !== epoch) return false;
+      if (!flow.isCurrent(intent)) return false;
       setPart(previousPart);
       setCollectionItem(previousCollectionItem);
       setPlaybackPosition(previousPosition);
-      const originalRestored = previousWasActive
-        && !(error instanceof RelayWorkerError && error.code === "retarget_restore_failed");
+      const observed = error instanceof PlaybackFailure ? error.confirmedStatus : null;
+      const originalRestored = previousWasActive && hasActivePublisher(observed);
       if (originalRestored) {
-        setRelayStatus(previousRelay);
-        pendingPausedPosition.current = previousPendingPosition;
+        setRelayStatus(observed);
+        setPlaybackPaused(observed!.paused);
+        setPlaybackPosition(observed!.position_seconds ?? previousPosition);
+        pendingPausedPosition.current = observed!.paused ? previousPendingPosition : null;
         setRelayError(null);
         setPlaybackMessage(
-          update === "part"
-            ? "切换失败 · 原内容仍在播放"
+          observed!.paused ? "操作失败 · 已确认原内容处于暂停状态" : update === "part"
+            ? "切换失败 · 已确认原内容仍在播放"
             : update === "seek"
               ? "跳转失败 · 原内容仍在播放"
               : update === "rate"
@@ -5458,7 +5477,8 @@ export function AppSurface({
                 : "播完处理失败 · 结束画面仍会保持",
         );
       } else {
-        setRelayStatus(null);
+        setRelayStatus(observed);
+        setPlaybackPaused(observed?.paused ?? false);
         setRelayError(relayErrorMessage(error));
         setPlaybackMessage(
           update === "part"
@@ -5474,7 +5494,7 @@ export function AppSurface({
       }
       return false;
     } finally {
-      if (playbackEpoch.current === epoch) setPlaybackUpdating(null);
+      if (flow.isCurrent(intent)) setPlaybackUpdating(null);
     }
   };
 
@@ -5527,6 +5547,9 @@ export function AppSurface({
     }
 
     const pauseAtCompletion = async () => {
+      if (windowClosing.current) return;
+      const flow = getPlaybackFlow();
+      const intent = flow.begin("completion");
       setPlaybackToggling(true);
       setPlaybackMessage(null);
       setRelayError(null);
@@ -5534,21 +5557,24 @@ export function AppSurface({
         const completionPosition = relayStatus.position_seconds
           ?? sourceResolution.duration_seconds
           ?? playbackPosition;
-        const updated = await getRelayWorker().setRelayPaused(
+        const updated = await flow.run(intent, (task) => task.pause(
           completionSession,
           true,
           options,
           completionPosition,
-        );
+        ));
+        if (!flow.isCurrent(intent)) return;
         setRelayStatus(updated);
         setPlaybackPosition(updated.position_seconds ?? completionPosition);
         setPlaybackPaused(updated.paused);
         appliedPlaybackOptions.current = null;
       } catch (error) {
+        if (!flow.isCurrent(intent)) return;
+        setRelayStatus(error instanceof PlaybackFailure ? error.confirmedStatus : null);
         setRelayError(relayErrorMessage(error));
-        setPlaybackMessage("播完暂停失败 · 结束画面仍会保持");
+        setPlaybackMessage("播完暂停失败，请查看中继状态");
       } finally {
-        setPlaybackToggling(false);
+        if (flow.isCurrent(intent)) setPlaybackToggling(false);
       }
     };
     void pauseAtCompletion();
@@ -5617,7 +5643,7 @@ export function AppSurface({
   };
 
   const changePlaybackRate = (next: PlaybackRate) => {
-    if (playbackUpdating !== null) return;
+    if (windowClosing.current || playbackUpdating !== null || playbackToggling || relayStopping) return;
     const previous = playbackRateRef.current;
     if (next === previous) return;
     setPlaybackRatePreference(next);
@@ -5632,7 +5658,8 @@ export function AppSurface({
 
     const activeRelay = relayStatus;
     const previousPosition = playbackPosition;
-    const epoch = ++playbackEpoch.current;
+    const flow = getPlaybackFlow();
+    const intent = flow.begin("rate");
     const options = configuredPlaybackOptions(
       danmakuRef.current,
       danmakuSettingsRef.current,
@@ -5645,27 +5672,30 @@ export function AppSurface({
 
     const applyRate = async () => {
       try {
-        const updated = await getRelayWorker().setRelayRate(activeRelay.session_id, options);
-        if (playbackEpoch.current !== epoch) return;
+        const updated = await flow.run(intent, (task) => task.rate(activeRelay.session_id, options));
+        if (!flow.isCurrent(intent)) return;
         setRelayStatus(updated);
         setPlaybackPosition(updated.position_seconds ?? previousPosition);
         setPlaybackPaused(updated.paused);
         appliedPlaybackOptions.current = playbackOptionsSignature(options);
       } catch (error) {
-        if (playbackEpoch.current !== epoch) return;
+        if (!flow.isCurrent(intent)) return;
         setPlaybackRatePreference(previous);
-        const restored = !(error instanceof RelayWorkerError && error.code === "rate_restore_failed");
+        const observed = error instanceof PlaybackFailure ? error.confirmedStatus : null;
+        const restored = hasActivePublisher(observed);
         if (restored) {
-          setRelayStatus(activeRelay);
-          setPlaybackPosition(previousPosition);
-          setPlaybackMessage("倍速切换失败 · 原内容仍在播放");
+          setRelayStatus(observed);
+          setPlaybackPosition(observed!.position_seconds ?? previousPosition);
+          setPlaybackPaused(observed!.paused);
+          setPlaybackMessage(observed!.paused ? "倍速切换失败 · 已确认原内容已暂停" : "倍速切换失败 · 已确认原内容仍在播放");
         } else {
-          setRelayStatus(null);
+          setRelayStatus(observed);
+          setPlaybackPaused(observed?.paused ?? false);
           setRelayError(relayErrorMessage(error));
           setPlaybackMessage("倍速切换失败 · 请重试");
         }
       } finally {
-        if (playbackEpoch.current === epoch) setPlaybackUpdating(null);
+        if (flow.isCurrent(intent)) setPlaybackUpdating(null);
       }
     };
     void applyRate();
@@ -5690,22 +5720,30 @@ export function AppSurface({
   };
 
   const stopRelay = async () => {
-    if (!relayStatus || relayStopping) return;
+    if (windowClosing.current || relayStopping) return;
+    const flow = getPlaybackFlow();
+    const intent = flow.begin("stop");
     setRelayStopping(true);
+    setPlaybackToggling(false);
+    setPlaybackUpdating(null);
     setPlaybackMessage(null);
     try {
-      const stopped = await getRelayWorker().stopRelay(relayStatus.session_id);
+      const stopped = await flow.run(intent, (task) => task.stop());
+      if (!flow.isCurrent(intent)) return;
       setRelayStatus(stopped);
       setPlaybackPaused(false);
       setRelayError(null);
     } catch (error) {
+      if (!flow.isCurrent(intent)) return;
+      setRelayStatus(error instanceof PlaybackFailure ? error.confirmedStatus : null);
       setRelayError(relayErrorMessage(error));
     } finally {
-      setRelayStopping(false);
+      if (flow.isCurrent(intent)) setRelayStopping(false);
     }
   };
 
   const togglePlayback = async () => {
+    if (windowClosing.current) return;
     if (sourceResolution === null) {
       setPlaybackPaused((current) => !current);
       return;
@@ -5723,10 +5761,13 @@ export function AppSurface({
       return;
     }
 
+    const flow = getPlaybackFlow();
+    const intent = flow.begin("pause");
     setPlaybackToggling(true);
     setPlaybackMessage(null);
     setRelayError(null);
     try {
+      await flow.run(intent, async (task) => {
       const active = relayStatus?.stage === "running";
       if (active && relayStatus) {
         const nextPaused = !relayStatus.paused;
@@ -5743,7 +5784,7 @@ export function AppSurface({
           && selectedPosition >= selectedDuration - 1
             ? 0
             : selectedPosition;
-        const updated = await getRelayWorker().setRelayPaused(
+        const updated = await task.pause(
           relayStatus.session_id,
           nextPaused,
           options,
@@ -5761,7 +5802,7 @@ export function AppSurface({
       if (!playbackPaused || !sourceResolution.session_id) return;
       const options = currentPlaybackOptions();
       const requestedPosition = pendingPausedPosition.current ?? playbackPositionRef.current;
-      const started = await getRelayWorker().startRelay(
+      const started = await task.start(
         sourceResolution.session_id,
         options,
         requestedPosition,
@@ -5772,16 +5813,23 @@ export function AppSurface({
       setRelayStatus(started);
       if (started.position_seconds !== undefined) setPlaybackPosition(started.position_seconds);
       setPlaybackPaused(false);
+      });
     } catch (error) {
+      if (!flow.isCurrent(intent)) return;
+      const observed = error instanceof PlaybackFailure ? error.confirmedStatus : null;
+      setRelayStatus(observed);
+      setPlaybackPaused(observed?.paused ?? false);
       setRelayError(relayErrorMessage(error));
       setPlaybackMessage(playbackPaused ? "继续播放失败" : "暂停失败");
     } finally {
-      setPlaybackToggling(false);
+      if (flow.isCurrent(intent)) setPlaybackToggling(false);
     }
   };
 
   const cancelConversion = () => {
-    conversionEpoch.current += 1;
+    getPlaybackFlow().cancel();
+    setPlaybackToggling(false);
+    setPlaybackUpdating(null);
     const previous = sceneBeforeConversion.current;
     const fallback = sourceResolution ? "ready-vod" : "idle";
     setScene(
@@ -5793,20 +5841,22 @@ export function AppSurface({
 
   const resumePreparedRelay = async () => {
     const resolution = sourceResolution;
-    if (!resolution?.session_id) return;
-    const epoch = ++conversionEpoch.current;
+    if (windowClosing.current || !resolution?.session_id) return;
+    const sessionId = resolution.session_id;
+    const flow = getPlaybackFlow();
+    const intent = flow.begin("resume");
     const options = currentPlaybackOptions();
     setRelayStatus(null);
     setRelayError(null);
     setPlaybackMessage("正在继续生成地址");
     try {
-      const started = await getRelayWorker().startRelay(
-        resolution.session_id,
+      const started = await flow.run(intent, (task) => task.start(
+        sessionId,
         options,
         pendingPausedPosition.current ?? playbackPositionRef.current,
         resolution.kind === "video",
-      );
-      if (conversionEpoch.current !== epoch) return;
+      ));
+      if (!flow.isCurrent(intent)) return;
       appliedPlaybackOptions.current = started.paused
         ? null
         : playbackOptionsSignature(options);
@@ -5815,9 +5865,9 @@ export function AppSurface({
       if (started.position_seconds !== undefined) setPlaybackPosition(started.position_seconds);
       pendingPausedPosition.current = null;
     } catch (error) {
-      if (conversionEpoch.current === epoch) setRelayError(relayErrorMessage(error));
+      if (flow.isCurrent(intent)) setRelayError(relayErrorMessage(error));
     } finally {
-      if (conversionEpoch.current === epoch) setPlaybackMessage(null);
+      if (flow.isCurrent(intent)) setPlaybackMessage(null);
     }
   };
 
@@ -6000,7 +6050,7 @@ export function AppSurface({
               icon="play"
               iconColor={palette.accentTeal}
               onClick={() => void convert()}
-              disabled={!source.trim() || scene === "loading" || playbackUpdating !== null}
+              disabled={!source.trim() || scene === "loading" || playbackUpdating !== null || playbackToggling || relayStopping}
               testId="convert-source"
             />
             {scene === "loading" ? (
@@ -6082,6 +6132,8 @@ export function AppSurface({
 }
 
 function relayErrorMessage(error: unknown): string {
+  if (error instanceof PlaybackFailure) return relayErrorMessage(error.original);
+  if (error instanceof PlaybackSuperseded) return "操作已由新的播放请求替代";
   if (!(error instanceof RelayWorkerError)) return "暂时无法读取链接，请稍后再试。";
   switch (error.code) {
     case "empty_source":

@@ -28,7 +28,7 @@ export function recordWorkerRpc(context: Context, measurement: RpcMeasurement): 
     worker_pid: context.worker_pid, generation: context.generation,
     event: label(measurement.event), dropped_records: dropped,
   };
-  for (const key of ["request_id", "queue_depth", "queue_ms", "elapsed_ms", "bytes"] as const) {
+  for (const key of ["request_id", "queue_depth", "queue_ms", "elapsed_ms", "bytes", "operation_id", "lease_id", "scope_epoch", "settings_revision", "active", "paused", "restored", "accepted_count", "failed_count", "attempt"] as const) {
     const value = measurement[key];
     if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
       entry[key] = Math.round(value * 1000) / 1000;
@@ -105,4 +105,10 @@ async function drain(): Promise<void> {
       throw error;
     }
   }
+}
+
+/** Local numeric UI evidence shares the bounded writer with transport records.
+ * No account IDs, input values, URLs or arbitrary objects are serialized. */
+export function recordUiState(event: string, values: Record<string, number> = {}): void {
+  recordWorkerRpc({ generation: values.generation ?? 0, worker_pid: 0 }, { ...values, event });
 }
