@@ -69,9 +69,10 @@ jobs:
           retention-days: 30
 
   publish-release:
-    # Only an intentional stable release commit on main may publish. PR and
-    # development builds are read-only and cannot obtain this job's token.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'release: v')
+    # A block scalar keeps the colon in the release prefix out of YAML syntax.
+    # Only intentional main-branch release commits receive this job's token.
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'release: v')
     needs: windows-build
     runs-on: windows-latest
     timeout-minutes: 10
