@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory() as directory:
         patch.write_text(part['patch'], encoding='utf-8')
         git('apply', '--check', str(patch))
         git('apply', str(patch))
-        git('add', '--', *data['baseline'].keys())
+        git('add', '--', *(path for path in data['baseline'] if Path(path).exists()))
         git('commit', '-m', part['message'])
         print(git('log', '-1', '--oneline'))
 subprocess.run(['git', 'push', 'origin', 'HEAD:refs/heads/' + BRANCH], check=True)
