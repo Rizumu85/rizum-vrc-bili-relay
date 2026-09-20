@@ -41,6 +41,7 @@ import {
 } from "./relay/protocol";
 import { RelayWorkerClient, RelayWorkerError, type FavoriteResourcePage } from "./relay/worker-client";
 import { LibraryCache } from "./relay/library-cache";
+import { CoverLoader } from "./relay/cover-loader";
 import { relayFailureMessage } from "./relay/status-message";
 import { PlaybackFlow, PlaybackFailure, PlaybackSuperseded, hasActivePublisher } from "./relay/playback-flow";
 import { recordUiState } from "./relay/worker-diagnostics";
@@ -3622,32 +3623,27 @@ function FavoritesView({
 
   const searching = searchItems !== null;
 
-  // Covers arrive after the text rows: ask the worker to cache any missing
-  // cover locally, then swap the placeholder for the cached file. Search
-  // results render above any level, including the folder list.
+  const fetchCoversRef = useRef(fetchCovers);
+  fetchCoversRef.current = fetchCovers;
+  const coverLoader = useRef<CoverLoader | null>(null);
+  useEffect(() => {
+    const loader = new CoverLoader(
+      (urls) => cache.scoped(() => fetchCoversRef.current(urls)),
+      (fetched) => setCovers((current) => {
+        const next = new Map(current);
+        for (const cover of fetched) next.set(cover.url, cover.path);
+        while (next.size > 600) next.delete(next.keys().next().value!);
+        return next;
+      }),
+      recordUiState,
+    );
+    coverLoader.current = loader;
+    return () => { loader.dispose(); coverLoader.current = null; };
+  }, [cache]);
   useEffect(() => {
     const items = searching ? (searchItems ?? []) : level.kind === "folders" ? [] : videos;
-    const missing = items
-      .map((item) => item.cover_url)
-      .filter((url) => url && !covers.has(url));
-    if (missing.length === 0) return;
-    // Decode covers in small batches. Loading every watch-later thumbnail at
-    // once makes the native renderer compete with the scroll surface during
-    // the first interaction; the effect picks up the next batch after the
-    // current batch is installed in the cache.
-    const batch = missing.slice(0, 8);
-    const epoch = ++coversEpoch.current;
-    void fetchCovers(batch)
-      .then((fetched) => {
-        if (coversEpoch.current !== epoch || fetched.length === 0) return;
-        setCovers((current) => {
-          const next = new Map(current);
-          for (const cover of fetched) next.set(cover.url, cover.path);
-          return next;
-        });
-      })
-      .catch(() => undefined);
-  }, [level, searching, videos, searchItems, covers]);
+    coverLoader.current?.setUrls(items.map((item) => item.cover_url));
+  }, [level, searching, videos, searchItems]);
 
   const loadFolders = async () => {
     const epoch = ++foldersEpoch.current;
