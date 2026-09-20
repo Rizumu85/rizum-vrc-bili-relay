@@ -1,0 +1,42 @@
+name: Media measurements
+
+on:
+  push:
+    branches: [fix/media-timeline-danmaku]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: media-measurements-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record exact source revision
+        run: git rev-parse HEAD > SOURCE-REVISION.txt
+      - name: Retain review sources (no fonts, credentials, or executables)
+        uses: actions/upload-artifact@v4
+        with:
+          name: media-review-source-${{ github.sha }}
+          path: |
+            crates/
+            src/
+            tools/
+            benchmarks/
+            docs/
+            Cargo.toml
+            Cargo.lock
+            package.json
+            tsconfig.json
+            AGENTS.md
+            SOURCE-REVISION.txt
+          if-no-files-found: error
+          retention-days: 7
