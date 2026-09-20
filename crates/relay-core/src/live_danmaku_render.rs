@@ -63,8 +63,11 @@ pub(crate) fn reinit_argument(
     // cannot leave a fixed comment visible forever. Rust retains the slot until
     // an explicit clear succeeds; an unknown command outcome is not a free slot.
     let alpha = format!("lt({elapsed},{duration:.3})");
+    // expansion=none belongs to initialization, not to a runtime reinit:
+    // FFmpeg 9 rejects attempts to change non-runtime options. Keep arbitrary
+    // text literal through the policy already installed by filter_graph().
     format!(
-        "text={}:expansion=none:fontsize={}:fontcolor=0x{:06X}@{opacity:.2}:\
+        "text={}:fontsize={}:fontcolor=0x{:06X}@{opacity:.2}:\
          borderw={border_width}:bordercolor=0x101010@{opacity:.2}:\
          shadowcolor=0x101010@{shadow_opacity:.2}:shadowx={shadow}:shadowy={shadow}:\
          x={}:y={}:alpha={}",
