@@ -1,0 +1,32 @@
+name: UI review source snapshot
+on:
+  push:
+    branches: [fix/ui-state-ownership]
+    paths: [.github/workflows/ui-review-source.yml]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - name: Retain exact sources and offline TypeScript tools
+        run: |
+          mkdir -p review-offline
+          git rev-parse HEAD > review-offline/revision.txt
+          tar czf review-offline/source.tar.gz src crates tools benchmarks docs .github package.json tsconfig.json Cargo.toml Cargo.lock bun.lock AGENTS.md README.md
+          tar czf review-offline/typescript-dependencies.tar.gz --exclude='*.node' --exclude='*.dll' node_modules vendor/gpuix-react vendor/gpuix-native/package.json
+          cp "$(command -v bun)" review-offline/bun-linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-review-offline-${{ github.sha }}
+          path: review-offline/
+          retention-days: 7
+          if-no-files-found: error
