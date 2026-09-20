@@ -1,0 +1,45 @@
+name: Media measurements
+
+on:
+  push:
+    branches: [main, fix/media-timeline-danmaku]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: media-measurements-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  linux-media:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Prepare local FFmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
+          rustc --version
+      - name: Build observation helper (no functional test runner)
+        run: cargo build --locked --release -p relay-core --features media-measurements --example media-measurements
+      - name: Measure synthetic local media
+        env:
+          VRC_BILI_RELAY_DIAGNOSTICS_DIR: artifacts/benchmarks/media/diagnostics
+        run: bun run benchmarks/media-pipeline.bench.ts
+      - name: Retain numeric observations and bounded logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-media-measurements-${{ github.sha }}
+          path: |
+            artifacts/benchmarks/*.json
+            artifacts/benchmarks/media/*.json
+            artifacts/benchmarks/media/diagnostics/*.jsonl
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,11 +1,10 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::net::UdpSocket;
-use std::path::Path;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
@@ -23,7 +22,8 @@ use windows_sys::Win32::System::JobObjects::{
 use crate::danmaku::{
     AUDIO_BITRATE_KBPS, DanmakuOverlay, OUTPUT_FPS, OUTPUT_WIDTH, VIDEO_BITRATE_KBPS,
 };
-use crate::{MediaInput, OutputResolution, PlaybackRate, RelayError};
+use crate::{MediaAudio, MediaInput, OutputResolution, PlaybackRate, RelayError};
+use crate::filter_syntax::graph_path;
 
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
@@ -56,6 +56,10 @@ pub(crate) struct FfmpegProcess {
     output_resolution: OutputResolution,
 }
 
+/// A pause command reports its effect so session-owned ASS files are only
+/// replaced when the producer actually changed. Repeating an intent is a no-op.
+pub(crate) enum PauseChange { Unchanged, Paused, Resumed }
+
 pub(crate) enum ProcessPoll {
     Alive {
         stable: bool,
@@ -83,6 +87,8 @@ struct ManagedChild {
     role: &'static str,
     last_health_sample: Instant,
     last_health_output: f64,
+    progress_reader: Option<JoinHandle<()>>,
+    stderr_reader: Option<JoinHandle<()>>,
 }
 
 enum ChildPoll {
@@ -202,7 +208,7 @@ impl FfmpegProcess {
         }
 
         let producer_poll = match self.producer.as_mut() {
-            Some(producer) => producer.poll(false)?,
+            Some(producer) => producer.poll(true)?,
             None => {
                 self.publisher.force_stop();
                 return Ok(ProcessPoll::Exited {
@@ -272,7 +278,7 @@ impl FfmpegProcess {
         requested_start_seconds: f64,
         overlay: Option<&DanmakuOverlay>,
         playback_rate: PlaybackRate,
-    ) -> Result<(), RelayError> {
+    ) -> Result<PauseChange, RelayError> {
         if self.is_live {
             return Err(RelayError::new(
                 "pause_not_supported",
@@ -280,7 +286,7 @@ impl FfmpegProcess {
             ));
         }
         if paused == self.is_paused() {
-            return Ok(());
+            return Ok(PauseChange::Unchanged);
         }
 
         if paused {
@@ -297,23 +303,26 @@ impl FfmpegProcess {
                 self.paused_position_seconds = Some(frozen_position);
                 self.paused_at = Some(Instant::now());
                 self.awaiting_content_start = false;
-                return Ok(());
+                self.record_transition("paused");
+                return Ok(PauseChange::Paused);
             }
             if self.awaiting_content_start {
                 self.awaiting_content_start = false;
                 self.paused_position_seconds = Some(requested_start_seconds.max(0.0));
                 self.paused_at = Some(Instant::now());
-                return Ok(());
+                self.record_transition("paused");
+                return Ok(PauseChange::Paused);
             }
-            let frozen_position = self
-                .position_seconds()
-                .unwrap_or(requested_start_seconds.max(0.0));
-            self.stop_producer_and_advance_timeline();
+            let observed_position = self.position_seconds().unwrap_or(requested_start_seconds.max(0.0));
+            let retired_duration = self.stop_producer_and_advance_timeline();
+            let frozen_position = retired_duration.map(|duration| self.content_start_seconds + self.playback_rate.factor() * duration)
+                .unwrap_or(observed_position);
             match self.spawn_hold_producer() {
                 Ok(()) => {
                     self.paused_position_seconds = Some(frozen_position);
                     self.paused_at = Some(Instant::now());
-                    Ok(())
+                    self.record_transition("paused");
+                    Ok(PauseChange::Paused)
                 }
                 Err(error) => {
                     let _ = self.spawn_content_producer(
@@ -326,28 +335,11 @@ impl FfmpegProcess {
                 }
             }
         } else {
-            self.stop_producer_and_advance_timeline();
-            match self.spawn_content_producer(
-                input,
-                requested_start_seconds,
-                overlay,
-                playback_rate,
-            ) {
-                Ok(()) => {
-                    self.content_start_seconds = requested_start_seconds;
-                    self.playback_rate = playback_rate;
-                    self.paused_position_seconds = None;
-                    self.paused_at = None;
-                    self.awaiting_content_start = false;
-                    Ok(())
-                }
-                Err(error) => {
-                    let _ = self.spawn_hold_producer();
-                    self.paused_position_seconds = Some(requested_start_seconds);
-                    self.paused_at = Some(Instant::now());
-                    Err(error)
-                }
-            }
+            // Resume is the same observed-output transition as seek/rate/part
+            // changes, not just a successful OS spawn followed by UI optimism.
+            self.switch_content(input, requested_start_seconds, overlay, playback_rate)?;
+            self.record_transition("resumed");
+            Ok(PauseChange::Resumed)
         }
     }
 
@@ -358,6 +350,7 @@ impl FfmpegProcess {
         overlay: Option<&DanmakuOverlay>,
         playback_rate: PlaybackRate,
     ) -> Result<(), RelayError> {
+        self.record_transition("content_switch_begin");
         self.clear_completion_hold();
         self.stop_producer_and_advance_timeline();
         self.content_start_seconds = requested_start_seconds;
@@ -374,15 +367,17 @@ impl FfmpegProcess {
                 self.paused_position_seconds = None;
                 self.paused_at = None;
                 self.playback_rate = playback_rate;
+                self.record_transition("content_switch_committed");
                 Ok(())
             }
             Err(error) => {
-                if let Some(mut producer) = self.producer.take() {
-                    producer.stop();
-                }
+                // A producer can emit packets and fail before readiness is
+                // observed. Its consumed bridge interval still belongs to it.
+                self.stop_producer_and_advance_timeline();
                 let _ = self.spawn_hold_producer();
                 self.paused_position_seconds = Some(requested_start_seconds);
                 self.paused_at = Some(Instant::now());
+                self.record_transition("content_switch_failed");
                 Err(error)
             }
         }
@@ -457,11 +452,35 @@ impl FfmpegProcess {
         self.playback_rate
     }
 
-    fn stop_producer_and_advance_timeline(&mut self) {
-        if let Some(mut producer) = self.producer.take() {
-            producer.stop();
-            self.timeline_offset_seconds += producer.output_seconds() + STREAM_SWITCH_GAP_SECONDS;
-        }
+    fn stop_producer_and_advance_timeline(&mut self) -> Option<f64> {
+        let mut producer = self.producer.take()?;
+        producer.stop();
+        let duration = producer.output_seconds();
+        self.timeline_offset_seconds += duration + STREAM_SWITCH_GAP_SECONDS;
+        self.record_transition("producer_retired");
+        Some(duration)
+    }
+
+    pub(crate) fn timeline_metrics(&self) -> crate::stream_diagnostics::Progress {
+        let mut metrics = crate::stream_diagnostics::Progress::default();
+        let (width, height) = self.output_resolution.dimensions();
+        for (name, value) in [
+            ("publisher_pid", f64::from(self.publisher.child.id())),
+            ("producer_pid", self.producer.as_ref().map(|p| f64::from(p.child.id())).unwrap_or(0.0)),
+            ("bridge_offset_seconds", self.timeline_offset_seconds),
+            ("source_start_seconds", self.content_start_seconds),
+            ("source_position_seconds", self.position_seconds().unwrap_or(0.0)),
+            ("playback_rate", self.playback_rate.factor()),
+            ("paused", u8::from(self.is_paused()) as f64),
+            ("draining", u8::from(self.completion_hold_started_at.is_some()) as f64),
+            ("output_width", f64::from(width)), ("output_height", f64::from(height)),
+        ] { metrics.values.insert(name.into(), value); }
+        metrics
+    }
+
+    fn record_transition(&self, event: &'static str) {
+        crate::stream_diagnostics::record(self.publisher.child.id(), "Media timeline", event,
+            self.publisher.started_at.elapsed().as_secs_f64(), &Mutex::new(self.timeline_metrics()));
     }
 
     fn spawn_content_producer(
@@ -510,6 +529,11 @@ impl FfmpegProcess {
 
     fn wait_for_producer_output(&mut self) -> Result<(), RelayError> {
         loop {
+            if let ChildPoll::Exited { diagnostic, .. } = self.publisher.poll(true)? {
+                return Err(RelayError::new("ffmpeg_publisher_exited", if diagnostic.is_empty() {
+                    "FFmpeg publisher exited while replacing its media producer".to_string()
+                } else { diagnostic }));
+            }
             let poll = self
                 .producer
                 .as_mut()
@@ -525,7 +549,11 @@ impl FfmpegProcess {
                 ChildPoll::Alive { stable: false } => {
                     thread::sleep(Duration::from_millis(25));
                 }
-                ChildPoll::Exited { diagnostic, .. } => {
+                ChildPoll::Exited { status, diagnostic } => {
+                    if status.success() && self.producer.as_ref()
+                        .is_some_and(|producer| producer.has_output.load(Ordering::Acquire)) {
+                        return Ok(());
+                    }
                     return Err(RelayError::new(
                         "ffmpeg_start_failed",
                         if diagnostic.is_empty() {
@@ -598,19 +626,19 @@ impl ManagedChild {
                 }
             }
         }
-        if let Some(pipe) = child.stderr.take() {
-            drain_stderr(pipe, Arc::clone(&stderr), redactions, Arc::clone(&health));
-        }
+        let stderr_reader = child.stderr.take().map(|pipe| {
+            drain_stderr(pipe, Arc::clone(&stderr), redactions, Arc::clone(&health))
+        });
         let has_output = Arc::new(AtomicBool::new(false));
         let output_micros = Arc::new(AtomicU64::new(0));
-        if let Some(pipe) = child.stdout.take() {
+        let progress_reader = child.stdout.take().map(|pipe| {
             drain_progress(
                 pipe,
                 Arc::clone(&has_output),
                 Arc::clone(&output_micros),
                 Arc::clone(&health),
-            );
-        }
+            )
+        });
 
         crate::stream_diagnostics::record(child.id(), error_subject, "spawn", 0.0, &health);
 
@@ -627,6 +655,8 @@ impl ManagedChild {
             role: error_subject,
             last_health_sample: Instant::now(),
             last_health_output: 0.0,
+            progress_reader,
+            stderr_reader,
         })
     }
 
@@ -656,6 +686,7 @@ impl ManagedChild {
             )
         })? {
             Some(status) => {
+                self.finish_readers();
                 self.record_health(if status.success() {
                     "exited_ok"
                 } else {
@@ -706,6 +737,7 @@ impl ManagedChild {
             }
         }
         let _ = self.child.wait();
+        self.finish_readers();
         self.record_health("stopped");
     }
 
@@ -715,6 +747,14 @@ impl ManagedChild {
             let _ = self.child.kill();
         }
         let _ = self.child.wait();
+        self.finish_readers();
+    }
+
+    fn finish_readers(&mut self) {
+        // These pipes belong only to this FFmpeg child. wait/try_wait has
+        // observed exit, so EOF follows; drain the final progress=end record.
+        if let Some(reader) = self.progress_reader.take() { let _ = reader.join(); }
+        if let Some(reader) = self.stderr_reader.take() { let _ = reader.join(); }
     }
 
     fn output_seconds(&self) -> f64 {
@@ -756,7 +796,7 @@ fn spawn_publisher(
         "-map",
         "0:v:0",
         "-map",
-        "0:a:0?",
+        "0:a:0",
         "-c:v",
         "copy",
         "-c:a",
@@ -795,18 +835,25 @@ fn spawn_content_producer(
         start_seconds,
         playback_rate,
     );
-    if let Some(audio_url) = input.audio_url.as_deref() {
-        add_input(&mut command, input, audio_url, start_seconds, playback_rate);
-        command.args(["-map", "0:v:0", "-map", "1:a:0"]);
-    } else {
-        command.args(["-map", "0:v:0", "-map", "0:a:0?"]);
-    }
-    add_standard_transcode(&mut command, overlay, playback_rate, output_resolution);
-    add_mpegts_output(&mut command, udp_output, timeline_offset_seconds);
     let mut redactions = vec![input.video_url.clone()];
-    if let Some(audio_url) = input.audio_url.as_ref() {
-        redactions.push(audio_url.clone());
+    match &input.audio {
+        MediaAudio::Separate(audio_url) => {
+            add_input(&mut command, input, audio_url, start_seconds, playback_rate);
+            command.args(["-map", "0:v:0", "-map", "1:a:0"]);
+            redactions.push(audio_url.clone());
+        }
+        MediaAudio::Embedded => { command.args(["-map", "0:v:0", "-map", "0:a:0"]); }
+        MediaAudio::Silence => {
+            command.args(["-readrate", &format!("{:.3}", playback_rate.factor()), "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0"]);
+        }
     }
+    add_standard_transcode(&mut command, overlay, playback_rate, output_resolution, !input.is_live);
+    if !input.is_live || matches!(&input.audio, MediaAudio::Silence) {
+        // Generated/padded audio has no natural EOF. It is subordinate to the
+        // real video even when an unknown-duration source is classified live.
+        command.args(["-shortest"]);
+    }
+    add_mpegts_output(&mut command, udp_output, timeline_offset_seconds);
     ManagedChild::spawn(
         command,
         redactions,
@@ -875,33 +922,40 @@ fn add_standard_transcode(
     overlay: Option<&DanmakuOverlay>,
     playback_rate: PlaybackRate,
     output_resolution: OutputResolution,
+    pad_audio: bool,
 ) {
+    let filter = content_video_filter(overlay, playback_rate, output_resolution);
+    let audio_filter = format!(
+        "atempo={:.3},asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0{}",
+        playback_rate.factor(), if pad_audio { ",apad" } else { "" }
+    );
+    add_transcode_with_filters(command, &filter, &audio_filter);
+}
+
+pub(crate) fn content_video_filter(
+    overlay: Option<&DanmakuOverlay>, playback_rate: PlaybackRate,
+    output_resolution: OutputResolution,
+) -> String {
     let (width, height) = output_resolution.dimensions();
+    // Bound by display aspect ratio, not just stored raster dimensions. Both
+    // content and hold producers declare even-sized, square-pixel H.264.
     let mut filter = format!(
         "setpts=PTS-STARTPTS,\
-         scale=w='min(iw,{width})':h='min(ih,{height})':force_original_aspect_ratio=decrease,\
-         pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+         scale=w='max(2,trunc(min({width},min(iw*sar,{height}*dar))/2)*2)':h='max(2,trunc(ow/dar/2)*2)',\
+         setsar=1,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
     );
     if let Some(path) = overlay.and_then(DanmakuOverlay::ass_path) {
-        filter.push_str(&format!(",ass=filename='{}'", escape_filter_path(path)));
-        // UI-private font registration is not visible to the FFmpeg process.
+        filter.push_str(&format!(",ass=filename={}", graph_path(path)));
         if let Some(fonts) = crate::danmaku_style::font_directory() {
-            filter.push_str(&format!(":fontsdir='{}'", escape_filter_path(&fonts)));
+            filter.push_str(&format!(":fontsdir={}", graph_path(&fonts)));
         }
     }
     if let Some(live_filter) = overlay.and_then(DanmakuOverlay::live_filter_graph) {
         filter.push(',');
         filter.push_str(live_filter);
     }
-    filter.push_str(&format!(
-        ",setpts=PTS/{:.3},fps={OUTPUT_FPS}",
-        playback_rate.factor()
-    ));
-    let audio_filter = format!(
-        "atempo={:.3},asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0",
-        playback_rate.factor()
-    );
-    add_transcode_with_filters(command, &filter, &audio_filter);
+    filter.push_str(&format!(",setpts=PTS/{:.3},fps={OUTPUT_FPS}", playback_rate.factor()));
+    filter
 }
 
 fn add_transcode_with_video_filter(command: &mut Command, video_filter: &str) {
@@ -964,6 +1018,8 @@ fn add_mpegts_output(command: &mut Command, udp_output: &str, timeline_offset_se
         "1024",
         "-mpegts_copyts",
         "1",
+        "-mpegts_flags",
+        "+initial_discontinuity",
         "-output_ts_offset",
         &offset,
         "-muxdelay",
@@ -994,16 +1050,6 @@ fn reserve_udp_port() -> Result<u16, RelayError> {
                 format!("The local media bridge port could not be read: {error}"),
             )
         })
-}
-
-fn escape_filter_path(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace('\\', "/")
-        .replace(':', r"\:")
-        .replace('\'', r"\'")
-        .replace('[', r"\[")
-        .replace(']', r"\]")
-        .replace(',', r"\,")
 }
 
 impl Drop for FfmpegProcess {
@@ -1110,7 +1156,7 @@ fn drain_stderr(
     destination: Arc<Mutex<VecDeque<String>>>,
     redactions: Vec<String>,
     health: Arc<Mutex<crate::stream_diagnostics::Progress>>,
-) {
+) -> JoinHandle<()> {
     thread::spawn(move || {
         for line in BufReader::new(pipe).lines().map_while(Result::ok) {
             if let Ok(mut health) = health.lock() {
@@ -1130,7 +1176,7 @@ fn drain_stderr(
                 lines.push_back(sanitized);
             }
         }
-    });
+    })
 }
 
 fn drain_progress(
@@ -1138,7 +1184,7 @@ fn drain_progress(
     has_output: Arc<AtomicBool>,
     output_micros: Arc<AtomicU64>,
     health: Arc<Mutex<crate::stream_diagnostics::Progress>>,
-) {
+) -> JoinHandle<()> {
     thread::spawn(move || {
         for line in BufReader::new(pipe).lines().map_while(Result::ok) {
             if let Ok(mut health) = health.lock() {
@@ -1155,5 +1201,5 @@ fn drain_progress(
                 }
             }
         }
-    });
+    })
 }

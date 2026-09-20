@@ -21,3 +21,11 @@ zip.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+
+# Not enabled in the shipped worker; called only by the .bench.ts entry point.
+[features]
+media-measurements = []
+
+[[example]]
+name = "media-measurements"
+required-features = ["media-measurements"]

@@ -93,7 +93,7 @@ pub(crate) fn resolve(source: &str, ffprobe_path: &str) -> Result<ResolvedSource
         .map(|duration| duration.round() as u64);
     let input = (!direct).then(|| MediaInput {
         video_url: descriptor.url.to_string(),
-        audio_url: None,
+        audio: if probe.audio_codec.is_some() { crate::MediaAudio::Embedded } else { crate::MediaAudio::Silence },
         referer: descriptor.referer.clone(),
         is_live: duration_seconds.is_none(),
         requires_bilibili_headers: descriptor.requires_bilibili_headers,

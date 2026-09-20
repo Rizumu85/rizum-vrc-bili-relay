@@ -470,7 +470,7 @@ impl BilibiliClient {
             },
             MediaInput {
                 video_url: video.url,
-                audio_url: audio.map(|track| track.url),
+                audio: audio.map(|track| crate::MediaAudio::Separate(track.url)).unwrap_or(crate::MediaAudio::Silence),
                 referer: referer.to_string(),
                 is_live: false,
                 requires_bilibili_headers: true,
@@ -535,7 +535,7 @@ impl BilibiliClient {
             },
             MediaInput {
                 video_url: selected.url,
-                audio_url: None,
+                audio: crate::MediaAudio::Embedded,
                 referer: referer.to_string(),
                 is_live: true,
                 requires_bilibili_headers: true,

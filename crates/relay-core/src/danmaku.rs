@@ -59,7 +59,7 @@ enum DanmakuOverlayKind {
 }
 
 impl DanmakuOverlay {
-    fn video(path: PathBuf, event_count: u64) -> Self {
+    pub(crate) fn video(path: PathBuf, event_count: u64) -> Self {
         Self {
             kind: DanmakuOverlayKind::Video { path, event_count },
         }
@@ -151,6 +151,15 @@ impl DanmakuService {
                 })
             }),
         }
+    }
+
+    /// Finish potentially slow VOD network work before a running-clock change
+    /// chooses its final source anchor. prepare() then renders from this cache.
+    pub fn preload(&mut self, source: &DanmakuSource, settings: &DanmakuSettings, start_seconds: f64) -> Result<(), RelayError> {
+        if settings.enabled && let DanmakuSource::Video(source) = source {
+            let _ = self.fetch(source, start_seconds)?;
+        }
+        Ok(())
     }
 
     fn prepare_video(
@@ -490,7 +499,7 @@ fn invalid_protobuf() -> RelayError {
     )
 }
 
-fn render_ass(
+pub(crate) fn render_ass(
     events: &[DanmakuEvent],
     settings: &DanmakuSettings,
     start_seconds: f64,

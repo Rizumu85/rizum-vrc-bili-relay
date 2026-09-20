@@ -2,6 +2,9 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::sync::{Mutex, OnceLock, mpsc};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static DROPPED_RECORDS: AtomicU64 = AtomicU64::new(0);
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Default)]
@@ -46,6 +49,12 @@ impl Progress {
             "udp_overrun"
         } else if line.contains("corrupt") || line.contains("error while decoding") {
             "corrupt_or_decode"
+        } else if line.contains("not a runtime option") {
+            "filter_runtime_option"
+        } else if line.contains("failed to process command") {
+            "filter_command"
+        } else if line.contains("no such filter") || line.contains("error parsing") {
+            "filter_parse"
         } else if line.contains("broken pipe")
             || line.contains("connection reset")
             || line.contains("error writing")
@@ -74,9 +83,12 @@ pub(crate) fn record(
         "elapsed_seconds": elapsed,
         "progress_age_seconds": progress.updated.map(|time| time.elapsed().as_secs_f64()),
         "metrics": progress.values, "warning_counts": progress.warnings,
+        "dropped_records": DROPPED_RECORDS.load(Ordering::Relaxed),
     });
     // Disk trouble must not block playback or grow an unbounded queue.
-    let _ = sender().try_send(entry.to_string());
+    if sender().try_send(entry.to_string()).is_err() {
+        DROPPED_RECORDS.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 fn sender() -> &'static mpsc::SyncSender<String> {
@@ -84,13 +96,11 @@ fn sender() -> &'static mpsc::SyncSender<String> {
     SENDER.get_or_init(|| {
         let (tx, rx) = mpsc::sync_channel::<String>(128);
         std::thread::spawn(move || {
-            let Some(base) = std::env::var_os("LOCALAPPDATA") else {
-                return;
-            };
-            let directory = std::path::PathBuf::from(base)
-                .join("VRC Bili Relay")
-                .join("runtime")
-                .join("diagnostics");
+            let directory = std::env::var_os("VRC_BILI_RELAY_DIAGNOSTICS_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::env::var_os("LOCALAPPDATA")
+                    .map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir)
+                    .join("VRC Bili Relay").join("runtime").join("diagnostics"));
             if std::fs::create_dir_all(&directory).is_err() {
                 return;
             }
@@ -99,9 +109,11 @@ fn sender() -> &'static mpsc::SyncSender<String> {
             for line in rx {
                 if std::fs::metadata(&path).is_ok_and(|meta| meta.len() >= 2 * 1024 * 1024) {
                     if previous.exists() && std::fs::remove_file(&previous).is_err() {
+                        DROPPED_RECORDS.fetch_add(1, Ordering::Relaxed);
                         continue;
                     }
                     if std::fs::rename(&path, &previous).is_err() {
+                        DROPPED_RECORDS.fetch_add(1, Ordering::Relaxed);
                         continue;
                     }
                 }
@@ -110,8 +122,8 @@ fn sender() -> &'static mpsc::SyncSender<String> {
                     .append(true)
                     .open(&path)
                 {
-                    let _ = writeln!(file, "{line}");
-                }
+                    if writeln!(file, "{line}").is_err() { DROPPED_RECORDS.fetch_add(1, Ordering::Relaxed); }
+                } else { DROPPED_RECORDS.fetch_add(1, Ordering::Relaxed); }
             }
         });
         tx
