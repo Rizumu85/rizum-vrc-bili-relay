@@ -8,6 +8,10 @@ mod covers;
 mod danmaku;
 mod danmaku_style;
 mod ffmpeg;
+#[cfg(feature = "media-measurements")]
+pub mod media_measurements;
+mod filter_syntax;
+mod live_danmaku_render;
 mod ffmpeg_manager;
 mod live_danmaku;
 mod media_session;
@@ -675,11 +679,20 @@ pub enum MediaFormat {
 #[derive(Debug, Clone)]
 pub(crate) struct MediaInput {
     pub video_url: String,
-    pub audio_url: Option<String>,
+    pub audio: MediaAudio,
     pub referer: String,
     pub is_live: bool,
     pub requires_bilibili_headers: bool,
     pub danmaku_source: Option<danmaku::DanmakuSource>,
+}
+
+/// The resolver owns audio topology; every producer must feed the publisher
+/// one H.264 video stream and one continuous stereo AAC stream.
+#[derive(Debug, Clone)]
+pub(crate) enum MediaAudio {
+    Separate(String),
+    Embedded,
+    Silence,
 }
 
 pub(crate) struct ResolvedSource {
@@ -906,6 +919,13 @@ impl RelayCore {
                 session_id,
                 options,
             } => {
+                let before = self.sessions.status(&session_id, &self.bilibili)?;
+                let (source, start) = self.sessions.playback_context(&session_id, before.position_seconds.unwrap_or(0.0))?;
+                if let Some(source) = source {
+                    self.danmaku.preload(&source, &options.danmaku, start)?;
+                }
+                // Media kept advancing while network preparation ran. Do not
+                // restart it at the stale position captured before that I/O.
                 let current = self.sessions.status(&session_id, &self.bilibili)?;
                 let start_seconds = current.position_seconds.unwrap_or(0.0);
                 let (overlay, normalized_start) =

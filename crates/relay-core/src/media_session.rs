@@ -5,7 +5,7 @@ use url::Url;
 
 use crate::bilibili::BilibiliClient;
 use crate::danmaku::{DanmakuOverlay, DanmakuSource};
-use crate::ffmpeg::{FfmpegProcess, ProcessPoll};
+use crate::ffmpeg::{FfmpegProcess, PauseChange, ProcessPoll};
 use crate::{LiveStatus, RelayEndReason};
 use crate::{
     MediaInput, OutputResolution, PlaybackRate, RelayError, RelayStage, RelayStatus, RelayTarget, ResolvedSource,
@@ -232,7 +232,7 @@ impl MediaSessionStore {
                         previous_position,
                         previous_overlay.as_ref(),
                         previous_playback_rate,
-                    )
+                    ).map(|_| ())
                 };
                 pause_result.and_then(|_| {
                     process.retarget_paused(&next.input, start_seconds, playback_rate)
@@ -382,7 +382,7 @@ impl MediaSessionStore {
                 "The relay is not running and cannot be paused or resumed",
             )
         })?;
-        process.set_paused(
+        let change = process.set_paused(
             paused,
             &session.input,
             start_seconds,
@@ -393,11 +393,17 @@ impl MediaSessionStore {
             },
             playback_rate,
         )?;
+        if matches!(change, PauseChange::Unchanged) {
+            // The new overlay was only prepared, never loaded by FFmpeg. Keep
+            // the old file/count owned by the still-running producer.
+            return Ok(status_for(session_id, session));
+        }
         if let Some(position) = process.position_seconds() {
             session.position_seconds = Some(clamp_position(position, session.duration_seconds));
         }
-        if !paused {
+        if matches!(change, PauseChange::Resumed) {
             session.overlay = overlay;
+            session.end_reason = None;
         }
         session.paused = paused;
         session.stage = RelayStage::Running;
@@ -593,6 +599,9 @@ fn refresh(session: &mut MediaSession) -> Result<(), RelayError> {
         if let Some(position) = process.position_seconds() {
             session.position_seconds = Some(clamp_position(position, session.duration_seconds));
         }
+        // A failed replacement may have deliberately restored a hold producer.
+        // Report the process-owned intent instead of retaining a stale UI flag.
+        session.paused = process.is_paused();
         poll
     };
     match poll {
@@ -691,27 +700,27 @@ fn status_for(session_id: &str, session: &MediaSession) -> RelayStatus {
     }
 }
 
-fn normalize_start(
+pub(crate) fn normalize_start(
     requested: f64,
     duration_seconds: Option<f64>,
     is_live: bool,
 ) -> Result<f64, RelayError> {
+    if !requested.is_finite() || requested < 0.0 {
+        return Err(RelayError::new("invalid_start_position", "Playback start position must be a non-negative finite number"));
+    }
     if is_live {
         if requested > 0.0 {
-            return Err(RelayError::new(
-                "seek_not_supported",
-                "Live streams cannot start from a playback position",
-            ));
+            return Err(RelayError::new("seek_not_supported", "Live streams cannot start from a playback position"));
         }
         return Ok(0.0);
     }
-    Ok(clamp_position(requested, duration_seconds))
+    // Keep the existing seek-away-from-EOF policy only at the command boundary.
+    let seek_limit = duration_seconds.map(|duration| (duration - 1.0).max(0.0));
+    Ok(clamp_position(requested, seek_limit))
 }
 
-fn clamp_position(position: f64, duration_seconds: Option<f64>) -> f64 {
-    let maximum = duration_seconds
-        .map(|duration| (duration - 1.0).max(0.0))
-        .unwrap_or(position.max(0.0));
+pub(crate) fn clamp_position(position: f64, duration_seconds: Option<f64>) -> f64 {
+    let maximum = duration_seconds.unwrap_or(position.max(0.0)).max(0.0);
     position.clamp(0.0, maximum)
 }
 

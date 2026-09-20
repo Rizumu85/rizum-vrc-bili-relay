@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::{Cursor, ErrorKind, Read};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -20,9 +19,9 @@ use tungstenite::http::Uri;
 use tungstenite::{ClientRequestBuilder, Error as WebSocketError, Message, client_tls};
 use zeromq::{ReqSocket, Socket, SocketRecv, SocketSend};
 
-use crate::danmaku::{DanmakuEvent, DanmakuKind, OUTPUT_HEIGHT, acquire_lane, should_hide};
-use crate::danmaku_style::{font_size, opacity, outline, resolve_font};
-use crate::{DanmakuArea, DanmakuSettings, DanmakuSpeed, RelayError};
+use crate::danmaku::{DanmakuEvent, DanmakuKind, should_hide};
+use crate::live_danmaku_render::{LiveSlots, event_duration, filter_graph as live_filter_graph, reinit_argument};
+use crate::{DanmakuSettings, RelayError};
 
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
@@ -30,7 +29,6 @@ const PACKET_HEADER_BYTES: usize = 16;
 const MAX_PACKET_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PACKET_DEPTH: usize = 4;
 const EVENT_QUEUE_CAPACITY: usize = 256;
-const FILTER_SLOT_COUNT: usize = 24;
 const MAX_LIVE_TEXT_CHARS: usize = 200;
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_millis(750);
 const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -551,89 +549,67 @@ fn render_loop(
     let Ok(runtime) = RuntimeBuilder::new_current_thread().enable_all().build() else {
         return;
     };
-    let font_size = font_size(settings.size);
-    let render_size = f64::from(font_size) * resolve_font(&settings).drawtext_scale;
-    let line_height = ((f64::from(font_size) * 1.22).round() as i32).max(font_size + 8);
-    let area_ratio = match settings.area {
-        DanmakuArea::Quarter => 0.25,
-        DanmakuArea::Half => 0.50,
-        DanmakuArea::Full => 0.90,
-    };
-    let lane_count = ((f64::from(OUTPUT_HEIGHT) * area_ratio / f64::from(line_height)).floor()
-        as usize)
-        .clamp(1, 64);
-    let mut rolling_lanes = vec![0.0_f64; lane_count];
-    let mut top_lanes = vec![0.0_f64; lane_count];
-    let mut bottom_lanes = vec![0.0_f64; lane_count];
-    let mut slots = vec![0.0_f64; FILTER_SLOT_COUNT];
-    let mut active_slots = [false; FILTER_SLOT_COUNT];
-    let started_at = Instant::now();
+    let mut slots = LiveSlots::new(&settings);
     let endpoint = format!("tcp://127.0.0.1:{port}");
     let mut socket = None;
+    let started_at = Instant::now();
+    let mut sampled_at = Instant::now();
+    let metrics = Mutex::new(crate::stream_diagnostics::Progress::default());
+    if let Ok(mut m) = metrics.lock() {
+        m.values.insert("filter_port".into(), f64::from(port));
+    }
+    let increment = |name: &str| {
+        if let Ok(mut m) = metrics.lock() { *m.values.entry(name.into()).or_default() += 1.0; }
+    };
     while !cancel.load(Ordering::Acquire) {
-        clear_expired_slots(
-            &runtime,
-            &endpoint,
-            &mut socket,
-            &cancel,
-            &slots,
-            &mut active_slots,
-            started_at.elapsed().as_secs_f64() + 0.10,
-        );
+        for slot in slots.expired(Instant::now()) {
+            let command = format!("drawtext@dm{slot} reinit text=");
+            if send_zmq_command(&runtime, &endpoint, &command, &mut socket, &cancel) {
+                slots.clear_confirmed(slot);
+                increment("clear_accepted");
+            } else {
+                // A missing acknowledgement is an unknown outcome, not proof
+                // that text was cleared. Keep both slot and lane reserved.
+                increment("clear_unconfirmed");
+            }
+        }
+        if sampled_at.elapsed() >= Duration::from_secs(2) {
+            if let Ok(mut m) = metrics.lock() { m.values.insert("active_slots".into(), slots.active_count() as f64); }
+            crate::stream_diagnostics::record(std::process::id(), "Live danmaku", "render_sample", started_at.elapsed().as_secs_f64(), &metrics);
+            sampled_at = Instant::now();
+        }
         let event = match receiver.recv_timeout(Duration::from_millis(200)) {
             Ok(event) => event,
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
-        let now = started_at.elapsed().as_secs_f64() + 0.10;
-        let duration = event_duration(event.kind, settings.speed);
-        let lanes = match event.kind {
-            DanmakuKind::Top => &mut top_lanes,
-            DanmakuKind::Bottom => &mut bottom_lanes,
-            _ => &mut rolling_lanes,
-        };
-        let Some(lane) = acquire_lane(lanes, now, now + duration) else {
+        increment("events_dequeued");
+        let Some(reservation) = slots.reserve(event.kind) else {
+            increment("events_dropped_capacity");
             continue;
         };
-        let Some(slot) = acquire_lane(&mut slots, now, now + duration) else {
-            lanes[lane] = now;
-            continue;
-        };
-        let command = format!(
-            "drawtext@dm{slot} reinit {}",
-            reinit_argument(&event, &settings, lane, now, render_size)
-        );
-        if send_zmq_command(&runtime, &endpoint, &command, &mut socket, &cancel) {
-            active_slots[slot] = true;
+        let command = format!("drawtext@dm{} reinit {}", reservation.slot,
+            crate::filter_syntax::zmq_argument(&reinit_argument(&event, &settings, reservation.lane)));
+        let sent_at = Instant::now();
+        let accepted = send_zmq_command(&runtime, &endpoint, &command, &mut socket, &cancel);
+        if let Ok(mut m) = metrics.lock() {
+            m.values.insert("last_command_ms".into(), sent_at.elapsed().as_secs_f64() * 1000.0);
+        }
+        // Retention starts at acknowledgement/last attempt, never before a
+        // potentially slow exchange. Wall time only bounds real-time chat
+        // retention; movement and self-expiry are owned by FFmpeg frame time.
+        slots.commit(reservation, Duration::from_secs_f64(event_duration(event.kind, settings.speed)));
+        if accepted {
+            increment("reinit_accepted");
             rendered.fetch_add(1, Ordering::AcqRel);
         } else {
-            slots[slot] = now;
-            active_slots[slot] = false;
-            lanes[lane] = now;
+            increment("reinit_unconfirmed");
         }
     }
+    crate::stream_diagnostics::record(std::process::id(), "Live danmaku", "renderer_stopped", started_at.elapsed().as_secs_f64(), &metrics);
 }
 
-fn clear_expired_slots(
-    runtime: &tokio::runtime::Runtime,
-    endpoint: &str,
-    socket: &mut Option<ReqSocket>,
-    cancel: &AtomicBool,
-    slots: &[f64],
-    active_slots: &mut [bool; FILTER_SLOT_COUNT],
-    now: f64,
-) {
-    for (slot, active) in active_slots.iter_mut().enumerate() {
-        if !*active || slots[slot] > now {
-            continue;
-        }
-        let command = format!("drawtext@dm{slot} reinit text=''");
-        let _ = send_zmq_command(runtime, endpoint, &command, socket, cancel);
-        *active = false;
-    }
-}
-
-fn send_zmq_command(
+pub(crate) fn send_zmq_command(
     runtime: &tokio::runtime::Runtime,
     endpoint: &str,
     command: &str,
@@ -810,89 +786,6 @@ fn read_u32(payload: &[u8], offset: usize) -> Result<u32, String> {
         .and_then(|value| value.try_into().ok())
         .ok_or_else(|| "Live danmaku packet header is incomplete".to_string())?;
     Ok(u32::from_be_bytes(bytes))
-}
-
-fn live_filter_graph(port: u16, settings: &DanmakuSettings) -> String {
-    let font = resolve_font(settings);
-    let font_file = escape_filter_path(&font.file);
-    let font_size = f64::from(font_size(settings.size)) * font.drawtext_scale;
-    let opacity = opacity(settings);
-    let shadow_opacity = opacity * 0.6;
-    let (border_width, shadow) = outline(settings);
-    let mut filters = Vec::with_capacity(FILTER_SLOT_COUNT + 1);
-    filters.push(format!(r"zmq=b=tcp\\://127.0.0.1\\:{port}"));
-    for index in 0..FILTER_SLOT_COUNT {
-        filters.push(format!(
-            "drawtext@dm{index}=fontfile='{font_file}':text=:expansion=none:fontsize={font_size:.3}:\
-             fontcolor=white@{opacity:.2}:borderw={border_width}:bordercolor=0x101010@{opacity:.2}:\
-             shadowcolor=0x101010@{shadow_opacity:.2}:shadowx={shadow}:shadowy={shadow}:x=0:y=0"
-        ));
-    }
-    filters.join(",")
-}
-
-fn reinit_argument(
-    event: &DanmakuEvent,
-    settings: &DanmakuSettings,
-    lane: usize,
-    start_seconds: f64,
-    render_size: f64,
-) -> String {
-    let size = font_size(settings.size);
-    let line_height = ((f64::from(size) * 1.22).round() as i32).max(size + 8);
-    let duration = event_duration(event.kind, settings.speed);
-    let y = match event.kind {
-        DanmakuKind::Bottom => OUTPUT_HEIGHT as i32 - 18 - lane as i32 * line_height,
-        _ => 12 + lane as i32 * line_height,
-    };
-    let x = match event.kind {
-        DanmakuKind::Top | DanmakuKind::Bottom => "(w-text_w)/2".to_string(),
-        DanmakuKind::Reverse => format!("-text_w+(w+text_w)*(t-{start_seconds:.3})/{duration:.3}"),
-        _ => format!("w-(w+text_w)*(t-{start_seconds:.3})/{duration:.3}"),
-    };
-    let opacity = opacity(settings);
-    let shadow_opacity = opacity * 0.6;
-    let (border_width, shadow) = outline(settings);
-    format!(
-        "text='{}':fontsize={render_size:.3}:fontcolor=0x{:06X}@{opacity:.2}:\
-         borderw={border_width}:bordercolor=0x101010@{opacity:.2}:\
-         shadowcolor=0x101010@{shadow_opacity:.2}:shadowx={shadow}:shadowy={shadow}:\
-         x={x}:y={y}",
-        escape_drawtext(&event.text),
-        event.color,
-    )
-}
-
-fn event_duration(kind: DanmakuKind, speed: DanmakuSpeed) -> f64 {
-    if matches!(kind, DanmakuKind::Top | DanmakuKind::Bottom) {
-        return 4.0;
-    }
-    match speed {
-        DanmakuSpeed::Slow => 12.0,
-        DanmakuSpeed::Normal => 8.0,
-        DanmakuSpeed::Fast => 6.0,
-    }
-}
-
-fn escape_filter_path(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace('\\', "/")
-        .replace(':', r"\:")
-        .replace('\'', r"\'")
-        .replace('[', r"\[")
-        .replace(']', r"\]")
-        .replace(',', r"\,")
-}
-
-fn escape_drawtext(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| !character.is_control() || *character == '\t')
-        .take(MAX_LIVE_TEXT_CHARS)
-        .collect::<String>()
-        .replace('\\', r"\\")
-        .replace('\'', r"\'")
-        .replace(':', r"\:")
 }
 
 fn available_loopback_port() -> Result<u16, RelayError> {
