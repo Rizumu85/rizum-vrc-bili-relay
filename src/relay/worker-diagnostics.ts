@@ -28,7 +28,7 @@ export function recordWorkerRpc(context: Context, measurement: RpcMeasurement): 
     worker_pid: context.worker_pid, generation: context.generation,
     event: label(measurement.event), dropped_records: dropped,
   };
-  for (const key of ["request_id", "queue_depth", "queue_ms", "elapsed_ms", "bytes", "operation_id", "lease_id", "scope_epoch", "settings_revision", "active", "paused", "restored", "accepted_count", "failed_count", "attempt"] as const) {
+  for (const key of ["request_id", "queue_depth", "queue_ms", "elapsed_ms", "bytes", "operation_id", "lease_id", "list_id", "list_revision", "scope_epoch", "settings_revision", "active", "paused", "restored", "accepted_count", "failed_count", "attempt"] as const) {
     const value = measurement[key];
     if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
       entry[key] = Math.round(value * 1000) / 1000;

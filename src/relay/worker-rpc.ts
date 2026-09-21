@@ -18,6 +18,8 @@ export interface RpcMeasurement {
   code?: string;
   operation_id?: number;
   lease_id?: number;
+  list_id?: number;
+  list_revision?: number;
   scope_epoch?: number;
   settings_revision?: number;
   active?: number;

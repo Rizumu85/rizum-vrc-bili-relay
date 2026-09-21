@@ -42,6 +42,7 @@ import {
 import { RelayWorkerClient, RelayWorkerError, type FavoriteResourcePage } from "./relay/worker-client";
 import { LibraryCache } from "./relay/library-cache";
 import { CoverLoader } from "./relay/cover-loader";
+import { ListRequestOwner, listLoadPending, type ListLoadPhase } from "./relay/list-request";
 import { SettingsPersistence, flushSettingsBeforeClose } from "./relay/settings-persistence";
 import { SettingsDraftState } from "./relay/settings-draft";
 import { relayFailureMessage } from "./relay/status-message";
@@ -3583,12 +3584,14 @@ function FavoritesView({
     source === "favorites" ? { kind: "folders" } : { kind: "flat" },
   );
   const [folders, setFolders] = useState<FavoriteFolder[] | null>(null);
-  const [foldersLoading, setFoldersLoading] = useState(false);
+  const [foldersPhase, setFoldersPhase] = useState<ListLoadPhase>("idle");
+  const foldersLoading = listLoadPending(foldersPhase);
   const [foldersError, setFoldersError] = useState<string | null>(null);
   const [videos, setVideos] = useState<FavoriteResourceItem[]>([]);
   const [videosPage, setVideosPage] = useState(0);
   const [videosHasMore, setVideosHasMore] = useState(false);
-  const [videosLoading, setVideosLoading] = useState(false);
+  const [videosPhase, setVideosPhase] = useState<ListLoadPhase>("idle");
+  const videosLoading = listLoadPending(videosPhase);
   const [videosError, setVideosError] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(() =>
     Boolean(process.env.VRC_BILI_RELAY_FAVORITES_SEARCH),
@@ -3603,16 +3606,24 @@ function FavoritesView({
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [covers, setCovers] = useState<ReadonlyMap<string, string>>(new Map());
-  const foldersEpoch = useRef(0);
-  const videosEpoch = useRef(0);
+  const foldersRequest = useRef<ListRequestOwner | null>(null);
+  const videosRequest = useRef<ListRequestOwner | null>(null);
   const searchEpoch = useRef(0);
   const coversEpoch = useRef(0);
   const pickVideoRef = useRef(onPickVideo);
   pickVideoRef.current = onPickVideo;
   const stablePickVideo = useMemo(() => (bvid: string) => pickVideoRef.current(bvid), []);
 
-  useEffect(() => () => {
-    ++foldersEpoch.current; ++videosEpoch.current; ++searchEpoch.current; ++coversEpoch.current;
+  useEffect(() => {
+    const folders = new ListRequestOwner(setFoldersPhase, recordUiState);
+    const videos = new ListRequestOwner(setVideosPhase, recordUiState);
+    foldersRequest.current = folders;
+    videosRequest.current = videos;
+    return () => {
+      folders.dispose(); videos.dispose();
+      foldersRequest.current = null; videosRequest.current = null;
+      ++searchEpoch.current; ++coversEpoch.current;
+    };
   }, []);
 
   const searching = searchItems !== null;
@@ -3640,23 +3651,13 @@ function FavoritesView({
   }, [level, searching, videos, searchItems]);
 
   const loadFolders = async () => {
-    const epoch = ++foldersEpoch.current;
     setFoldersError(null);
-    const cached = cache.read<FavoriteFolder[]>("folders");
-    if (cached) {
-      setFolders(cached.value);
-      if (cached.fresh) return;
-    } else {
-      setFoldersLoading(true);
-    }
-    try {
-      const list = await cache.fill("folders", listFolders);
-      if (foldersEpoch.current === epoch) setFolders(list);
-    } catch (error) {
-      if (foldersEpoch.current === epoch && !cached) setFoldersError(favoriteErrorMessage(error));
-    } finally {
-      if (foldersEpoch.current === epoch) setFoldersLoading(false);
-    }
+    await foldersRequest.current?.load(
+      cache.read<FavoriteFolder[]>("folders"),
+      () => cache.fill("folders", listFolders),
+      setFolders,
+      (error) => setFoldersError(favoriteErrorMessage(error)),
+    );
   };
 
   useEffect(() => {
@@ -3676,31 +3677,20 @@ function FavoritesView({
   };
 
   const loadVideos = async (folder: FavoriteFolder, page: number, append: boolean) => {
-    const epoch = ++videosEpoch.current;
     setVideosError(null);
     const cacheKey = `folder:${folder.id}:${page}`;
-    const cached = !append ? cache.read<FavoriteResourcePage>(cacheKey) : null;
-    if (cached) {
-      setVideos(cached.value.items);
-      setVideosPage(cached.value.page);
-      setVideosHasMore(cached.value.hasMore);
-      if (cached.fresh) return;
-    } else {
-      setVideosLoading(true);
-    }
-    try {
-      const result = page === 1
-        ? await cache.fill(cacheKey, () => listResources(folder.id, page))
-        : await cache.scoped(() => listResources(folder.id, page));
-      if (videosEpoch.current !== epoch) return;
-      setVideos((current) => (append ? [...current, ...result.items] : result.items));
-      setVideosPage(result.page);
-      setVideosHasMore(result.hasMore);
-    } catch (error) {
-      if (videosEpoch.current === epoch && !cached) setVideosError(favoriteErrorMessage(error));
-    } finally {
-      if (videosEpoch.current === epoch) setVideosLoading(false);
-    }
+    await videosRequest.current?.load(
+      !append ? cache.read<FavoriteResourcePage>(cacheKey) : null,
+      () => page === 1
+        ? cache.fill(cacheKey, () => listResources(folder.id, page))
+        : cache.scoped(() => listResources(folder.id, page)),
+      (result) => {
+        setVideos((current) => (append ? [...current, ...result.items] : result.items));
+        setVideosPage(result.page);
+        setVideosHasMore(result.hasMore);
+      },
+      (error) => setVideosError(favoriteErrorMessage(error)),
+    );
   };
 
   const openFolder = (folder: FavoriteFolder) => {
@@ -3713,37 +3703,26 @@ function FavoritesView({
   };
 
   const backToFolders = () => {
-    videosEpoch.current += 1;
+    videosRequest.current?.cancel();
     resetSearch();
     setLevel({ kind: "folders" });
   };
 
   const loadFlat = async (page: number, append: boolean) => {
-    const epoch = ++videosEpoch.current;
     setVideosError(null);
     const cacheKey = source === "watchLater" ? "watch-later" : `history:${page}`;
     const cacheable = source === "watchLater" || page === 1;
-    const cached = !append && cacheable ? cache.read<FavoriteResourcePage>(cacheKey) : null;
-    if (cached) {
-      setVideos(cached.value.items);
-      setVideosPage(cached.value.page);
-      setVideosHasMore(cached.value.hasMore);
-      if (cached.fresh) return;
-    } else {
-      setVideosLoading(true);
-    }
-    try {
-      const fetchPage = () => (source === "watchLater" ? listWatchLater() : listHistory(page));
-      const result = cacheable ? await cache.fill(cacheKey, fetchPage) : await cache.scoped(fetchPage);
-      if (videosEpoch.current !== epoch) return;
-      setVideos((current) => (append ? [...current, ...result.items] : result.items));
-      setVideosPage(result.page);
-      setVideosHasMore(result.hasMore);
-    } catch (error) {
-      if (videosEpoch.current === epoch && !cached) setVideosError(favoriteErrorMessage(error));
-    } finally {
-      if (videosEpoch.current === epoch) setVideosLoading(false);
-    }
+    const fetchPage = () => (source === "watchLater" ? listWatchLater() : listHistory(page));
+    await videosRequest.current?.load(
+      !append && cacheable ? cache.read<FavoriteResourcePage>(cacheKey) : null,
+      () => cacheable ? cache.fill(cacheKey, fetchPage) : cache.scoped(fetchPage),
+      (result) => {
+        setVideos((current) => (append ? [...current, ...result.items] : result.items));
+        setVideosPage(result.page);
+        setVideosHasMore(result.hasMore);
+      },
+      (error) => setVideosError(favoriteErrorMessage(error)),
+    );
   };
 
   useEffect(() => {
