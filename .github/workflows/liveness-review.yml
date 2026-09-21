@@ -1,0 +1,87 @@
+name: Polling and search repair review
+on:
+  push:
+    branches: [fix/polling-search-liveness]
+    paths: [.github/workflows/liveness-review.yml]
+permissions:
+  contents: read
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.patch.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply exact baseline/result-verified source patch
+        id: patch
+        run: python tools/apply-liveness-review.py
+  observe:
+    needs: apply
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.apply.outputs.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install locked dependencies and type check
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+      - name: Prepare Linux FFmpeg
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+      - name: Prepare verified Windows FFmpeg
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tools/prepare-media-measurements.ps1
+      - name: Build worker and media observation helper
+        run: |
+          cargo build --locked --release --bin relay-worker
+          cargo build --locked --release -p relay-core --features media-measurements --example media-measurements
+      - name: Observe polling, search, existing ownership and local media
+        shell: bash
+        run: |
+          export GITHUB_SHA="$(git rev-parse HEAD)"
+          exe=relay-worker
+          if [ "$RUNNER_OS" = "Windows" ]; then exe=relay-worker.exe; fi
+          export VRC_BILI_RELAY_WORKER="$PWD/target/release/$exe"
+          export VRC_BILI_RELAY_DIAGNOSTICS_DIR="$PWD/artifacts/benchmarks/liveness-diagnostics"
+          bun run benchmarks/liveness.bench.ts
+          export VRC_BILI_RELAY_DIAGNOSTICS_DIR="$PWD/artifacts/benchmarks/ui-diagnostics"
+          bun run benchmarks/ui-state.bench.ts
+          export VRC_BILI_RELAY_DIAGNOSTICS_DIR="$PWD/artifacts/benchmarks/boundary-diagnostics"
+          bun run benchmarks/state-boundary.bench.ts
+          export VRC_BILI_RELAY_DIAGNOSTICS_DIR="$PWD/artifacts/benchmarks/diagnostics"
+          bun run benchmarks/worker-roundtrip.bench.ts
+          export VRC_BILI_RELAY_DIAGNOSTICS_DIR="$PWD/artifacts/benchmarks/media/diagnostics"
+          bun run benchmarks/media-pipeline.bench.ts
+          bun run benchmarks/ass-clock.bench.ts
+      - name: Package Windows application
+        if: runner.os == 'Windows'
+        run: bun run package:windows
+      - name: Retain observations and source revision
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p artifacts/benchmarks
+          git rev-parse HEAD > artifacts/benchmarks/revision.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: liveness-${{ runner.os }}-${{ needs.apply.outputs.sha }}
+          path: artifacts/benchmarks
+          retention-days: 30
