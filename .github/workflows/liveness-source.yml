@@ -1,0 +1,25 @@
+name: Liveness source snapshot
+on:
+  push:
+    branches: [fix/polling-search-liveness]
+    paths: [.github/workflows/liveness-source.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Archive exact source
+        run: |
+          mkdir -p /tmp/liveness-source
+          git archive --format=tar.gz HEAD > /tmp/liveness-source/source.tar.gz
+          git rev-parse HEAD > /tmp/liveness-source/revision.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liveness-source-${{ github.sha }}
+          path: /tmp/liveness-source/*
+          retention-days: 7
