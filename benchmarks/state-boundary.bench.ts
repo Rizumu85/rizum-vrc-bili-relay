@@ -168,6 +168,7 @@ async function listSequence(mode: "fresh" | "cold" | "refresh" | "refresh_failed
   const scope: Record<string, any> = {
     cache, source: "watchLater", videosRequest: { current: owner }, foldersRequest: { current: owner },
     videosEpoch: { current: 0 }, foldersEpoch: { current: 0 }, searchEpoch: { current: 0 },
+    searchInput: { current: { text: "", scope: "folder", open: false } }, searchRequest: { current: null },
     setVideosLoading: (value: boolean) => { state.loading = value; }, setFoldersLoading: (value: boolean) => { state.loading = value; },
     setVideosError: (value: string | null) => { state.error = value; }, setFoldersError: () => {},
     setVideos: (value: any) => { state.items = typeof value === "function" ? value(state.items) : value; }, setFolders: (value: any) => { state.items = value.items ?? value; },

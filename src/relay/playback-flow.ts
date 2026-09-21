@@ -46,6 +46,7 @@ export class PlaybackFlow {
   private nextLease = 0;
   private prepared = new Map<string, number>();
   private readonly unsubscribe: () => void;
+  private readonly listeners = new Set<() => void>();
 
   constructor(
     private readonly backend: PlaybackBackend,
@@ -59,7 +60,16 @@ export class PlaybackFlow {
       if (this.lease?.generation === generation) this.lease = null;
       this.trace("ui_generation_lost", { generation, operation_id: this.revision });
       this.invalidated(error);
+      this.changed();
     });
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+  private changed(): void {
+    for (const listener of this.listeners) listener();
   }
 
   get status(): RelayStatus | null { return this.lease?.status ?? null; }
@@ -70,14 +80,16 @@ export class PlaybackFlow {
     const intent = { id: ++this.revision, action };
     this.latestPending = intent.id;
     this.trace(`ui_${action}_intent`, { operation_id: intent.id });
+    this.changed();
     return intent;
   }
   cancel(): void {
     ++this.revision;
     this.latestPending = null;
     this.trace("ui_intent_cancelled", { operation_id: this.revision });
+    this.changed();
   }
-  dispose(): void { this.cancel(); this.unsubscribe(); }
+  dispose(): void { this.cancel(); this.unsubscribe(); this.listeners.clear(); }
 
   run<T>(intent: PlaybackIntent, work: (task: PlaybackTask) => Promise<T>): Promise<T> {
     const operation = this.tail.then(async () => {
@@ -106,28 +118,30 @@ export class PlaybackFlow {
         this.trace("ui_operation_failed", { operation_id: intent.id, restored: Number(hasActivePublisher(confirmed)) });
         throw new PlaybackFailure(error, confirmed);
       } finally {
-        if (this.latestPending === intent.id) this.latestPending = null;
-        if (!this.isCurrent(intent) && this.lease?.acquiredBy === intent.id) {
-          const stale = this.lease;
-          this.trace("ui_stale_lease_release", { operation_id: intent.id, lease_id: stale.number, generation: stale.generation });
-          if (this.backend.isGenerationCurrent(stale.generation)) {
-            try { await this.backend.stopRelay(stale.status.session_id, stale.generation, intent.id); }
-            catch (error) {
-              // No newer mutation can have dispatched (we still own the
-              // serialized slot). End this exact generation rather than leave
-              // an unobserved publisher or release a newer session by mistake.
-              if (!this.retireMissingSession(stale.status.session_id, stale.generation, intent.id, error)) {
-                this.trace("ui_stale_release_unconfirmed", { lease_id: stale.number });
-                this.backend.invalidateGeneration(stale.generation);
-                throw error;
+        try {
+          if (this.latestPending === intent.id) this.latestPending = null;
+          if (!this.isCurrent(intent) && this.lease?.acquiredBy === intent.id) {
+            const stale = this.lease;
+            this.trace("ui_stale_lease_release", { operation_id: intent.id, lease_id: stale.number, generation: stale.generation });
+            if (this.backend.isGenerationCurrent(stale.generation)) {
+              try { await this.backend.stopRelay(stale.status.session_id, stale.generation, intent.id); }
+              catch (error) {
+                // No newer mutation can have dispatched (we still own the
+                // serialized slot). End this exact generation rather than leave
+                // an unobserved publisher or release a newer session by mistake.
+                if (!this.retireMissingSession(stale.status.session_id, stale.generation, intent.id, error)) {
+                  this.trace("ui_stale_release_unconfirmed", { lease_id: stale.number });
+                  this.backend.invalidateGeneration(stale.generation);
+                  throw error;
+                }
               }
             }
+            if (this.lease === stale) {
+              this.lease = null;
+              this.invalidated();
+            }
           }
-          if (this.lease === stale) {
-            this.lease = null;
-            this.invalidated();
-          }
-        }
+        } finally { this.changed(); }
       }
     });
     this.tail = operation.then(() => undefined, () => undefined);
@@ -145,6 +159,7 @@ export class PlaybackFlow {
         const status = await this.backend.relayStatus(lease.status.session_id, lease.generation, revision);
         if (revision !== this.revision || this.lease !== lease || !this.backend.isGenerationCurrent(lease.generation)) return null;
         lease.status = status;
+        this.changed();
         return status;
       } catch (error) {
         if (this.retireMissingSession(lease.status.session_id, lease.generation, revision, error)) return null;
@@ -171,6 +186,7 @@ export class PlaybackFlow {
     if (owned) {
       this.lease = null;
       this.invalidated();
+      this.changed();
     }
     this.trace("ui_session_absence_confirmed", {
       operation_id: operationId, generation, ...(owned ? { lease_id: lease.number } : {}),
