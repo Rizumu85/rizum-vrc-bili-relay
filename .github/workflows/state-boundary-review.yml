@@ -1,0 +1,102 @@
+name: State boundary repair review
+on:
+  push:
+    branches: [fix/session-expiry-list-state]
+    paths: [.github/workflows/state-boundary-review.yml]
+permissions:
+  contents: read
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.apply.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply baseline and result-verified source edits on repair branch
+        id: apply
+        run: python tools/apply-state-boundary-review.py
+  observe:
+    needs: apply
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      VRC_BILI_RELAY_WORKER: ${{ github.workspace }}/target/release/relay-worker${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.apply.outputs.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install locked dependencies and type check
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+      - name: Prepare Linux FFmpeg
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+      - name: Prepare verified Windows FFmpeg
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tools/prepare-media-measurements.ps1
+      - name: Build worker and media observation helper
+        run: |
+          cargo build --locked --release --bin relay-worker
+          cargo build --locked --release -p relay-core --features media-measurements --example media-measurements
+      - name: Observe expired sessions and exact list handlers
+        shell: bash
+        env:
+          VRC_BILI_RELAY_DIAGNOSTICS_DIR: artifacts/benchmarks/boundary-diagnostics
+        run: |
+          export GITHUB_SHA="$(git rev-parse HEAD)"
+          bun run benchmarks/state-boundary.bench.ts
+      - name: Observe existing UI and real worker ownership
+        shell: bash
+        env:
+          VRC_BILI_RELAY_DIAGNOSTICS_DIR: artifacts/benchmarks/ui-diagnostics
+        run: |
+          export GITHUB_SHA="$(git rev-parse HEAD)"
+          bun run benchmarks/ui-state.bench.ts
+      - name: Observe real worker round trips
+        shell: bash
+        env:
+          VRC_BILI_RELAY_DIAGNOSTICS_DIR: artifacts/benchmarks/worker-diagnostics
+        run: |
+          export GITHUB_SHA="$(git rev-parse HEAD)"
+          bun run benchmarks/worker-roundtrip.bench.ts
+      - name: Observe media and ASS clocks
+        shell: bash
+        env:
+          VRC_BILI_RELAY_DIAGNOSTICS_DIR: artifacts/benchmarks/media/diagnostics
+        run: |
+          export GITHUB_SHA="$(git rev-parse HEAD)"
+          bun run benchmarks/media-pipeline.bench.ts
+          bun run benchmarks/ass-clock.bench.ts
+      - name: Package Windows application
+        if: runner.os == 'Windows'
+        run: bun run package:windows
+      - name: Record actual source revision
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p artifacts/benchmarks
+          git rev-parse HEAD > artifacts/benchmarks/REVIEW-REVISION.txt
+      - name: Retain raw observations (not a formal release)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-boundary-${{ runner.os }}-${{ needs.apply.outputs.sha }}
+          path: artifacts/benchmarks
+          retention-days: 30
