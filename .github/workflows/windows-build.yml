@@ -55,6 +55,11 @@ jobs:
           $env:VRC_BILI_RELAY_WORKER = Join-Path $PWD 'target/release/relay-worker.exe'
           $env:VRC_BILI_RELAY_DIAGNOSTICS_DIR = Join-Path $PWD 'artifacts/benchmarks/boundary-diagnostics'
           bun run benchmarks/state-boundary.bench.ts
+      - name: Observe polling continuity and query-scoped search
+        shell: pwsh
+        run: |
+          $env:VRC_BILI_RELAY_DIAGNOSTICS_DIR = Join-Path $PWD 'artifacts/benchmarks/liveness-diagnostics'
+          bun run benchmarks/liveness.bench.ts
       - name: Prepare verified measurement-only FFmpeg
         shell: pwsh
         run: ./tools/prepare-media-measurements.ps1

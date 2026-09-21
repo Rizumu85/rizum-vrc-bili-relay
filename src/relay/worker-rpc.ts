@@ -9,6 +9,9 @@ export class RelayWorkerError extends Error {
 
 export interface RpcMeasurement {
   event: string;
+  search_id?: number;
+  search_revision?: number;
+  page?: number;
   request_id?: number;
   command?: string;
   queue_depth?: number;

@@ -42,6 +42,8 @@ import {
 import { RelayWorkerClient, RelayWorkerError, type FavoriteResourcePage } from "./relay/worker-client";
 import { LibraryCache } from "./relay/library-cache";
 import { CoverLoader } from "./relay/cover-loader";
+import { SearchRequestOwner, emptySearchState } from "./relay/search-request";
+import { PlaybackObserver } from "./relay/playback-observer";
 import { ListRequestOwner, listLoadPending, type ListLoadPhase } from "./relay/list-request";
 import { SettingsPersistence, flushSettingsBeforeClose } from "./relay/settings-persistence";
 import { SettingsDraftState } from "./relay/settings-draft";
@@ -3600,15 +3602,18 @@ function FavoritesView({
     () => process.env.VRC_BILI_RELAY_FAVORITES_SEARCH ?? "",
   );
   const [searchScope, setSearchScope] = useState<FavoriteScope>("folder");
-  const [searchItems, setSearchItems] = useState<FavoriteResourceItem[] | null>(null);
-  const [searchPage, setSearchPage] = useState(0);
-  const [searchHasMore, setSearchHasMore] = useState(false);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchState, setSearchState] = useState(emptySearchState<FavoriteResourceItem>);
+  const searchItems = searchState.items;
+  const searchHasMore = searchState.hasMore;
+  const searchLoading = searchState.phase === "debouncing" || searchState.phase === "loading";
+  const searchError = searchState.error ? favoriteErrorMessage(searchState.error) : null;
+  const searchRequest = useRef<SearchRequestOwner<FavoriteResourceItem> | null>(null);
+  const searchInput = useRef({ text: searchText, scope: searchScope, open: searchOpen });
+  const searchResourcesRef = useRef(searchResources);
+  searchResourcesRef.current = searchResources;
   const [covers, setCovers] = useState<ReadonlyMap<string, string>>(new Map());
   const foldersRequest = useRef<ListRequestOwner | null>(null);
   const videosRequest = useRef<ListRequestOwner | null>(null);
-  const searchEpoch = useRef(0);
   const coversEpoch = useRef(0);
   const pickVideoRef = useRef(onPickVideo);
   pickVideoRef.current = onPickVideo;
@@ -3622,9 +3627,19 @@ function FavoritesView({
     return () => {
       folders.dispose(); videos.dispose();
       foldersRequest.current = null; videosRequest.current = null;
-      ++searchEpoch.current; ++coversEpoch.current;
+      ++coversEpoch.current;
     };
   }, []);
+
+  useEffect(() => {
+    const owner = new SearchRequestOwner<FavoriteResourceItem>(
+      (query, page) => cache.scoped(() => searchResourcesRef.current(query.folderId, query.keyword, page)),
+      setSearchState,
+      recordUiState,
+    );
+    searchRequest.current = owner;
+    return () => { owner.dispose(); searchRequest.current = null; };
+  }, [cache]);
 
   const searching = searchItems !== null;
 
@@ -3665,15 +3680,11 @@ function FavoritesView({
   }, [authenticated]);
 
   const resetSearch = () => {
-    searchEpoch.current += 1;
+    searchInput.current = { text: "", scope: "folder", open: false };
+    searchRequest.current?.setQuery(null);
     setSearchOpen(false);
     setSearchText("");
     setSearchScope("folder");
-    setSearchItems(null);
-    setSearchPage(0);
-    setSearchHasMore(false);
-    setSearchLoading(false);
-    setSearchError(null);
   };
 
   const loadVideos = async (folder: FavoriteFolder, page: number, append: boolean) => {
@@ -3732,45 +3743,32 @@ function FavoritesView({
     if (authenticated) void loadFlat(1, false);
   }, [source, authenticated]);
 
-  const runSearch = async (keyword: string, page: number, append: boolean) => {
-    const folderId = level.kind === "videos" && searchScope === "folder" ? level.folder.id : null;
-    const epoch = ++searchEpoch.current;
-    setSearchError(null);
-    setSearchLoading(true);
-    if (!append) setSearchItems((current) => current ?? []);
-    try {
-      const result = await cache.scoped(() => searchResources(folderId, keyword, page));
-      if (searchEpoch.current !== epoch) return;
-      setSearchItems((current) => (append && current ? [...current, ...result.items] : result.items));
-      setSearchPage(result.page);
-      setSearchHasMore(result.hasMore);
-    } catch (error) {
-      if (searchEpoch.current === epoch) setSearchError(favoriteErrorMessage(error));
-    } finally {
-      if (searchEpoch.current === epoch) setSearchLoading(false);
-    }
+  // Event handlers revoke old results synchronously; the owner alone debounces
+  // dispatch and derives pagination from its accepted query, never draft text.
+  const syncSearchQuery = () => {
+    const input = searchInput.current;
+    searchRequest.current?.setQuery(input.open ? {
+      keyword: input.text,
+      folderId: level.kind === "videos" && input.scope === "folder" ? level.folder.id : null,
+    } : null);
   };
-
-  useEffect(() => {
-    if (!searchOpen) return;
-    const keyword = searchText.trim();
-    if (!keyword) {
-      searchEpoch.current += 1;
-      setSearchItems(null);
-      setSearchError(null);
-      setSearchLoading(false);
-      setSearchPage(0);
-      setSearchHasMore(false);
-      return;
-    }
-    const timer = setTimeout(() => void runSearch(keyword, 1, false), 400);
-    return () => clearTimeout(timer);
-  }, [searchText, searchScope, searchOpen, level]);
+  const changeSearchText = (text: string) => {
+    searchInput.current = { ...searchInput.current, text };
+    syncSearchQuery();
+    setSearchText(text);
+  };
+  const changeSearchScope = (scope: FavoriteScope) => {
+    searchInput.current = { ...searchInput.current, scope };
+    syncSearchQuery();
+    setSearchScope(scope);
+  };
+  useEffect(() => { syncSearchQuery(); }, [level, cache]);
 
   const toggleSearch = () => {
-    if (searchOpen) {
-      resetSearch();
-    } else {
+    if (searchInput.current.open) resetSearch();
+    else {
+      searchInput.current = { ...searchInput.current, open: true };
+      syncSearchQuery();
       setSearchOpen(true);
     }
   };
@@ -3798,7 +3796,7 @@ function FavoritesView({
         testId="favorites-search"
         value={searchText}
         placeholder={level.kind === "videos" ? "搜索收藏内容" : "搜索全部收藏的视频"}
-        onChange={setSearchText}
+        onChange={changeSearchText}
         palette={palette}
         style={{
           flexGrow: 1,
@@ -3813,7 +3811,7 @@ function FavoritesView({
         }}
       />
       {searchText ? (
-        <IconButton name="close" palette={palette} label="clear-favorites-search" onClick={() => setSearchText("")} />
+        <IconButton name="close" palette={palette} label="clear-favorites-search" onClick={() => changeSearchText("")} />
       ) : null}
     </div>
   );
@@ -4028,7 +4026,7 @@ function FavoritesView({
                   centerState(
                     <>
                       <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{searchError}</text>
-                      <Button label="重试" palette={palette} quiet onClick={() => void runSearch(searchText.trim(), 1, false)} />
+                      <Button label="重试" palette={palette} quiet onClick={() => void searchRequest.current?.retry()} />
                     </>,
                   )
                 ) : (searchItems?.length ?? 0) === 0 && !searchLoading ? (
@@ -4041,7 +4039,7 @@ function FavoritesView({
                     {searchLoading && (searchItems?.length ?? 0) === 0
                       ? centerState(<Loading palette={palette} label="正在搜索" />)
                       : null}
-                    {searchHasMore ? moreRow(searchLoading, () => void runSearch(searchText.trim(), searchPage + 1, true)) : null}
+                    {searchHasMore ? moreRow(searchLoading, () => void searchRequest.current?.more()) : null}
                   </>
                 )}
               </>,
@@ -4105,7 +4103,7 @@ function FavoritesView({
             {searchField}
             <Segmented
               value={searchScope}
-              onChange={setSearchScope}
+              onChange={changeSearchScope}
               options={FAVORITE_SCOPE_OPTIONS}
               optionWeights={[58, 34]}
               width={150}
@@ -4130,7 +4128,7 @@ function FavoritesView({
                   centerState(
                     <>
                       <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{searchError}</text>
-                      <Button label="重试" palette={palette} quiet onClick={() => void runSearch(searchText.trim(), 1, false)} />
+                      <Button label="重试" palette={palette} quiet onClick={() => void searchRequest.current?.retry()} />
                     </>,
                   )
                 ) : (searchItems?.length ?? 0) === 0 && !searchLoading ? (
@@ -4143,7 +4141,7 @@ function FavoritesView({
                     {searchLoading && (searchItems?.length ?? 0) === 0
                       ? centerState(<Loading palette={palette} label="正在搜索" />)
                       : null}
-                    {searchHasMore ? moreRow(searchLoading, () => void runSearch(searchText.trim(), searchPage + 1, true)) : null}
+                    {searchHasMore ? moreRow(searchLoading, () => void searchRequest.current?.more()) : null}
                   </>
                 )}
               </>,
@@ -5249,48 +5247,26 @@ export function AppSurface({
     };
   }, [mediaStatus?.availability]);
 
+  const receiveRelayObservation = useRef<(status: RelayStatus) => void>(() => undefined);
+  receiveRelayObservation.current = (latest) => {
+    if (windowClosing.current) return;
+    setRelayStatus(latest);
+    setPlaybackPaused(latest.paused);
+    const preservePausedSeek = latest.paused && pendingPausedPosition.current !== null;
+    if (latest.position_seconds !== undefined && !seekInteractionActive
+      && playbackUpdating === null && !preservePausedSeek) {
+      setPlaybackPosition(latest.position_seconds);
+    }
+    setRelayError(latest.stage === "failed" ? relayFailureMessage(latest) : null);
+  };
   useEffect(() => {
-    const ownedStatus = relayStatus ?? playbackFlow.current?.status;
-    if (!ownedStatus || !hasActivePublisher(ownedStatus)
-      || playbackUpdating !== null || playbackToggling || relayStopping) return;
-    const flow = getPlaybackFlow();
-    const epoch = flow.epoch;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const poll = async () => {
-      try {
-        const latest = await flow.poll();
-        if (!cancelled && latest && flow.epoch === epoch) {
-          setRelayStatus(latest);
-          setPlaybackPaused(latest.paused);
-          const preservePausedSeek = latest.paused && pendingPausedPosition.current !== null;
-          if (
-            latest.position_seconds !== undefined
-            && !seekInteractionActive
-            && playbackUpdating === null
-            && !preservePausedSeek
-          ) {
-            setPlaybackPosition(latest.position_seconds);
-          }
-          if (latest.stage === "failed") setRelayError(relayFailureMessage(latest));
-          else setRelayError(null);
-          if (hasActivePublisher(latest)) {
-            timer = setTimeout(poll, latest.stage === "starting" ? 700 : 2000);
-          }
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setRelayError(relayErrorMessage(error));
-          timer = setTimeout(poll, 2000);
-        }
-      }
-    };
-    timer = setTimeout(poll, ownedStatus.stage === "starting" ? 700 : 2000);
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [relayStatus?.session_id, relayStatus?.stage, seekInteractionActive, playbackUpdating, playbackToggling, relayStopping]);
+    const observer = new PlaybackObserver(getPlaybackFlow(),
+      (latest) => receiveRelayObservation.current(latest),
+      (error) => { if (!windowClosing.current) setRelayError(relayErrorMessage(error)); },
+      recordUiState,
+    );
+    return () => observer.dispose();
+  }, []);
 
   const convert = async (sourceOverride?: string) => {
     const normalizedSource = (sourceOverride ?? source).trim();

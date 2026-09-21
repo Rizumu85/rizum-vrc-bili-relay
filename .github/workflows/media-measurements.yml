@@ -42,6 +42,10 @@ jobs:
           export VRC_BILI_RELAY_WORKER="$PWD/target/release/relay-worker"
           export VRC_BILI_RELAY_DIAGNOSTICS_DIR="$PWD/artifacts/benchmarks/boundary-diagnostics"
           bun run benchmarks/state-boundary.bench.ts
+      - name: Observe polling continuity and query-scoped search
+        env:
+          VRC_BILI_RELAY_DIAGNOSTICS_DIR: artifacts/benchmarks/liveness-diagnostics
+        run: bun run benchmarks/liveness.bench.ts
       - name: Measure synthetic local media
         env:
           VRC_BILI_RELAY_DIAGNOSTICS_DIR: artifacts/benchmarks/media/diagnostics
@@ -57,6 +61,7 @@ jobs:
             artifacts/benchmarks/*.json
             artifacts/benchmarks/ui-diagnostics/*.jsonl
             artifacts/benchmarks/boundary-diagnostics/*.jsonl
+            artifacts/benchmarks/liveness-diagnostics/*.jsonl
             artifacts/benchmarks/media/*.json
             artifacts/benchmarks/media/diagnostics/*.jsonl
             artifacts/benchmarks/ass-clock/**/diagnostics/*.jsonl
