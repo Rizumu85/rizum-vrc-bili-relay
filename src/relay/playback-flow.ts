@@ -92,6 +92,7 @@ export class PlaybackFlow {
           () => this.lease,
           (id) => this.prepared.get(id) === generation,
           (resolution) => this.remember(resolution, generation!),
+          (id, error) => this.retireMissingSession(id, generation!, intent.id, error),
         );
         const result = await work(task);
         check();
@@ -115,13 +116,17 @@ export class PlaybackFlow {
               // No newer mutation can have dispatched (we still own the
               // serialized slot). End this exact generation rather than leave
               // an unobserved publisher or release a newer session by mistake.
-              this.trace("ui_stale_release_unconfirmed", { lease_id: stale.number });
-              this.backend.invalidateGeneration(stale.generation);
-              throw error;
+              if (!this.retireMissingSession(stale.status.session_id, stale.generation, intent.id, error)) {
+                this.trace("ui_stale_release_unconfirmed", { lease_id: stale.number });
+                this.backend.invalidateGeneration(stale.generation);
+                throw error;
+              }
             }
           }
-          if (this.lease === stale) this.lease = null;
-          this.invalidated();
+          if (this.lease === stale) {
+            this.lease = null;
+            this.invalidated();
+          }
         }
       }
     });
@@ -142,6 +147,7 @@ export class PlaybackFlow {
         lease.status = status;
         return status;
       } catch (error) {
+        if (this.retireMissingSession(lease.status.session_id, lease.generation, revision, error)) return null;
         // Generation loss is broadcast by the process adapter. A transient
         // status-read failure keeps the lease so polling/stop can still own it.
         throw error;
@@ -149,6 +155,27 @@ export class PlaybackFlow {
     });
     this.tail = observation.then(() => undefined, () => undefined);
     return observation;
+  }
+
+  /** Only an explicit reply from the same live generation proves absence.
+   * Expired metadata is not an unknown process: stop is already satisfied.
+   * Remove only this session, never another lease or a new prepared selection.
+   * Do not cancel the current intent; a replacement can now proceed normally.
+   */
+  private retireMissingSession(id: string, generation: number, operationId: number, error: unknown): boolean {
+    if (!(error instanceof RelayWorkerError) || error.code !== "media_session_not_found"
+      || !this.backend.isGenerationCurrent(generation)) return false;
+    const lease = this.lease;
+    const owned = lease?.generation === generation && lease.status.session_id === id;
+    if (this.prepared.get(id) === generation) this.prepared.delete(id);
+    if (owned) {
+      this.lease = null;
+      this.invalidated();
+    }
+    this.trace("ui_session_absence_confirmed", {
+      operation_id: operationId, generation, ...(owned ? { lease_id: lease.number } : {}),
+    });
+    return true;
   }
 
   private remember(resolution: SourceResolution, generation: number): void {
@@ -177,7 +204,8 @@ export class PlaybackFlow {
       lease.status = observed;
       this.trace("ui_failure_state_observed", { lease_id: lease.number, generation, active: Number(hasActivePublisher(observed)) });
       return observed;
-    } catch {
+    } catch (error) {
+      if (this.retireMissingSession(lease.status.session_id, generation, operationId, error)) return null;
       this.trace("ui_failure_state_unknown", { lease_id: lease.number, generation });
       return null;
     }
@@ -192,6 +220,7 @@ export class PlaybackTask {
     private readonly lease: () => Lease | null,
     private readonly prepared: (id: string) => boolean,
     private readonly remember: (resolution: SourceResolution) => void,
+    private readonly retireMissing: (id: string, error: unknown) => boolean,
   ) {}
   private owned(id?: string): string {
     this.check();
@@ -211,7 +240,9 @@ export class PlaybackTask {
     if (!this.prepared(id)) throw new RelayWorkerError("media_session_not_found", "Resolve the source again for this worker generation");
     // A previous unconfirmed stale cleanup must finish before a new start.
     if (hasActivePublisher(this.lease()?.status)) await this.stop();
-    const status = await this.backend.startRelay(id, options, start, paused, this.generation, this.operationId);
+    let status: RelayStatus;
+    try { status = await this.backend.startRelay(id, options, start, paused, this.generation, this.operationId); }
+    catch (error) { this.retireMissing(id, error); throw error; }
     this.adopt(status, true); this.check(); return status;
   }
   async retarget(source: string, part: number, options: PlaybackOptions, start: number, paused = false): Promise<{ resolution: SourceResolution; relay: RelayStatus }> {
@@ -232,7 +263,13 @@ export class PlaybackTask {
     this.check();
     const lease = this.lease();
     if (!lease || lease.generation !== this.generation) return null;
-    const status = await this.backend.stopRelay(lease.status.session_id, this.generation, this.operationId);
-    this.adopt(status, false); this.check(); return status;
+    try {
+      const status = await this.backend.stopRelay(lease.status.session_id, this.generation, this.operationId);
+      this.adopt(status, false); this.check(); return status;
+    } catch (error) {
+      if (!this.retireMissing(lease.status.session_id, error)) throw error;
+      this.check();
+      return null;
+    }
   }
 }

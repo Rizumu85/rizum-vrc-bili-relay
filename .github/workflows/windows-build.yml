@@ -49,6 +49,12 @@ jobs:
           $env:VRC_BILI_RELAY_WORKER = Join-Path $PWD 'target/release/relay-worker.exe'
           $env:VRC_BILI_RELAY_DIAGNOSTICS_DIR = Join-Path $PWD 'artifacts/benchmarks/ui-diagnostics'
           bun run benchmarks/ui-state.bench.ts
+      - name: Observe expired sessions and list request boundaries
+        shell: pwsh
+        run: |
+          $env:VRC_BILI_RELAY_WORKER = Join-Path $PWD 'target/release/relay-worker.exe'
+          $env:VRC_BILI_RELAY_DIAGNOSTICS_DIR = Join-Path $PWD 'artifacts/benchmarks/boundary-diagnostics'
+          bun run benchmarks/state-boundary.bench.ts
       - name: Prepare verified measurement-only FFmpeg
         shell: pwsh
         run: ./tools/prepare-media-measurements.ps1

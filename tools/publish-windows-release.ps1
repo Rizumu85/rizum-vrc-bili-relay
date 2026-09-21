@@ -17,9 +17,10 @@ $report = Join-Path $MeasurementDirectory 'worker-roundtrip.json'
 $mediaReport = Join-Path $MeasurementDirectory 'media-pipeline.json'
 $assClockReport = Join-Path $MeasurementDirectory 'ass-clock.json'
 $uiStateReport = Join-Path $MeasurementDirectory 'ui-state.json'
+$stateBoundaryReport = Join-Path $MeasurementDirectory 'state-boundary.json'
 $toolchainReport = Join-Path $MeasurementDirectory 'ffmpeg-toolchain.json'
 $notes = "docs/releases/$tag.md"
-foreach ($path in @($archive, $checksum, $report, $mediaReport, $assClockReport, $uiStateReport, $toolchainReport, $notes)) {
+foreach ($path in @($archive, $checksum, $report, $mediaReport, $assClockReport, $uiStateReport, $stateBoundaryReport, $toolchainReport, $notes)) {
     if (-not (Test-Path $path -PathType Leaf)) { throw "Missing release input: $path" }
 }
 $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -34,7 +35,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not check the tag namespace.' }
 if (@($tags | Where-Object { $_.ref -eq "refs/tags/$tag" }).Count -gt 0) {
     throw "Tag $tag already exists; refusing an unverified tag."
 }
-gh release create $tag $archive $checksum $report $mediaReport $assClockReport $uiStateReport $toolchainReport --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --draft --title "$tag - UI ownership and persistence" --notes-file $notes
+gh release create $tag $archive $checksum $report $mediaReport $assClockReport $uiStateReport $stateBoundaryReport $toolchainReport --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --draft --title "$tag - Session expiry and list state" --notes-file $notes
 if ($LASTEXITCODE -ne 0) { throw 'Could not create/upload the draft release.' }
 
 # Re-download, verify, and expand the exact uploaded bytes; never rebuild here.
