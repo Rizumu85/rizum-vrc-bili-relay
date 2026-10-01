@@ -1541,6 +1541,20 @@ function SeekControl({
     onPositionCommit(position);
   };
 
+  // A drag that ends while seeking is disabled (another playback update took
+  // over) is abandoned: release the interaction flag, never commit a seek.
+  const cancelInteraction = () => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    setDragging(false);
+    onInteractionChange(false);
+  };
+
+  useEffect(() => {
+    if (disabled) cancelInteraction();
+  }, [disabled]);
+  useEffect(() => () => cancelInteraction(), []);
+
   const seekKeys = ["left", "right", "pageup", "pagedown", "home", "end"];
   const ratio = duration > 0 ? visiblePosition / duration : 0;
   const thumbLeft = Math.round((TRACK_WIDTH - 12) * ratio);
@@ -1561,11 +1575,13 @@ function SeekControl({
           if (!disabled && draggingRef.current) setFromPointer(event);
         }}
         onMouseUp={(event) => {
-          if (disabled || event.button !== 0 || !draggingRef.current) return;
-          finishInteraction(setFromPointer(event));
+          if (event.button !== 0 || !draggingRef.current) return;
+          if (disabled) cancelInteraction();
+          else finishInteraction(setFromPointer(event));
         }}
         onMouseLeave={() => {
-          if (draggingRef.current) finishInteraction();
+          if (disabled) cancelInteraction();
+          else finishInteraction();
         }}
         onKeyDown={(event) => {
           if (disabled || !event.key || !seekKeys.includes(event.key)) return;
