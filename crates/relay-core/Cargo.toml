@@ -19,6 +19,9 @@ url.workspace = true
 zeromq.workspace = true
 zip.workspace = true
 
+[build-dependencies]
+serde_json.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
 

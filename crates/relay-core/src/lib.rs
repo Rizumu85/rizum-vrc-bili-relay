@@ -1,7 +1,11 @@
+use std::collections::HashMap;
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 mod bilibili;
+mod budget;
 mod bilibili_auth;
 mod bilibili_session;
 mod covers;
@@ -23,18 +27,38 @@ mod stream_diagnostics;
 mod windows_secret;
 
 use bilibili::BilibiliClient;
+use budget::Deadline;
 use danmaku::{DanmakuOverlay, DanmakuService};
 use ffmpeg_manager::FfmpegManager;
 use media_session::MediaSessionStore;
 use settings::SettingsStore;
 
-pub const PROTOCOL_VERSION: u32 = 25;
+pub const PROTOCOL_VERSION: u32 = 26;
+
+// Network budgets per command. Each must leave room below the UI's dispatch
+// deadline in src/relay/worker-client.ts for the non-network work of the same
+// command (FFmpeg startup waits up to 15 s), because an expired UI deadline
+// stops the worker together with every running relay.
+const RESOLVE_BUDGET: Duration = Duration::from_secs(20);
+const LIBRARY_BUDGET: Duration = Duration::from_secs(15);
+const LOGIN_BUDGET: Duration = Duration::from_secs(20);
+const DANMAKU_BUDGET: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
     pub id: u64,
     #[serde(flatten)]
     pub command: Command,
+}
+
+/// Recover the id of a request whose command failed to parse. Unknown and
+/// malformed fields are ignored; only a valid numeric id is returned.
+pub fn request_id(line: &[u8]) -> Option<u64> {
+    #[derive(Deserialize)]
+    struct RequestId {
+        id: u64,
+    }
+    serde_json::from_slice::<RequestId>(line).ok().map(|request| request.id)
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,8 +163,12 @@ impl ResponseEnvelope {
     }
 
     pub fn protocol_error(message: impl Into<String>) -> Self {
+        Self::invalid_request(0, message)
+    }
+
+    pub fn invalid_request(id: u64, message: impl Into<String>) -> Self {
         Self::Error {
-            id: 0,
+            id,
             error: RelayError::new("invalid_request", message),
         }
     }
@@ -611,6 +639,10 @@ pub struct RelayStatus {
     pub diagnostic: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end_reason: Option<RelayEndReason>,
+    /// Error code of the last danmaku preparation that failed for this
+    /// session. Playback continues without danmaku in that case.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub danmaku_error: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -742,6 +774,7 @@ pub struct RelayCore {
     danmaku: DanmakuService,
     sessions: MediaSessionStore,
     settings: SettingsStore,
+    danmaku_errors: HashMap<String, &'static str>,
 }
 
 impl Default for RelayCore {
@@ -763,14 +796,32 @@ impl RelayCore {
             danmaku: DanmakuService::new(),
             sessions: MediaSessionStore::new(),
             settings,
+            danmaku_errors: HashMap::new(),
         }
     }
 
     pub fn handle(&mut self, command: Command) -> Result<Reply, RelayError> {
+        let budget = match &command {
+            Command::ResolveSource { .. } | Command::RetargetRelay { .. } => Some(RESOLVE_BUDGET),
+            Command::ListFavoriteFolders
+            | Command::ListFavoriteResources { .. }
+            | Command::SearchFavoriteResources { .. }
+            | Command::ListWatchLater
+            | Command::ListHistory { .. } => Some(LIBRARY_BUDGET),
+            Command::BeginBilibiliLogin | Command::PollBilibiliLogin { .. } => Some(LOGIN_BUDGET),
+            _ => None,
+        };
+        self.bilibili.set_deadline(budget.map(Deadline::after));
+        let result = self.handle_command(command);
+        self.bilibili.set_deadline(None);
+        result.map(|reply| self.annotate(reply))
+    }
+
+    fn handle_command(&mut self, command: Command) -> Result<Reply, RelayError> {
         match command {
             Command::Health => Ok(Reply::Health {
                 protocol_version: PROTOCOL_VERSION,
-                backend_version: env!("CARGO_PKG_VERSION"),
+                backend_version: APP_VERSION,
                 ffmpeg: self.ffmpeg.status(),
             }),
             Command::InspectSource { source } => Ok(Reply::SourceInspection {
@@ -891,6 +942,9 @@ impl RelayCore {
                         options.output_resolution,
                     )?
                 };
+                if let Some(previous) = current_session_id.filter(|id| *id != next_session_id) {
+                    self.danmaku_errors.remove(&previous);
+                }
                 Ok(Reply::PlaybackState { resolution, relay })
             }
             Command::RelayStatus { session_id } => Ok(Reply::RelayState {
@@ -923,15 +977,25 @@ impl RelayCore {
             } => {
                 let before = self.sessions.status(&session_id, &self.bilibili)?;
                 let (source, start) = self.sessions.playback_context(&session_id, before.position_seconds.unwrap_or(0.0))?;
-                if let Some(source) = source {
-                    self.danmaku.preload(&source, &options.danmaku, start)?;
+                let mut danmaku = options.danmaku.clone();
+                if let Some(source) = source
+                    && let Err(error) = self.danmaku.preload(
+                        &source,
+                        &danmaku,
+                        start,
+                        Deadline::after(DANMAKU_BUDGET),
+                    )
+                {
+                    // Do not spend a second budget retrying the same download.
+                    self.record_danmaku_error(&session_id, error.code);
+                    danmaku.enabled = false;
                 }
                 // Media kept advancing while network preparation ran. Do not
                 // restart it at the stale position captured before that I/O.
                 let current = self.sessions.status(&session_id, &self.bilibili)?;
                 let start_seconds = current.position_seconds.unwrap_or(0.0);
                 let (overlay, normalized_start) =
-                    self.prepare_danmaku_overlay(&session_id, &options.danmaku, start_seconds)?;
+                    self.prepare_danmaku_overlay(&session_id, &danmaku, start_seconds)?;
                 Ok(Reply::RelayState {
                     relay: self.sessions.set_playback_rate(
                         &session_id,
@@ -941,9 +1005,11 @@ impl RelayCore {
                     )?,
                 })
             }
-            Command::StopRelay { session_id } => Ok(Reply::RelayState {
-                relay: self.sessions.stop(&session_id)?,
-            }),
+            Command::StopRelay { session_id } => {
+                let relay = self.sessions.stop(&session_id)?;
+                self.danmaku_errors.remove(&session_id);
+                Ok(Reply::RelayState { relay })
+            }
             Command::EnsureFfmpeg => Ok(Reply::FfmpegState {
                 ffmpeg: self.ffmpeg.ensure_installed()?,
             }),
@@ -1008,17 +1074,57 @@ impl RelayCore {
             .sessions
             .playback_context(session_id, requested_start)?;
         let overlay = match source {
-            Some(source) => {
-                if settings.enabled && source.is_live() {
-                    self.ffmpeg.ensure_live_danmaku_support()?;
+            Some(source) if settings.enabled => {
+                let support = if source.is_live() {
+                    self.ffmpeg.ensure_live_danmaku_support()
+                } else {
+                    Ok(())
+                };
+                let prepared = support.and_then(|()| {
+                    self.danmaku.prepare(
+                        &source,
+                        settings,
+                        normalized_start,
+                        Deadline::after(DANMAKU_BUDGET),
+                    )
+                });
+                match prepared {
+                    Ok(overlay) => {
+                        self.danmaku_errors.remove(session_id);
+                        overlay
+                    }
+                    // Danmaku decorates playback and must never prevent it.
+                    // The reply reports the code so the UI can say why.
+                    Err(error) => {
+                        self.record_danmaku_error(session_id, error.code);
+                        None
+                    }
                 }
-                self.danmaku.prepare(&source, settings, normalized_start)?
             }
-            None => None,
+            _ => {
+                self.danmaku_errors.remove(session_id);
+                None
+            }
         };
         Ok((overlay, normalized_start))
     }
+
+    fn record_danmaku_error(&mut self, session_id: &str, code: &'static str) {
+        let sessions = &mut self.sessions;
+        self.danmaku_errors.retain(|id, _| sessions.is_active(id));
+        self.danmaku_errors.insert(session_id.to_string(), code);
+    }
+
+    fn annotate(&self, mut reply: Reply) -> Reply {
+        if let Reply::RelayState { relay } | Reply::PlaybackState { relay, .. } = &mut reply {
+            relay.danmaku_error = self.danmaku_errors.get(&relay.session_id).copied();
+        }
+        reply
+    }
 }
+
+/// The product version shown by the UI (package.json), not the crate version.
+const APP_VERSION: &str = env!("VRC_BILI_RELAY_VERSION");
 
 pub fn inspect_source(source: &str) -> Result<SourceInspection, RelayError> {
     let source = normalize_source_input(source)?;
@@ -1060,9 +1166,22 @@ fn inspect_normalized_source(source: &str) -> Result<SourceInspection, RelayErro
     }
 
     if host == "live.bilibili.com" || host.ends_with(".live.bilibili.com") {
-        let room_id = url
+        let segments: Vec<_> = url
             .path_segments()
-            .and_then(|mut segments| segments.find(|segment| !segment.is_empty()))
+            .map(|segments| segments.filter(|segment| !segment.is_empty()).collect())
+            .unwrap_or_default();
+        // live.bilibili.com/{room}, plus the shared forms /blanc/{room}
+        // (embedded player) and /h5/{room} (mobile page).
+        let room_segment = match segments.as_slice() {
+            [prefix, room, ..]
+                if prefix.eq_ignore_ascii_case("blanc") || prefix.eq_ignore_ascii_case("h5") =>
+            {
+                Some(*room)
+            }
+            [room, ..] => Some(*room),
+            [] => None,
+        };
+        let room_id = room_segment
             .filter(|segment| segment.chars().all(|character| character.is_ascii_digit()))
             .ok_or_else(|| {
                 RelayError::new(

@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::time::Duration;
 
 use reqwest::blocking::{Client, Response};
@@ -6,6 +7,7 @@ use serde_json::Value;
 use url::Url;
 
 use crate::bilibili_auth::BilibiliAuthService;
+use crate::budget::{Deadline, MAX_REQUEST_TIMEOUT};
 use crate::{
     BilibiliAccessMode, BilibiliAuthStatus, FavoriteFolder, FavoriteResourceItem, LiveStatus,
     MediaFormat, MediaInput, RelayError, ResolvedSource, RouteDecision, RouteKind, RouteReason,
@@ -26,6 +28,7 @@ pub struct BilibiliClient {
     http: Client,
     auth: BilibiliAuthService,
     access_mode: BilibiliAccessMode,
+    deadline: Cell<Option<Deadline>>,
 }
 
 impl BilibiliClient {
@@ -40,6 +43,20 @@ impl BilibiliClient {
             auth: BilibiliAuthService::new(http.clone()),
             http,
             access_mode,
+            deadline: Cell::new(None),
+        }
+    }
+
+    /// Bound every request of the current command by one shared budget.
+    pub fn set_deadline(&self, deadline: Option<Deadline>) {
+        self.deadline.set(deadline);
+        self.auth.set_deadline(deadline);
+    }
+
+    fn request_timeout(&self) -> Result<Duration, RelayError> {
+        match self.deadline.get() {
+            Some(deadline) => deadline.require("bilibili_timeout", "Bilibili request"),
+            None => Ok(MAX_REQUEST_TIMEOUT),
         }
     }
 
@@ -112,6 +129,7 @@ impl BilibiliClient {
         let mid = self.auth.status().user_id.ok_or_else(|| RelayError::new("login_required", "请先登录 Bilibili"))?;
         let cookie = self.active_cookie().ok_or_else(|| RelayError::new("login_required", "请先登录 Bilibili"))?;
         let response = self.http.get(format!("https://api.bilibili.com/x/v3/fav/folder/created/list?pn=1&ps=50&up_mid={mid}"))
+            .timeout(self.request_timeout()?)
             .header(COOKIE, cookie).header(REFERER, "https://space.bilibili.com/").send()
             .map_err(|e| network_error("bilibili_unavailable", "无法读取收藏夹", e))?;
         ensure_http_success(&response)?;
@@ -199,6 +217,7 @@ impl BilibiliClient {
     fn authenticated_get(&self, endpoint: &str, code: &'static str, context: &'static str) -> Result<Value, RelayError> {
         let cookie = self.active_cookie().ok_or_else(|| RelayError::new("login_required", "请先登录 Bilibili"))?;
         let response = self.http.get(endpoint)
+            .timeout(self.request_timeout()?)
             .header(COOKIE, cookie).header(REFERER, "https://space.bilibili.com/").send()
             .map_err(|e| network_error("bilibili_unavailable", context, e))?;
         ensure_http_success(&response)?;
@@ -241,7 +260,7 @@ impl BilibiliClient {
     }
 
     fn expand_short_link(&self, source: &str) -> Result<Url, RelayError> {
-        let response = self.http.get(source.trim()).send().map_err(|error| {
+        let response = self.http.get(source.trim()).timeout(self.request_timeout()?).send().map_err(|error| {
             network_error(
                 "short_link_failed",
                 "Bilibili short link could not be opened",
@@ -554,6 +573,7 @@ impl BilibiliClient {
         let mut request = self
             .http
             .get(endpoint)
+            .timeout(self.request_timeout()?)
             .header(USER_AGENT, BROWSER_USER_AGENT)
             .header(ACCEPT, "application/json")
             .header(REFERER, referer);
@@ -714,7 +734,7 @@ fn select_live_candidate(play_url: &Value) -> Option<LiveCandidate> {
                             }
                             let (media_format, format_score) = media_format?;
                             let url_info = codec.get("url_info")?.as_array()?;
-                            let selected_url = url_info.iter().find_map(|info| {
+                            let urls = url_info.iter().filter_map(|info| {
                                 let host = string_field(info, "host").unwrap_or_default();
                                 let base = string_field(codec, "base_url").unwrap_or_default();
                                 let extra = string_field(info, "extra").unwrap_or_default();
@@ -722,11 +742,16 @@ fn select_live_candidate(play_url: &Value) -> Option<LiveCandidate> {
                                     .ok()
                                     .filter(|url| matches!(url.scheme(), "http" | "https"))
                             });
-                            let selected_url = selected_url?;
-                            let uses_mcdn = url_info.iter().any(|info| {
-                                string_field(info, "host")
+                            // Prefer a regular CDN host from the same codec;
+                            // the penalty applies only when none exists.
+                            let is_mcdn = |url: &Url| {
+                                url.host_str()
                                     .is_some_and(|host| host.to_ascii_lowercase().contains("mcdn"))
-                            });
+                            };
+                            let (selected_url, uses_mcdn) = match urls.clone().find(|url| !is_mcdn(url)) {
+                                Some(url) => (url, false),
+                                None => (urls.clone().next()?, true),
+                            };
                             Some(LiveCandidate {
                                 url: selected_url.to_string(),
                                 format: media_format,
@@ -790,7 +815,9 @@ fn api_data<'a>(
         .unwrap_or(fallback);
     let error_code = match code {
         -404 => not_found_code,
-        -101 | -10403 => "login_required",
+        -101 => "login_required",
+        // Region, membership or uploader restrictions; logging in may not help.
+        -403 | -10403 => "bilibili_access_denied",
         _ => "bilibili_api_error",
     };
     Err(RelayError::new(error_code, message))
@@ -871,6 +898,7 @@ fn u32_field(value: &Value, name: &str) -> Option<u32> {
     u64_field(value, name).and_then(|value| u32::try_from(value).ok())
 }
 
-fn network_error(code: &'static str, context: &str, error: impl std::fmt::Display) -> RelayError {
-    RelayError::new(code, format!("{context}: {error}"))
+fn network_error(code: &'static str, context: &str, error: reqwest::Error) -> RelayError {
+    // reqwest messages include the request URL (account ids, query values).
+    RelayError::new(code, format!("{context}: {}", error.without_url()))
 }

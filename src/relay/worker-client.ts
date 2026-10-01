@@ -11,6 +11,18 @@ import { recordWorkerRpc, recordWorkerStderr } from "./worker-diagnostics";
 
 export { RelayWorkerError } from "./worker-rpc";
 
+// Dispatch deadlines. A timed-out command kills the worker and every running
+// relay, so each deadline must exceed the core's worst case for that command:
+// its network budget (RESOLVE/LIBRARY/LOGIN/DANMAKU_BUDGET in
+// crates/relay-core/src/lib.rs) plus FFmpeg's 15 s startup wait where the
+// command starts or switches a producer. Keep both sides in sync.
+const RESOLVE_DEADLINE_MS = 30_000; // 20 s network (or 15 s ffprobe)
+const START_DEADLINE_MS = 40_000; // 10 s danmaku + 15 s FFmpeg startup
+const RETARGET_DEADLINE_MS = 60_000; // 20 s resolve + 10 s danmaku + 15 s FFmpeg
+const RATE_DEADLINE_MS = 45_000; // 10 s danmaku + 2 × 4 s live status + 15 s FFmpeg
+const LIBRARY_DEADLINE_MS = 25_000; // 15 s network
+const LOGIN_DEADLINE_MS = 30_000; // 20 s network
+
 export interface FavoriteResourcePage {
   items: FavoriteResourceItem[];
   page: number;
@@ -74,12 +86,12 @@ export class RelayWorkerClient {
 
   async resolveSource(source: string, requestedPart?: number, generation?: number, operationId?: number): Promise<SourceResolution> {
     return (await this.typedRequest(
-      { type: "resolve_source", source, requested_part: requestedPart }, "source_resolution", 30_000, generation, operationId,
+      { type: "resolve_source", source, requested_part: requestedPart }, "source_resolution", RESOLVE_DEADLINE_MS, generation, operationId,
     )).resolution;
   }
 
   async startRelay(sessionId: string, options: PlaybackOptions, startSeconds = 0, paused = false, generation?: number, operationId?: number): Promise<RelayStatus> {
-    return this.relayRequest({ type: "start_relay", session_id: sessionId, start_seconds: startSeconds, paused, options }, 30_000, generation, operationId);
+    return this.relayRequest({ type: "start_relay", session_id: sessionId, start_seconds: startSeconds, paused, options }, START_DEADLINE_MS, generation, operationId);
   }
 
   async retargetRelay(
@@ -89,7 +101,7 @@ export class RelayWorkerClient {
     const reply = await this.typedRequest({
       type: "retarget_relay", current_session_id: currentSessionId, source,
       requested_part: requestedPart, start_seconds: startSeconds, paused, options,
-    }, "playback_state", 50_000, generation, operationId);
+    }, "playback_state", RETARGET_DEADLINE_MS, generation, operationId);
     return { resolution: reply.resolution, relay: reply.relay };
   }
 
@@ -98,11 +110,11 @@ export class RelayWorkerClient {
   }
 
   async setRelayPaused(sessionId: string, paused: boolean, options: PlaybackOptions, startSeconds: number, generation?: number, operationId?: number): Promise<RelayStatus> {
-    return this.relayRequest({ type: "set_relay_paused", session_id: sessionId, paused, start_seconds: startSeconds, options }, 30_000, generation, operationId);
+    return this.relayRequest({ type: "set_relay_paused", session_id: sessionId, paused, start_seconds: startSeconds, options }, START_DEADLINE_MS, generation, operationId);
   }
 
   async setRelayRate(sessionId: string, options: PlaybackOptions, generation?: number, operationId?: number): Promise<RelayStatus> {
-    return this.relayRequest({ type: "set_relay_rate", session_id: sessionId, options }, 30_000, generation, operationId);
+    return this.relayRequest({ type: "set_relay_rate", session_id: sessionId, options }, RATE_DEADLINE_MS, generation, operationId);
   }
 
   async stopRelay(sessionId: string, generation?: number, operationId?: number): Promise<RelayStatus> {
@@ -118,11 +130,11 @@ export class RelayWorkerClient {
   }
 
   async beginBilibiliLogin(): Promise<BilibiliAuthStatus> {
-    return this.bilibiliAuthRequest({ type: "begin_bilibili_login" }, 30_000);
+    return this.bilibiliAuthRequest({ type: "begin_bilibili_login" }, LOGIN_DEADLINE_MS);
   }
 
   async pollBilibiliLogin(loginId: number): Promise<BilibiliAuthStatus> {
-    return this.bilibiliAuthRequest({ type: "poll_bilibili_login", login_id: loginId }, 30_000);
+    return this.bilibiliAuthRequest({ type: "poll_bilibili_login", login_id: loginId }, LOGIN_DEADLINE_MS);
   }
 
   async logoutBilibili(): Promise<BilibiliAuthStatus> {
@@ -130,7 +142,7 @@ export class RelayWorkerClient {
   }
 
   async listFavoriteFolders(): Promise<FavoriteFolder[]> {
-    return (await this.typedRequest({ type: "list_favorite_folders" }, "favorite_folders")).folders;
+    return (await this.typedRequest({ type: "list_favorite_folders" }, "favorite_folders", LIBRARY_DEADLINE_MS)).folders;
   }
 
   async listFavoriteResources(folderId: number, page: number): Promise<FavoriteResourcePage> {
@@ -151,7 +163,7 @@ export class RelayWorkerClient {
   }
 
   async listHistory(page: number): Promise<FavoriteResourcePage> {
-    return this.favoriteResourcesRequest({ type: "list_history", page }, 20_000);
+    return this.favoriteResourcesRequest({ type: "list_history", page });
   }
 
   async getSettings(): Promise<ProductSettings> {
@@ -182,7 +194,7 @@ export class RelayWorkerClient {
     return (await this.typedRequest(command, "bilibili_auth_state", timeoutMs)).auth;
   }
 
-  private async favoriteResourcesRequest(command: Record<string, unknown>, timeoutMs = 20_000): Promise<FavoriteResourcePage> {
+  private async favoriteResourcesRequest(command: Record<string, unknown>, timeoutMs = LIBRARY_DEADLINE_MS): Promise<FavoriteResourcePage> {
     const reply = await this.typedRequest(command, "favorite_resources", timeoutMs);
     return { items: reply.items, page: reply.page, hasMore: reply.has_more };
   }
@@ -248,7 +260,12 @@ export class RelayWorkerClient {
       context.exited = true;
       // The exit notification can precede delivery of the final stdout chunk.
       // Drain it before rejecting pending requests, especially shutdown ACKs.
-      await context.responsesDone;
+      // Bound the wait: a grandchild that inherited the pipe (ffprobe) can
+      // hold stdout open after the worker died, which would otherwise block
+      // every restart until that grandchild exits.
+      await withDeadline(context.responsesDone, 2_000).catch(() => {
+        recordWorkerRpc(context, { event: "response_drain_expired" });
+      });
       recordWorkerRpc(context, { event: "exited", code: `exit_${exitCode}` });
       if (this.context === context) this.context = null;
       rpc.fail(new RelayWorkerError(this.closing ? "worker_closed" : "worker_exited", `Rust relay worker exited with code ${exitCode}`));

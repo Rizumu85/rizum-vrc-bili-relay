@@ -136,6 +136,10 @@ H.264/AAC for the FLV relay. Seeking starts both the media and the regenerated
 ASS timeline at the normalized source position. The media session owns the ASS
 file, so replacement, completion, failure, stop, expiry, and shutdown all clean
 it up. No upstream media URL or danmaku payload crosses into React.
+Segments download four at a time within a 10-second budget. Danmaku never
+blocks playback: when preparation fails or runs out of time the relay starts
+without it and reports the error code as `danmaku_error`. A worker that was
+killed cannot delete its ASS files; startup removes ones older than four days.
 
 For a live room, Rust obtains an anonymous Bilibili identity and danmaku server
 configuration, then reads Bilibili's binary websocket protocol on a dedicated
@@ -147,7 +151,11 @@ expired fixed text. Relay status counts commands accepted by FFmpeg rather than
 messages merely received from the websocket. The selected FFmpeg executable is
 preflighted once per path for `drawtext` and `zmq` support. Cancellation closes
 the active TCP connection before joining both threads, keeping relay shutdown
-bounded.
+bounded. The receiver checks the websocket authentication reply. A rejected
+token, or three failed connections in a row, makes it fetch a fresh token on
+its own thread. A connection that stayed authenticated for a minute resets the
+reconnect backoff. Each disconnect is recorded in `relay-health*.jsonl` as a
+fixed event name with numeric counters; error text is not stored.
 
 `bilibili_auth` owns the QR login lifecycle and authenticated browser cookies.
 React receives only an opaque login id, display state, account name after
@@ -291,6 +299,10 @@ Success and failure are explicit:
 ```json
 {"status":"error","id":1,"error":{"code":"unsupported_source","message":"Only Bilibili pages and HTTP(S) MP4, HLS, MPEG-TS, or FLV media links are supported"}}
 ```
+
+A request whose envelope has a readable `id` but an invalid command is
+answered as `invalid_request` under that id; the id-0 error is reserved for
+lines that cannot be correlated at all.
 
 Protocol version changes are reported by `health`. The UI rejects a worker with
 a different version instead of attempting a silent compatibility fallback.

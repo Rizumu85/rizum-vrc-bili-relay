@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
@@ -9,6 +10,7 @@ use reqwest::header::{ACCEPT, COOKIE, REFERER, SET_COOKIE, USER_AGENT};
 use serde_json::Value;
 use url::Url;
 
+use crate::budget::{Deadline, MAX_REQUEST_TIMEOUT};
 use crate::bilibili_session::{BilibiliSessionStore, StoredBilibiliSession, StoredSessionLoad};
 use crate::{
     BilibiliAuthStage, BilibiliAuthStatus, BilibiliLoginQr, BilibiliPersistenceStatus, RelayError,
@@ -44,6 +46,7 @@ pub(crate) struct BilibiliAuthService {
     persistence: BilibiliPersistenceStatus,
     session_store: BilibiliSessionStore,
     next_login_id: u64,
+    deadline: Cell<Option<Deadline>>,
 }
 
 struct Credentials {
@@ -81,7 +84,12 @@ impl BilibiliAuthService {
             persistence,
             session_store,
             next_login_id: 1,
+            deadline: Cell::new(None),
         }
+    }
+
+    pub fn set_deadline(&self, deadline: Option<Deadline>) {
+        self.deadline.set(deadline);
     }
 
     pub fn cookie(&self) -> Option<&str> {
@@ -108,7 +116,7 @@ impl BilibiliAuthService {
 
     pub fn begin(&mut self) -> Result<BilibiliAuthStatus, RelayError> {
         let root = self
-            .request(QR_GENERATE_ENDPOINT)
+            .request(QR_GENERATE_ENDPOINT)?
             .send()
             .and_then(Response::error_for_status)
             .map_err(|error| auth_error("Cannot create a Bilibili login code", error))?
@@ -151,7 +159,7 @@ impl BilibiliAuthService {
         }
         let key = pending.key.clone();
         let response = self
-            .request(QR_POLL_ENDPOINT)
+            .request(QR_POLL_ENDPOINT)?
             .query(&[("qrcode_key", key)])
             .send()
             .and_then(Response::error_for_status)
@@ -225,7 +233,7 @@ impl BilibiliAuthService {
 
     fn validate_credentials(&self, cookie: String) -> Result<Credentials, RelayError> {
         let root = self
-            .request(NAV_ENDPOINT)
+            .request(NAV_ENDPOINT)?
             .header(COOKIE, &cookie)
             .send()
             .and_then(Response::error_for_status)
@@ -253,12 +261,18 @@ impl BilibiliAuthService {
         })
     }
 
-    fn request(&self, endpoint: &str) -> reqwest::blocking::RequestBuilder {
-        self.http
+    fn request(&self, endpoint: &str) -> Result<reqwest::blocking::RequestBuilder, RelayError> {
+        let timeout = match self.deadline.get() {
+            Some(deadline) => deadline.require("bilibili_login_unavailable", "Bilibili login")?,
+            None => MAX_REQUEST_TIMEOUT,
+        };
+        Ok(self
+            .http
             .get(endpoint)
+            .timeout(timeout)
             .header(USER_AGENT, BROWSER_USER_AGENT)
             .header(ACCEPT, "application/json")
-            .header(REFERER, LOGIN_PAGE)
+            .header(REFERER, LOGIN_PAGE))
     }
 }
 
@@ -405,8 +419,10 @@ fn required_string(
         .ok_or_else(|| RelayError::new("bilibili_login_failed", message))
 }
 
-fn auth_error(context: &'static str, error: impl std::fmt::Display) -> RelayError {
-    RelayError::new("bilibili_login_unavailable", format!("{context}: {error}"))
+fn auth_error(context: &'static str, error: reqwest::Error) -> RelayError {
+    // The poll URL carries the QR login key, which can claim the session
+    // while it is valid. Never let it reach UI-visible error text.
+    RelayError::new("bilibili_login_unavailable", format!("{context}: {}", error.without_url()))
 }
 
 fn login_session_missing() -> RelayError {
