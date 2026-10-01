@@ -10,6 +10,7 @@ import {
   FONT_MONO,
   FONT_SERIF,
   FONT_UI,
+  INVARIANT_COLORS,
   MOTION,
   PALETTES,
   RADII,
@@ -641,21 +642,21 @@ function CaptionButton({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        color: closeHovered ? "#FFFFFF" : palette.inkMuted,
+        color: closeHovered ? INVARIANT_COLORS.captionCloseInk : palette.inkMuted,
         backgroundColor: closeHovered
-          ? "#C42B1C"
+          ? INVARIANT_COLORS.captionCloseHover
           : hovered && !disabled
             ? palette.surfaceHover
-            : "#00000000",
+            : INVARIANT_COLORS.transparent,
         cursor: disabled ? "default" : "pointer",
         opacity: disabled ? 0.34 : 1,
         userSelect: "none",
         active: disabled
           ? undefined
-          : { backgroundColor: kind === "close" ? "#B32017" : palette.surfaceActive },
+          : { backgroundColor: kind === "close" ? INVARIANT_COLORS.captionClosePressed : palette.surfaceActive },
       }}
     >
-      <Icon name={kind} size={10} color={closeHovered ? "#FFFFFF" : palette.inkMuted} />
+      <Icon name={kind} size={10} color={closeHovered ? INVARIANT_COLORS.captionCloseInk : palette.inkMuted} />
     </div>
   );
 }
@@ -709,7 +710,7 @@ function Header({
           left: 0,
           right: isSubview ? 141 : 188,
           height: 43,
-          backgroundColor: "#FFFFFF01",
+          backgroundColor: INVARIANT_COLORS.hitTestFill,
         }}
       />
       {isSubview ? (
@@ -1194,7 +1195,7 @@ function PartSelect({
                 paddingRight: 8,
                 borderRadius: 7,
                 cursor: "pointer",
-                backgroundColor: highlighted ? palette.segmentedTrack : "#00000000",
+                backgroundColor: highlighted ? palette.segmentedTrack : INVARIANT_COLORS.transparent,
               })}
             >
               <div style={{ minWidth: 0, flexGrow: 1, overflow: "hidden" }}>
@@ -1330,7 +1331,7 @@ function PlaybackEndSelect({
                 paddingRight: 8,
                 borderRadius: 7,
                 cursor: "pointer",
-                backgroundColor: highlighted ? palette.segmentedTrack : "#00000000",
+                backgroundColor: highlighted ? palette.segmentedTrack : INVARIANT_COLORS.transparent,
               })}
             >
               <Icon name={option.icon} size={12} color={option.value === value ? palette.accentDanmaku : palette.caption} />
@@ -1452,7 +1453,7 @@ function PlaybackRateSelect({
                 paddingRight: 7,
                 borderRadius: 7,
                 cursor: "pointer",
-                backgroundColor: highlighted ? palette.segmentedTrack : "#00000000",
+                backgroundColor: highlighted ? palette.segmentedTrack : INVARIANT_COLORS.transparent,
               })}
             >
               <text style={{ color: palette.inkSoft, fontFamily: FONT_UI, fontSize: 11.5, whiteSpace: "nowrap" }}>
@@ -1608,7 +1609,7 @@ function SeekControl({
               offsetY: 0,
               blurRadius: dragging ? 14 : 8,
               spreadRadius: dragging ? 4 : 2,
-              color: appearanceShadow(palette),
+              color: palette.sliderThumbShadow,
             },
           }}
         />
@@ -1699,10 +1700,6 @@ function SeekControl({
       </div>
     </div>
   );
-}
-
-function appearanceShadow(palette: Palette): string {
-  return palette === PALETTES.dark ? "#00000052" : "#A1A1AA3D";
 }
 
 const DANMAKU_LABEL_WIDTH = 80;
@@ -1892,7 +1889,7 @@ function BilibiliQrCode({ qr }: { qr: BilibiliLoginQr }) {
         height: side,
         flexShrink: 0,
         position: "relative",
-        backgroundColor: "#FFFFFF",
+        backgroundColor: INVARIANT_COLORS.qrBackground,
       }}
     >
       {rectangles.map((rectangle, index) => (
@@ -1904,7 +1901,7 @@ function BilibiliQrCode({ qr }: { qr: BilibiliLoginQr }) {
             top: (rectangle.y + quietZone) * moduleSize,
             width: rectangle.width * moduleSize,
             height: rectangle.height * moduleSize,
-            backgroundColor: "#18181B",
+            backgroundColor: INVARIANT_COLORS.qrModule,
           }}
         />
       ))}
@@ -1986,7 +1983,7 @@ function BilibiliLoginPopover({
           justifyContent: "center",
           overflow: "hidden",
           borderRadius: 9,
-          backgroundColor: auth?.qr ? "#FFFFFF" : palette.surfaceMuted,
+          backgroundColor: auth?.qr ? INVARIANT_COLORS.qrBackground : palette.surfaceMuted,
         }}
       >
         {auth?.qr ? (
@@ -2662,7 +2659,7 @@ function SettingsSecretInput({
           left: 0,
           paddingLeft: 11,
           paddingRight: hasSecret ? 36 : 11,
-          color: revealed ? palette.inkSoft : "#00000000",
+          color: revealed ? palette.inkSoft : INVARIANT_COLORS.transparent,
           fontFamily: FONT_UI,
           fontSize: 13,
           lineHeight: 19,
@@ -2938,7 +2935,7 @@ function CompactSelect<T extends string>({
                 paddingRight: 8,
                 borderRadius: 7,
                 cursor: "pointer",
-                backgroundColor: highlighted ? palette.segmentedTrack : "#00000000",
+                backgroundColor: highlighted ? palette.segmentedTrack : INVARIANT_COLORS.transparent,
               })}
             >
               <text style={{ color: palette.inkSoft, fontFamily: FONT_UI, fontSize: 13 }}>
@@ -3016,7 +3013,7 @@ function OpacitySlider({
               offsetY: 0,
               blurRadius: dragging ? 14 : 8,
               spreadRadius: dragging ? 4 : 2,
-              color: appearanceShadow(palette),
+              color: palette.sliderThumbShadow,
             },
           }}
         />
@@ -3088,7 +3085,9 @@ function DanmakuPreviewText({
             position: "absolute",
             top,
             left,
-            color: outline === "shadow" ? "#101014D6" : "#101014F2",
+            color: outline === "shadow"
+              ? INVARIANT_COLORS.danmakuPreviewShadow
+              : INVARIANT_COLORS.danmakuPreviewOutline,
             fontFamily,
             fontSize,
             fontWeight,
@@ -3147,7 +3146,7 @@ function DanmakuPreviewLine({
       fontSize={fontSize}
       fontWeight={fontWeight}
       outline={outline}
-      color="#FFFFFF"
+      color={INVARIANT_COLORS.danmakuPreviewText}
     />
   );
   const style = {
@@ -3309,7 +3308,7 @@ function DanmakuView({
                 offsetY: 8,
                 blurRadius: 20,
                 spreadRadius: 0,
-                color: "#00000018",
+                color: palette.previewShadow,
               },
             }}
           >
@@ -3369,9 +3368,9 @@ function DanmakuView({
                         justifyContent: "center",
                         gap: 5,
                         color: selected ? palette.inkSoft : palette.caption,
-                        backgroundColor: selected ? palette.surfaceMuted : "#00000000",
+                        backgroundColor: selected ? palette.surfaceMuted : INVARIANT_COLORS.transparent,
                         borderWidth: 1,
-                        borderColor: selected ? palette.surfaceLine : "#00000000",
+                        borderColor: selected ? palette.surfaceLine : INVARIANT_COLORS.transparent,
                         borderRadius: RADII.control,
                         cursor: "pointer",
                         hover: { backgroundColor: palette.surfaceHover },
