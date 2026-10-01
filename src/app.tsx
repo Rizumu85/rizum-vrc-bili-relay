@@ -10,6 +10,7 @@ import {
   FONT_MONO,
   FONT_SERIF,
   FONT_UI,
+  INVARIANT_COLORS,
   MOTION,
   PALETTES,
   RADII,
@@ -44,13 +45,15 @@ import { LibraryCache } from "./relay/library-cache";
 import { CoverLoader } from "./relay/cover-loader";
 import { SearchRequestOwner, emptySearchState } from "./relay/search-request";
 import { PlaybackObserver } from "./relay/playback-observer";
-import { ListRequestOwner, listLoadPending, type ListLoadPhase } from "./relay/list-request";
+import { ListRequestOwner, appendUnique, listLoadPending, type ListLoadPhase } from "./relay/list-request";
 import { SettingsPersistence, flushSettingsBeforeClose } from "./relay/settings-persistence";
 import { SettingsDraftState } from "./relay/settings-draft";
 import { relayFailureMessage } from "./relay/status-message";
 import { PlaybackFlow, PlaybackFailure, PlaybackSuperseded, hasActivePublisher } from "./relay/playback-flow";
 import { recordUiState } from "./relay/worker-diagnostics";
 import { queryElementBounds, queryWindowSize } from "./platform/gpuix-geometry";
+import { readClipboard, writeClipboard } from "./platform/clipboard";
+import { SYSTEM_APPEARANCE_SUPPORTED, readSystemAppearance } from "./platform/system-theme";
 import {
   beginProductWindowDrag,
   closeProductWindow,
@@ -71,6 +74,14 @@ import {
 } from "./platform/native-part-popup";
 
 export type Scene = "idle" | "loading" | "error" | "ready-vod" | "settings" | "danmaku" | "favorites";
+type Subview = Extract<Scene, "settings" | "danmaku" | "favorites">;
+
+function isSubviewScene(scene: Scene): scene is Subview {
+  return scene === "settings" || scene === "danmaku" || scene === "favorites";
+}
+
+/** A settings read either yields the stored settings or the user-facing reason it failed. */
+type SettingsRead = { ok: true; settings: ProductSettings } | { ok: false; message: string };
 type DanmakuVisibility = "shown" | "hidden";
 
 export function sceneWindowHeight(
@@ -244,6 +255,7 @@ const DEFAULT_DANMAKU_SETTINGS: DanmakuSettings = {
 };
 
 const REDUCED_MOTION = prefersReducedMotion();
+const SYSTEM_APPEARANCE_POLL_MS = 30_000;
 
 function motionTransition(duration: number) {
   return {
@@ -285,36 +297,6 @@ function formatPlaybackTime(seconds: number): string {
   return hours > 0
     ? `${String(hours).padStart(2, "0")}:${minuteText}:${secondText}`
     : `${minuteText}:${secondText}`;
-}
-
-async function readClipboard(): Promise<string> {
-  try {
-    const process = Bun.spawn(
-      ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard -Raw"],
-      { stdout: "pipe", stderr: "ignore", windowsHide: true },
-    );
-    const output = await new Response(process.stdout).text();
-    await process.exited;
-    return output.trim();
-  } catch {
-    return "";
-  }
-}
-
-async function writeClipboard(value: string): Promise<void> {
-  try {
-    const process = Bun.spawn(["clip.exe"], {
-      stdin: "pipe",
-      stdout: "ignore",
-      stderr: "ignore",
-      windowsHide: true,
-    });
-    process.stdin.write(value);
-    process.stdin.end();
-    await process.exited;
-  } catch {
-    // The output remains selectable even if the Windows clipboard command fails.
-  }
 }
 
 function relaySettingsReady(settings: ProductSettings): boolean {
@@ -668,21 +650,21 @@ function CaptionButton({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        color: closeHovered ? "#FFFFFF" : palette.inkMuted,
+        color: closeHovered ? INVARIANT_COLORS.captionCloseInk : palette.inkMuted,
         backgroundColor: closeHovered
-          ? "#C42B1C"
+          ? INVARIANT_COLORS.captionCloseHover
           : hovered && !disabled
             ? palette.surfaceHover
-            : "#00000000",
+            : INVARIANT_COLORS.transparent,
         cursor: disabled ? "default" : "pointer",
         opacity: disabled ? 0.34 : 1,
         userSelect: "none",
         active: disabled
           ? undefined
-          : { backgroundColor: kind === "close" ? "#B32017" : palette.surfaceActive },
+          : { backgroundColor: kind === "close" ? INVARIANT_COLORS.captionClosePressed : palette.surfaceActive },
       }}
     >
-      <Icon name={kind} size={10} color={closeHovered ? "#FFFFFF" : palette.inkMuted} />
+      <Icon name={kind} size={10} color={closeHovered ? INVARIANT_COLORS.captionCloseInk : palette.inkMuted} />
     </div>
   );
 }
@@ -736,7 +718,7 @@ function Header({
           left: 0,
           right: isSubview ? 141 : 188,
           height: 43,
-          backgroundColor: "#FFFFFF01",
+          backgroundColor: INVARIANT_COLORS.hitTestFill,
         }}
       />
       {isSubview ? (
@@ -1221,7 +1203,7 @@ function PartSelect({
                 paddingRight: 8,
                 borderRadius: 7,
                 cursor: "pointer",
-                backgroundColor: highlighted ? palette.segmentedTrack : "#00000000",
+                backgroundColor: highlighted ? palette.segmentedTrack : INVARIANT_COLORS.transparent,
               })}
             >
               <div style={{ minWidth: 0, flexGrow: 1, overflow: "hidden" }}>
@@ -1357,7 +1339,7 @@ function PlaybackEndSelect({
                 paddingRight: 8,
                 borderRadius: 7,
                 cursor: "pointer",
-                backgroundColor: highlighted ? palette.segmentedTrack : "#00000000",
+                backgroundColor: highlighted ? palette.segmentedTrack : INVARIANT_COLORS.transparent,
               })}
             >
               <Icon name={option.icon} size={12} color={option.value === value ? palette.accentDanmaku : palette.caption} />
@@ -1479,7 +1461,7 @@ function PlaybackRateSelect({
                 paddingRight: 7,
                 borderRadius: 7,
                 cursor: "pointer",
-                backgroundColor: highlighted ? palette.segmentedTrack : "#00000000",
+                backgroundColor: highlighted ? palette.segmentedTrack : INVARIANT_COLORS.transparent,
               })}
             >
               <text style={{ color: palette.inkSoft, fontFamily: FONT_UI, fontSize: 11.5, whiteSpace: "nowrap" }}>
@@ -1559,6 +1541,20 @@ function SeekControl({
     onPositionCommit(position);
   };
 
+  // A drag that ends while seeking is disabled (another playback update took
+  // over) is abandoned: release the interaction flag, never commit a seek.
+  const cancelInteraction = () => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    setDragging(false);
+    onInteractionChange(false);
+  };
+
+  useEffect(() => {
+    if (disabled) cancelInteraction();
+  }, [disabled]);
+  useEffect(() => () => cancelInteraction(), []);
+
   const seekKeys = ["left", "right", "pageup", "pagedown", "home", "end"];
   const ratio = duration > 0 ? visiblePosition / duration : 0;
   const thumbLeft = Math.round((TRACK_WIDTH - 12) * ratio);
@@ -1579,11 +1575,13 @@ function SeekControl({
           if (!disabled && draggingRef.current) setFromPointer(event);
         }}
         onMouseUp={(event) => {
-          if (disabled || event.button !== 0 || !draggingRef.current) return;
-          finishInteraction(setFromPointer(event));
+          if (event.button !== 0 || !draggingRef.current) return;
+          if (disabled) cancelInteraction();
+          else finishInteraction(setFromPointer(event));
         }}
         onMouseLeave={() => {
-          if (draggingRef.current) finishInteraction();
+          if (disabled) cancelInteraction();
+          else finishInteraction();
         }}
         onKeyDown={(event) => {
           if (disabled || !event.key || !seekKeys.includes(event.key)) return;
@@ -1635,7 +1633,7 @@ function SeekControl({
               offsetY: 0,
               blurRadius: dragging ? 14 : 8,
               spreadRadius: dragging ? 4 : 2,
-              color: appearanceShadow(palette),
+              color: palette.sliderThumbShadow,
             },
           }}
         />
@@ -1726,10 +1724,6 @@ function SeekControl({
       </div>
     </div>
   );
-}
-
-function appearanceShadow(palette: Palette): string {
-  return palette === PALETTES.dark ? "#00000052" : "#A1A1AA3D";
 }
 
 const DANMAKU_LABEL_WIDTH = 80;
@@ -1919,7 +1913,7 @@ function BilibiliQrCode({ qr }: { qr: BilibiliLoginQr }) {
         height: side,
         flexShrink: 0,
         position: "relative",
-        backgroundColor: "#FFFFFF",
+        backgroundColor: INVARIANT_COLORS.qrBackground,
       }}
     >
       {rectangles.map((rectangle, index) => (
@@ -1931,7 +1925,7 @@ function BilibiliQrCode({ qr }: { qr: BilibiliLoginQr }) {
             top: (rectangle.y + quietZone) * moduleSize,
             width: rectangle.width * moduleSize,
             height: rectangle.height * moduleSize,
-            backgroundColor: "#18181B",
+            backgroundColor: INVARIANT_COLORS.qrModule,
           }}
         />
       ))}
@@ -2013,7 +2007,7 @@ function BilibiliLoginPopover({
           justifyContent: "center",
           overflow: "hidden",
           borderRadius: 9,
-          backgroundColor: auth?.qr ? "#FFFFFF" : palette.surfaceMuted,
+          backgroundColor: auth?.qr ? INVARIANT_COLORS.qrBackground : palette.surfaceMuted,
         }}
       >
         {auth?.qr ? (
@@ -2111,12 +2105,13 @@ function Result({
   const output = isReference
     ? VIDEO_OUTPUT.replace("{part}", part)
     : relayOutputDescription(sourceResolution, relayStatus, relayError, playbackPaused);
-  const relayRunning = (
-    relayStatus?.stage === "running" || relayStatus?.stage === "draining"
-  ) && Boolean(relayStatus.playback_url);
   const relayActive = hasActivePublisher(relayStatus);
-  const directReady = sourceResolution?.routing.kind === "direct" && Boolean(sourceResolution.playback_url);
-  const canCopy = isReference || relayRunning || playbackPaused || directReady;
+  // Only a real playback URL is copyable; status sentences share the same
+  // output row and must never reach the clipboard.
+  const copyableUrl = isReference
+    ? output
+    : relayPlaybackUrl(sourceResolution, relayStatus, playbackPaused);
+  const canCopy = copyableUrl !== null;
   const parts: PlaybackPart[] = sourceResolution?.kind === "video"
     ? sourceResolution.parts?.length
       ? sourceResolution.parts.map((entry) => ({
@@ -2179,8 +2174,8 @@ function Result({
   );
 
   const copy = async () => {
-    if (!canCopy) return;
-    await writeClipboard(output);
+    if (copyableUrl === null) return;
+    if (!(await writeClipboard(copyableUrl))) return;
     setCopied(true);
     if (copiedTimer.current) clearTimeout(copiedTimer.current);
     copiedTimer.current = setTimeout(() => setCopied(false), 1200);
@@ -2428,6 +2423,10 @@ function resultStatusLabel(
   if (playbackUpdating === "completion") return "· 正在继续播放";
   if (playbackMessage) return `· ${playbackMessage}`;
   if (relayError && !relay) return "· 需要完成设置";
+  // The core starts the relay without danmaku when preparing it failed.
+  if (danmaku === "shown" && relay?.stage === "running" && relay.danmaku_error) {
+    return "· 中继运行中 · 弹幕暂时无法加载";
+  }
   if (
     source?.kind === "video"
     && danmaku === "shown"
@@ -2452,17 +2451,27 @@ function resultStatusLabel(
   }
 }
 
+function relayPlaybackUrl(
+  source: SourceResolution,
+  relay: RelayStatus | null,
+  playbackPaused = false,
+): string | null {
+  if (source.routing.kind === "direct" && source.playback_url) return source.playback_url;
+  if (
+    relay?.playback_url
+    && (relay.stage === "running" || relay.stage === "draining" || playbackPaused)
+  ) return relay.playback_url;
+  return null;
+}
+
 function relayOutputDescription(
   source: SourceResolution,
   relay: RelayStatus | null,
   relayError: string | null,
   playbackPaused = false,
 ): string {
-  if (source.routing.kind === "direct" && source.playback_url) return source.playback_url;
-  if (
-    relay?.playback_url
-    && (relay.stage === "running" || relay.stage === "draining" || playbackPaused)
-  ) return relay.playback_url;
+  const playbackUrl = relayPlaybackUrl(source, relay, playbackPaused);
+  if (playbackUrl !== null) return playbackUrl;
   if (relay?.stage === "starting") return "正在准备播放地址";
   if (relay?.stage === "completed") return relay.end_reason === "live_ended" ? "直播已结束" : "视频已播放完成";
   if (relay?.stage === "stopped") return "中继已停止，重新生成地址即可再次启动";
@@ -2678,7 +2687,7 @@ function SettingsSecretInput({
           left: 0,
           paddingLeft: 11,
           paddingRight: hasSecret ? 36 : 11,
-          color: revealed ? palette.inkSoft : "#00000000",
+          color: revealed ? palette.inkSoft : INVARIANT_COLORS.transparent,
           fontFamily: FONT_UI,
           fontSize: 13,
           lineHeight: 19,
@@ -2954,7 +2963,7 @@ function CompactSelect<T extends string>({
                 paddingRight: 8,
                 borderRadius: 7,
                 cursor: "pointer",
-                backgroundColor: highlighted ? palette.segmentedTrack : "#00000000",
+                backgroundColor: highlighted ? palette.segmentedTrack : INVARIANT_COLORS.transparent,
               })}
             >
               <text style={{ color: palette.inkSoft, fontFamily: FONT_UI, fontSize: 13 }}>
@@ -3032,7 +3041,7 @@ function OpacitySlider({
               offsetY: 0,
               blurRadius: dragging ? 14 : 8,
               spreadRadius: dragging ? 4 : 2,
-              color: appearanceShadow(palette),
+              color: palette.sliderThumbShadow,
             },
           }}
         />
@@ -3104,7 +3113,9 @@ function DanmakuPreviewText({
             position: "absolute",
             top,
             left,
-            color: outline === "shadow" ? "#101014D6" : "#101014F2",
+            color: outline === "shadow"
+              ? INVARIANT_COLORS.danmakuPreviewShadow
+              : INVARIANT_COLORS.danmakuPreviewOutline,
             fontFamily,
             fontSize,
             fontWeight,
@@ -3163,7 +3174,7 @@ function DanmakuPreviewLine({
       fontSize={fontSize}
       fontWeight={fontWeight}
       outline={outline}
-      color="#FFFFFF"
+      color={INVARIANT_COLORS.danmakuPreviewText}
     />
   );
   const style = {
@@ -3325,7 +3336,7 @@ function DanmakuView({
                 offsetY: 8,
                 blurRadius: 20,
                 spreadRadius: 0,
-                color: "#00000018",
+                color: palette.previewShadow,
               },
             }}
           >
@@ -3385,9 +3396,9 @@ function DanmakuView({
                         justifyContent: "center",
                         gap: 5,
                         color: selected ? palette.inkSoft : palette.caption,
-                        backgroundColor: selected ? palette.surfaceMuted : "#00000000",
+                        backgroundColor: selected ? palette.surfaceMuted : INVARIANT_COLORS.transparent,
                         borderWidth: 1,
-                        borderColor: selected ? palette.surfaceLine : "#00000000",
+                        borderColor: selected ? palette.surfaceLine : INVARIANT_COLORS.transparent,
                         borderRadius: RADII.control,
                         cursor: "pointer",
                         hover: { backgroundColor: palette.surfaceHover },
@@ -3448,9 +3459,16 @@ function formatFavoriteDuration(totalSeconds: number): string {
   return hours > 0 ? `${hours}:${tail}` : tail;
 }
 
+function favoriteItemKey(item: FavoriteResourceItem): string {
+  return item.bvid;
+}
+
 function favoriteErrorMessage(error: unknown): string {
   if (error instanceof RelayWorkerError && error.code === "login_required") {
     return "登录已失效，请到设置中重新扫码";
+  }
+  if (error instanceof RelayWorkerError && error.code === "bilibili_timeout") {
+    return "B 站响应太慢，请稍后再试。";
   }
   return "暂时无法读取收藏内容，请稍后再试。";
 }
@@ -3594,7 +3612,9 @@ function FavoritesView({
   const [videosHasMore, setVideosHasMore] = useState(false);
   const [videosPhase, setVideosPhase] = useState<ListLoadPhase>("idle");
   const videosLoading = listLoadPending(videosPhase);
-  const [videosError, setVideosError] = useState<string | null>(null);
+  // The failed request, so retry repeats that page; an appended page keeps
+  // the rows already shown.
+  const [videosError, setVideosError] = useState<{ message: string; page: number; append: boolean } | null>(null);
   const [searchOpen, setSearchOpen] = useState(() =>
     Boolean(process.env.VRC_BILI_RELAY_FAVORITES_SEARCH),
   );
@@ -3607,6 +3627,7 @@ function FavoritesView({
   const searchHasMore = searchState.hasMore;
   const searchLoading = searchState.phase === "debouncing" || searchState.phase === "loading";
   const searchError = searchState.error ? favoriteErrorMessage(searchState.error) : null;
+  const searchFailedEmpty = Boolean(searchError) && (searchState.items?.length ?? 0) === 0;
   const searchRequest = useRef<SearchRequestOwner<FavoriteResourceItem> | null>(null);
   const searchInput = useRef({ text: searchText, scope: searchScope, open: searchOpen });
   const searchResourcesRef = useRef(searchResources);
@@ -3636,6 +3657,7 @@ function FavoritesView({
       (query, page) => cache.scoped(() => searchResourcesRef.current(query.folderId, query.keyword, page)),
       setSearchState,
       recordUiState,
+      favoriteItemKey,
     );
     searchRequest.current = owner;
     return () => { owner.dispose(); searchRequest.current = null; };
@@ -3696,11 +3718,11 @@ function FavoritesView({
         ? cache.fill(cacheKey, () => listResources(folder.id, page))
         : cache.scoped(() => listResources(folder.id, page)),
       (result) => {
-        setVideos((current) => (append ? [...current, ...result.items] : result.items));
+        setVideos((current) => appendUnique(append ? current : [], result.items, favoriteItemKey));
         setVideosPage(result.page);
         setVideosHasMore(result.hasMore);
       },
-      (error) => setVideosError(favoriteErrorMessage(error)),
+      (error) => setVideosError({ message: favoriteErrorMessage(error), page, append }),
     );
   };
 
@@ -3728,11 +3750,11 @@ function FavoritesView({
       !append && cacheable ? cache.read<FavoriteResourcePage>(cacheKey) : null,
       () => cacheable ? cache.fill(cacheKey, fetchPage) : cache.scoped(fetchPage),
       (result) => {
-        setVideos((current) => (append ? [...current, ...result.items] : result.items));
+        setVideos((current) => appendUnique(append ? current : [], result.items, favoriteItemKey));
         setVideosPage(result.page);
         setVideosHasMore(result.hasMore);
       },
-      (error) => setVideosError(favoriteErrorMessage(error)),
+      (error) => setVideosError({ message: favoriteErrorMessage(error), page, append }),
     );
   };
 
@@ -3915,6 +3937,34 @@ function FavoritesView({
     </div>
   );
 
+  // A failed "load more" keeps the rows already shown and offers a retry of
+  // that page at the bottom of the list.
+  const pageErrorRow = (message: string, onRetry: () => void) => (
+    <div
+      key="favorites-more-error"
+      testId="favorites-more-error"
+      style={{
+        minHeight: 40,
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 8,
+        paddingLeft: 12,
+        paddingRight: 12,
+      }}
+    >
+      <text style={{ minWidth: 0, color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 11.5, lineClamp: 1 }}>
+        {message}
+      </text>
+      <Button label="重试" palette={palette} quiet onClick={onRetry} />
+    </div>
+  );
+  const listVideoError = videosError && videosError.append && videos.length > 0 ? null : videosError;
+  const retryVideos = (load: (page: number, append: boolean) => Promise<void>) => () => {
+    if (videosError) void load(videosError.page, videosError.append);
+  };
+
   let body: React.ReactNode;
   if (level.kind === "folders") {
     let content: React.ReactNode;
@@ -4010,7 +4060,7 @@ function FavoritesView({
             {searchField}
           </MotionFade>
         ) : null}
-        {searching && !searchError ? (
+        {searching && !searchFailedEmpty ? (
           <div style={{ marginBottom: 8 }}>
             <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 11 }}>
               {searchLoading && (searchItems?.length ?? 0) === 0
@@ -4022,7 +4072,7 @@ function FavoritesView({
         {searching
           ? listBox(
               <>
-                {searchError ? (
+                {searchFailedEmpty ? (
                   centerState(
                     <>
                       <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{searchError}</text>
@@ -4039,7 +4089,11 @@ function FavoritesView({
                     {searchLoading && (searchItems?.length ?? 0) === 0
                       ? centerState(<Loading palette={palette} label="正在搜索" />)
                       : null}
-                    {searchHasMore ? moreRow(searchLoading, () => void searchRequest.current?.more()) : null}
+                    {searchError
+                      ? pageErrorRow(searchError, () => void searchRequest.current?.retry())
+                      : searchHasMore
+                        ? moreRow(searchLoading, () => void searchRequest.current?.more())
+                        : null}
                   </>
                 )}
               </>,
@@ -4112,7 +4166,7 @@ function FavoritesView({
             />
           </MotionFade>
         ) : null}
-        {searching && !searchError ? (
+        {searching && !searchFailedEmpty ? (
           <div style={{ marginBottom: 8 }}>
             <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 11 }}>
               {searchLoading && (searchItems?.length ?? 0) === 0
@@ -4124,7 +4178,7 @@ function FavoritesView({
         {searching
           ? listBox(
               <>
-                {searchError ? (
+                {searchFailedEmpty ? (
                   centerState(
                     <>
                       <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{searchError}</text>
@@ -4141,7 +4195,11 @@ function FavoritesView({
                     {searchLoading && (searchItems?.length ?? 0) === 0
                       ? centerState(<Loading palette={palette} label="正在搜索" />)
                       : null}
-                    {searchHasMore ? moreRow(searchLoading, () => void searchRequest.current?.more()) : null}
+                    {searchError
+                      ? pageErrorRow(searchError, () => void searchRequest.current?.retry())
+                      : searchHasMore
+                        ? moreRow(searchLoading, () => void searchRequest.current?.more())
+                        : null}
                   </>
                 )}
               </>,
@@ -4150,11 +4208,16 @@ function FavoritesView({
               <>
                 {videosLoading && videos.length === 0 ? (
                   centerState(<Loading palette={palette} label="正在读取视频" />)
-                ) : videosError ? (
+                ) : listVideoError ? (
                   centerState(
                     <>
-                      <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{videosError}</text>
-                      <Button label="重试" palette={palette} quiet onClick={() => void loadVideos(folder, 1, false)} />
+                      <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{listVideoError.message}</text>
+                      <Button
+                        label="重试"
+                        palette={palette}
+                        quiet
+                        onClick={retryVideos((page, append) => loadVideos(folder, page, append))}
+                      />
                     </>,
                   )
                 ) : videos.length === 0 ? (
@@ -4164,9 +4227,11 @@ function FavoritesView({
                 ) : (
                   <>
                     {videos.map((item) => videoRow(item, false))}
-                    {videosHasMore
-                      ? moreRow(videosLoading, () => void loadVideos(folder, videosPage + 1, true))
-                      : null}
+                    {videosError
+                      ? pageErrorRow(videosError.message, retryVideos((page, append) => loadVideos(folder, page, append)))
+                      : videosHasMore
+                        ? moreRow(videosLoading, () => void loadVideos(folder, videosPage + 1, true))
+                        : null}
                   </>
                 )}
               </>,
@@ -4186,11 +4251,11 @@ function FavoritesView({
           <>
             {videosLoading && videos.length === 0 ? (
               centerState(<Loading palette={palette} label="正在读取视频" />)
-            ) : videosError ? (
+            ) : listVideoError ? (
               centerState(
                 <>
-                  <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{videosError}</text>
-                  <Button label="重试" palette={palette} quiet onClick={() => void loadFlat(1, false)} />
+                  <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{listVideoError.message}</text>
+                  <Button label="重试" palette={palette} quiet onClick={retryVideos(loadFlat)} />
                 </>,
               )
             ) : videos.length === 0 ? (
@@ -4202,7 +4267,11 @@ function FavoritesView({
             ) : (
               <>
                 {videos.map((item) => videoRow(item, false))}
-                {videosHasMore ? moreRow(videosLoading, () => void loadFlat(videosPage + 1, true)) : null}
+                {videosError
+                  ? pageErrorRow(videosError.message, retryVideos(loadFlat))
+                  : videosHasMore
+                    ? moreRow(videosLoading, () => void loadFlat(videosPage + 1, true))
+                    : null}
               </>
             )}
           </>,
@@ -4234,6 +4303,7 @@ function SettingsView({
   themePreference,
   setThemePreference,
   bilibiliAuth,
+  bilibiliSessionRejected,
   bilibiliAuthError,
   bilibiliAuthBusy,
   bilibiliMode,
@@ -4252,6 +4322,7 @@ function SettingsView({
   themePreference: ThemePreference;
   setThemePreference: (value: ThemePreference) => void;
   bilibiliAuth: BilibiliAuthStatus | null;
+  bilibiliSessionRejected: boolean;
   bilibiliAuthError: string | null;
   bilibiliAuthBusy: boolean;
   bilibiliMode: BilibiliAccessMode;
@@ -4278,7 +4349,11 @@ function SettingsView({
   const [accountPopoverOpen, setAccountPopoverOpen] = useState(false);
   const [logoutTooltipVisible, setLogoutTooltipVisible] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const accountAuthenticated = bilibiliAuth?.stage === "authenticated";
+  const accountSignedIn = bilibiliAuth?.stage === "authenticated";
+  // The core keeps reporting a stored session as authenticated after Bilibili
+  // rejected its cookie (-101). Treat that session as unusable here so
+  // "扫码登录" starts a fresh QR login; logout stays available for it.
+  const accountAuthenticated = accountSignedIn && !bilibiliSessionRejected;
   const accountPending = bilibiliAuth?.stage === "waiting" || bilibiliAuth?.stage === "scanned";
   const loginMode: BilibiliAccessMode = accountAuthenticated || accountPending
     ? bilibiliMode
@@ -4309,12 +4384,12 @@ function SettingsView({
   );
 
   useEffect(() => {
-    if (accountAuthenticated) {
-      setAccountPopoverOpen(false);
-    } else {
-      setLogoutTooltipVisible(false);
-    }
+    if (accountAuthenticated) setAccountPopoverOpen(false);
   }, [accountAuthenticated]);
+
+  useEffect(() => {
+    if (!accountSignedIn) setLogoutTooltipVisible(false);
+  }, [accountSignedIn]);
 
   useEffect(() => {
     draft.current.hydrate(storedSettings);
@@ -4527,7 +4602,9 @@ function SettingsView({
             title="B 站账号"
             subtitle={
               bilibiliAuth?.stage === "authenticated"
-                ? bilibiliAuth.persistence === "session"
+                ? bilibiliSessionRejected
+                  ? "登录已失效，请重新扫码"
+                  : bilibiliAuth.persistence === "session"
                   ? `已登录 · ${bilibiliAuth.display_name ?? "Bilibili 用户"} · 仅本次`
                   : `已登录 · ${bilibiliAuth.display_name ?? "Bilibili 用户"}`
                 : bilibiliAuth?.persistence === "unavailable"
@@ -4535,7 +4612,7 @@ function SettingsView({
                   : "未登录时最高 480P"
             }
             action={
-              accountAuthenticated ? (
+              accountSignedIn ? (
                 <LogoutIconButton
                   palette={palette}
                   disabled={bilibiliAuthBusy}
@@ -4564,7 +4641,7 @@ function SettingsView({
             width={170}
             palette={palette}
           />
-          {logoutTooltipVisible && accountAuthenticated && !bilibiliAuthBusy ? (
+          {logoutTooltipVisible && accountSignedIn && !bilibiliAuthBusy ? (
             <div
               style={{
                 position: "absolute",
@@ -4817,6 +4894,15 @@ export function AppSurface({
   const [libraryEpoch, setLibraryEpoch] = useState(0);
   const authEpoch = useRef(0);
   const authChanging = useRef(false);
+  // Generation whose worker last reported auth; its loss triggers one re-read.
+  const authGeneration = useRef<number | null>(null);
+  const [authRefreshRequest, setAuthRefreshRequest] = useState(0);
+  // Account whose stored cookie Bilibili rejected while the core still
+  // reported it as authenticated. Cleared by a successful login/logout.
+  const [rejectedBilibiliUser, setRejectedBilibiliUser] = useState<number | null>(null);
+  const bilibiliSessionRejected = bilibiliAuth?.stage === "authenticated"
+    && bilibiliAuth.user_id !== undefined
+    && bilibiliAuth.user_id === rejectedBilibiliUser;
   const relayWorker = useRef<RelayWorkerClient | null>(null);
   const windowClosing = useRef(false);
   const playbackFlow = useRef<PlaybackFlow | null>(null);
@@ -4832,8 +4918,15 @@ export function AppSurface({
   const playbackRateRef = useRef<PlaybackRate>(playbackRate);
   const playbackPositionRef = useRef(playbackPosition);
   const pendingPausedPosition = useRef<number | null>(null);
+  // Async continuations (close cancellation) must see the scene the user is on
+  // now, not the one captured when the continuation started.
+  const sceneRef = useRef(scene);
+  sceneRef.current = scene;
+  const sourceResolutionRef = useRef(sourceResolution);
+  sourceResolutionRef.current = sourceResolution;
+  const [systemAppearance, setSystemAppearance] = useState<Appearance>(initialAppearance);
   const resolvedAppearance: Appearance =
-    themePreference === "system" ? initialAppearance : themePreference;
+    themePreference === "system" ? systemAppearance : themePreference;
   const palette = PALETTES[resolvedAppearance];
   const mediaState = mediaComponentState(mediaStatus, mediaError);
   const settingsExpanded =
@@ -4861,7 +4954,10 @@ export function AppSurface({
         windowClosing.current = false;
         setSettingsError("设置尚未保存，已取消退出。请检查保存状态后再次关闭。");
         recordUiState("settings_close_cancelled");
-        setScene("settings");
+        // Enter settings like any other navigation so Back still returns to
+        // the remembered main scene (e.g. a running relay's Result panel).
+        // Skip the settings re-read: it would clear the message above.
+        if (sceneRef.current !== "settings") showSubview("settings", false);
         return;
       }
       playbackFlow.current?.cancel();
@@ -4884,6 +4980,28 @@ export function AppSurface({
     return () => clearTimeout(resize);
   }, [scene, settingsExpanded, playbackSelectionRows, sourceResolution?.kind]);
 
+  // "跟随系统" follows the Windows app theme. GPUIX exposes no window-focus or
+  // system-appearance event, so re-read the registry on a slow interval while
+  // the preference is active, and immediately when the user switches back to
+  // it. The startup value already came from main.tsx; the environment
+  // override (initialThemePreference) keeps captures deterministic.
+  const systemAppearanceObserved = useRef(false);
+  useEffect(() => {
+    if (themePreference !== "system" || initialThemePreference || !SYSTEM_APPEARANCE_SUPPORTED) return;
+    let cancelled = false;
+    const refresh = async () => {
+      const next = await readSystemAppearance();
+      if (!cancelled && next) setSystemAppearance(next);
+    };
+    if (systemAppearanceObserved.current) void refresh();
+    systemAppearanceObserved.current = true;
+    const timer = setInterval(() => void refresh(), SYSTEM_APPEARANCE_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [themePreference]);
+
   // Warm the video-library session cache shortly after login is known so the
   // first library open paints from memory instead of waiting on Bilibili.
   const bilibiliAuthenticated = bilibiliAuth?.stage === "authenticated";
@@ -4891,9 +5009,11 @@ export function AppSurface({
     if (!bilibiliAuthenticated) return;
     const timer = setTimeout(() => {
       const worker = getRelayWorker();
-      libraryCache.current.prime("folders", () => worker.listFavoriteFolders());
-      libraryCache.current.prime("watch-later", () => worker.listWatchLater());
-      libraryCache.current.prime("history:1", () => worker.listHistory(1));
+      // A view opened meanwhile shares these in-flight fills, so they report
+      // a rejected session the same way as the view's own reads.
+      libraryCache.current.prime("folders", () => observeLibraryAuth(() => worker.listFavoriteFolders()));
+      libraryCache.current.prime("watch-later", () => observeLibraryAuth(() => worker.listWatchLater()));
+      libraryCache.current.prime("history:1", () => observeLibraryAuth(() => worker.listHistory(1)));
     }, 1200);
     return () => clearTimeout(timer);
   }, [bilibiliAuthenticated, libraryEpoch]);
@@ -4901,12 +5021,18 @@ export function AppSurface({
   const getRelayWorker = () => {
     if (!relayWorker.current) {
       relayWorker.current = new RelayWorkerClient();
-      relayWorker.current.onGenerationEnded(() => {
+      relayWorker.current.onGenerationEnded((generation) => {
         ++authEpoch.current;
         authChanging.current = false;
         setLibraryEpoch(libraryCache.current.setScope(null, true));
         setBilibiliAuth(null);
         setBilibiliAuthBusy(false);
+        // Only a generation that actually served auth asks for a re-read, so a
+        // worker that keeps failing its handshake cannot cause a restart loop.
+        if (authGeneration.current === generation) {
+          authGeneration.current = null;
+          setAuthRefreshRequest((current) => current + 1);
+        }
       });
     }
     playbackFlow.current ??= new PlaybackFlow(relayWorker.current, (error) => {
@@ -5036,16 +5162,26 @@ export function AppSurface({
     }, playbackPreferenceSignature(visibility, style, end, rate));
   };
 
-  const refreshProductSettings = async (): Promise<ProductSettings> => {
+  const refreshProductSettings = async (): Promise<SettingsRead> => {
     setSettingsError(null);
     try {
-      return await getSettingsPersistence().read();
+      return { ok: true, settings: await getSettingsPersistence().read() };
     } catch (error) {
-      setSettingsReady(true);
-      setSettingsError(relayErrorMessage(error));
-      return productSettings;
+      // Leave settingsReady false: the next conversion or settings visit
+      // retries the read instead of treating defaults as the stored settings.
+      const message = relayErrorMessage(error);
+      setSettingsError(message);
+      return { ok: false, message };
     }
   };
+  const readRuntimeSettings = (): Promise<SettingsRead> | SettingsRead =>
+    settingsReady ? { ok: true, settings: productSettings } : refreshProductSettings();
+  const relaySettingsProblem = (read: SettingsRead): string | null =>
+    !read.ok
+      ? read.message
+      : relaySettingsReady(read.settings)
+        ? null
+        : "先在设置中填写推流密钥和 VRCDN 播放地址。";
 
   const saveProductSettings = async (
     next: SettingsUpdate,
@@ -5064,7 +5200,10 @@ export function AppSurface({
     if (next === previous) return;
     setProductSettings((current) => ({ ...current, bilibiliMode: next }));
     void saveProductSettings({ bilibiliMode: next }).catch(() => {
-      setProductSettings((current) => ({ ...current, bilibiliMode: previous }));
+      // Roll back only this attempt; a newer choice made meanwhile wins.
+      setProductSettings((current) => (
+        current.bilibiliMode === next ? { ...current, bilibiliMode: previous } : current
+      ));
     });
   };
 
@@ -5081,6 +5220,7 @@ export function AppSurface({
 
   const applyBilibiliAuth = (next: BilibiliAuthStatus, generation: number) => {
     if (!getRelayWorker().isGenerationCurrent(generation)) return;
+    authGeneration.current = generation;
     const scope = next.stage === "authenticated" && next.user_id !== undefined
       ? `${generation}:${next.user_id}` : null;
     setLibraryEpoch(libraryCache.current.setScope(scope));
@@ -5122,6 +5262,9 @@ export function AppSurface({
       const next = action === "login" ? await worker.beginBilibiliLogin() : await worker.logoutBilibili();
       if (epoch !== authEpoch.current) return;
       applyBilibiliAuth(next, generation);
+      // Both mutations drop the stored cookie in the core (a new QR login
+      // clears it as soon as the code is issued), so a rejection is resolved.
+      setRejectedBilibiliUser(null);
       if (action === "logout") changeBilibiliAccessMode("guest");
     } catch (error) {
       if (epoch !== authEpoch.current) return;
@@ -5144,6 +5287,26 @@ export function AppSurface({
   const beginBilibiliLogin = () => changeAuthentication("login");
   const logoutBilibili = () => changeAuthentication("logout");
 
+  // Library reads always use the stored cookie. A login_required reply while
+  // the UI believes it is authenticated means Bilibili expired that session:
+  // flag it so Settings offers a new QR login, and re-read the core's status.
+  const observeLibraryAuth = <T,>(request: () => Promise<T>): Promise<T> => {
+    const epoch = authEpoch.current;
+    const userId = bilibiliAuth?.stage === "authenticated" ? bilibiliAuth.user_id : undefined;
+    return request().catch((error: unknown) => {
+      if (
+        error instanceof RelayWorkerError
+        && error.code === "login_required"
+        && userId !== undefined
+        && epoch === authEpoch.current
+      ) {
+        setRejectedBilibiliUser(userId);
+        void refreshBilibiliAuth();
+      }
+      throw error;
+    });
+  };
+
   const installFfmpeg = async () => {
     setMediaError(null);
     try {
@@ -5157,6 +5320,14 @@ export function AppSurface({
   useEffect(() => {
     if (preferencesReady && !windowClosing.current) queuePlaybackPreferences();
   }, [preferencesReady]);
+
+  // A lost worker generation clears auth. Re-read it right away only where it
+  // is visible; entering Settings/Favorites later re-reads it anyway.
+  useEffect(() => {
+    if (authRefreshRequest > 0 && (scene === "settings" || scene === "favorites")) {
+      void refreshBilibiliAuth();
+    }
+  }, [authRefreshRequest]);
 
   useEffect(() => {
     const startup = setTimeout(() => {
@@ -5304,15 +5475,13 @@ export function AppSurface({
         setCollectionItem(String(resolution.collection?.selected_item ?? 1));
         setPlaybackPosition(0);
         setPlaybackPaused(resolution.kind === "video");
-        setScene("ready-vod");
+        settleConversionScene("ready-vod");
         if (resolution.routing.kind !== "unavailable" && resolution.session_id) {
           setPlaybackToggling(true);
-          const runtimeSettings = settingsReady
-            ? productSettings
-            : await refreshProductSettings();
+          const settingsProblem = relaySettingsProblem(await readRuntimeSettings());
           if (!flow.isCurrent(intent)) return;
-          if (!relaySettingsReady(runtimeSettings)) {
-            setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
+          if (settingsProblem) {
+            setRelayError(settingsProblem);
             setPlaybackToggling(false);
             return;
           }
@@ -5346,8 +5515,16 @@ export function AppSurface({
       if (!flow.isCurrent(intent)) return;
       setPlaybackToggling(false);
       setConversionError(relayErrorMessage(error));
-      setScene("error");
+      settleConversionScene("error");
     }
+  };
+
+  // The user may open a subview while a link resolves. Keep that subview
+  // mounted (an unsaved settings draft lives there) and make Back land on the
+  // conversion outcome instead of yanking the user out of it.
+  const settleConversionScene = (next: "ready-vod" | "error") => {
+    setLastMainScene(next);
+    setScene((current) => isSubviewScene(current) ? current : next);
   };
 
   const retargetPlayback = async (
@@ -5393,17 +5570,16 @@ export function AppSurface({
 
     try {
       return await flow.run(intent, async (task) => {
-        const runtimeSettings = settingsReady
-          ? productSettings
-          : await refreshProductSettings();
+        const settingsRead = await readRuntimeSettings();
+        const settingsProblem = relaySettingsProblem(settingsRead);
         if (!flow.isCurrent(intent)) return false;
-        if (!relaySettingsReady(runtimeSettings)) {
+        if (settingsProblem) {
           if (previousWasActive) {
             setPart(previousPart);
             setCollectionItem(previousCollectionItem);
             setPlaybackPosition(previousPosition);
             pendingPausedPosition.current = previousPendingPosition;
-            setPlaybackMessage("需要先完成 VRCDN 设置");
+            setPlaybackMessage(settingsRead.ok ? "需要先完成 VRCDN 设置" : "本机设置暂时无法读取");
             return false;
           }
           const resolution = await task.resolve(
@@ -5416,7 +5592,7 @@ export function AppSurface({
           setPart(String(resolution.selected_part ?? effectivePart));
           setCollectionItem(String(resolution.collection?.selected_item ?? 1));
           setRelayStatus(null);
-          setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
+          setRelayError(settingsProblem);
           return false;
         }
 
@@ -5861,19 +6037,20 @@ export function AppSurface({
     }
   };
 
-  const showSubview = (next: "settings" | "danmaku" | "favorites") => {
+  const showSubview = (next: Subview, refreshSettings = true) => {
     // Opening settings/style is a UI-only transition. Do not invalidate an
     // in-flight conversion: the conversion owns the relay startup and
     // cancelling its epoch here can leave the UI detached from a live
     // publisher while the native worker is still switching inputs.
-    if (scene !== "settings" && scene !== "danmaku" && scene !== "favorites") {
-      setLastMainScene(scene === "loading" ? (sourceResolution ? "ready-vod" : "idle") : scene);
+    const current = sceneRef.current;
+    if (!isSubviewScene(current)) {
+      setLastMainScene(current === "loading" ? (sourceResolutionRef.current ? "ready-vod" : "idle") : current);
     }
     setScene(next);
     if (next === "settings") {
       const active = hasActivePublisher(relayStatus);
       setResumeRelayAfterSettings(Boolean(relayError && sourceResolution?.session_id && !active));
-      if (!settingsReady || settingsError) void refreshProductSettings();
+      if (refreshSettings && (!settingsReady || settingsError)) void refreshProductSettings();
       void refreshMediaState();
       void refreshBilibiliAuth();
     }
@@ -5977,6 +6154,7 @@ export function AppSurface({
             themePreference={themePreference}
             setThemePreference={setThemePreference}
             bilibiliAuth={bilibiliAuth}
+            bilibiliSessionRejected={bilibiliSessionRejected}
             bilibiliAuthError={bilibiliAuthError}
             bilibiliAuthBusy={bilibiliAuthBusy}
             bilibiliMode={productSettings.bilibiliMode}
@@ -6013,12 +6191,12 @@ export function AppSurface({
             source={librarySource}
             onOpenSettings={() => showSubview("settings")}
             onPickVideo={playFavorite}
-            listFolders={() => getRelayWorker().listFavoriteFolders()}
-            listResources={(folderId, page) => getRelayWorker().listFavoriteResources(folderId, page)}
-            searchResources={(folderId, keyword, page) => getRelayWorker().searchFavoriteResources(folderId, keyword, page)}
+            listFolders={() => observeLibraryAuth(() => getRelayWorker().listFavoriteFolders())}
+            listResources={(folderId, page) => observeLibraryAuth(() => getRelayWorker().listFavoriteResources(folderId, page))}
+            searchResources={(folderId, keyword, page) => observeLibraryAuth(() => getRelayWorker().searchFavoriteResources(folderId, keyword, page))}
             fetchCovers={(urls) => getRelayWorker().fetchFavoriteCovers(urls)}
-            listWatchLater={() => getRelayWorker().listWatchLater()}
-            listHistory={(page) => getRelayWorker().listHistory(page)}
+            listWatchLater={() => observeLibraryAuth(() => getRelayWorker().listWatchLater())}
+            listHistory={(page) => observeLibraryAuth(() => getRelayWorker().listHistory(page))}
           />
         </MotionFade>
       ) : (
@@ -6154,6 +6332,10 @@ function relayErrorMessage(error: unknown): string {
       return "媒体链接暂时无法读取，或服务器拒绝了连接。";
     case "login_required":
       return "这个内容需要登录后才能读取。";
+    case "bilibili_access_denied":
+      return "这个内容有地区或权限限制，暂时无法读取。";
+    case "bilibili_timeout":
+      return "B 站响应太慢，请稍后再试。";
     case "bilibili_login_unavailable":
       return "暂时无法连接 B 站登录服务，请稍后重试。";
     case "bilibili_login_failed":
@@ -6168,6 +6350,8 @@ function relayErrorMessage(error: unknown): string {
       return "设置没有保存，请检查磁盘空间后重试。";
     case "settings_invalid_data":
       return "本机设置内容有误，请恢复默认后保存。";
+    case "settings_newer_version":
+      return "本机设置来自更新版本的软件，请使用新版本打开。";
     case "settings_too_large":
       return "设置内容过长，检查后再保存。";
     case "settings_secret_unavailable":

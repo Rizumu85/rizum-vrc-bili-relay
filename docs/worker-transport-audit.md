@@ -37,6 +37,39 @@ and actual exit, with a bounded one-second forced-exit observation window. It
 cancels unsent work, attempts core shutdown, and never waits indefinitely just
 because an acknowledgement arrived. Pipe flush failures are awaited and handled.
 
+## Command budgets (protocol 26)
+
+A dispatched timeout stops the worker and therefore every running relay, so a
+UI deadline below the core's legitimate worst case turns a slow network into a
+stopped stream. Before protocol 26 the core's worst cases were sums of
+sequential 20-second request timeouts: `list_favorite_folders` (one request)
+had a 15-second UI deadline, `resolve_source` could chain three or four
+requests against 30 seconds, and VOD danmaku downloaded up to 720 segments
+one after another inside `start_relay`, `retarget_relay`, `set_relay_paused`
+and `set_relay_rate`.
+
+Each network-bound step now draws its request timeout from one command-level
+budget (`crates/relay-core/src/budget.rs`), and every UI deadline in
+`worker-client.ts` exceeds that budget plus the command's non-network wait:
+
+| Command | Core network budget | Other bounded work | UI deadline |
+| --- | --- | --- | --- |
+| `resolve_source` | 20 s Bilibili (media: 15 s ffprobe kill) | — | 30 s |
+| `start_relay`, `set_relay_paused` | 10 s danmaku | 15 s FFmpeg startup | 40 s |
+| `retarget_relay` | 20 s resolve + 10 s danmaku | 15 s FFmpeg startup | 60 s |
+| `set_relay_rate` | 10 s danmaku | 2 × 4 s live status, 15 s FFmpeg | 45 s |
+| library lists and search | 15 s | — | 25 s |
+| `begin`/`poll_bilibili_login` | 20 s | — | 30 s |
+
+Danmaku is decoration: a failed or out-of-time danmaku preparation no longer
+fails the command. Playback continues without it and `RelayStatus.danmaku_error`
+carries the error code. VOD segments download four at a time; a partial result
+is used for the current action but not cached as complete.
+
+A request whose command fails to deserialize is answered under its own `id`
+(`invalid_request`), so only that call fails. Only a line without a readable id
+still produces the uncorrelated id-0 error that ends the generation.
+
 ## Ownership
 
 - `worker-client.ts`: typed product facade and the sole UI process adapter;

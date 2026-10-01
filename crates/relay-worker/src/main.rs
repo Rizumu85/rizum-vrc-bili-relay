@@ -41,9 +41,17 @@ fn main() -> io::Result<()> {
                     span.finish(&result);
                     ResponseEnvelope::from_result(id, result)
                 }
-                Err(error) => {
-                    ResponseEnvelope::protocol_error(format!("Invalid JSON request: {error}"))
-                }
+                // A well-formed envelope whose command fails to parse is
+                // answered under its own id, so only that request fails
+                // instead of the UI treating an unmatched reply as fatal.
+                Err(error) => match relay_core::request_id(&line) {
+                    Some(id) => {
+                        ResponseEnvelope::invalid_request(id, format!("Invalid request: {error}"))
+                    }
+                    None => {
+                        ResponseEnvelope::protocol_error(format!("Invalid JSON request: {error}"))
+                    }
+                },
             }
         };
 

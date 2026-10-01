@@ -7,6 +7,22 @@ export function listLoadPending(phase: ListLoadPhase): boolean {
 }
 let nextOwner = 0;
 
+/** Append a page while dropping items already listed (and repeats within the
+ * page). Remote pages shift when the list changes between requests, so the
+ * same video can arrive twice; rows are keyed by identity and must be unique.
+ */
+export function appendUnique<T>(current: readonly T[], next: readonly T[], key: (item: T) => string): T[] {
+  const seen = new Set(current.map(key));
+  const merged = [...current];
+  for (const item of next) {
+    const id = key(item);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(item);
+  }
+  return merged;
+}
+
 /** Own one list's complete request lifecycle, including cache-only completion.
  * The data and loading state use the SAME ticket. Replaced replies/finalizers
  * cannot overwrite a current list, and cached revalidation counts as pending

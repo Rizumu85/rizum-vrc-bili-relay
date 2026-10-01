@@ -36,7 +36,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not check the tag namespace.' }
 if (@($tags | Where-Object { $_.ref -eq "refs/tags/$tag" }).Count -gt 0) {
     throw "Tag $tag already exists; refusing an unverified tag."
 }
-gh release create $tag $archive $checksum $report $mediaReport $assClockReport $uiStateReport $stateBoundaryReport $toolchainReport $livenessReport --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --draft --title "$tag - Polling continuity and scoped search" --notes-file $notes
+gh release create $tag $archive $checksum $report $mediaReport $assClockReport $uiStateReport $stateBoundaryReport $toolchainReport $livenessReport --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --draft --title "$tag - Bounded commands and best-effort danmaku" --notes-file $notes
 if ($LASTEXITCODE -ne 0) { throw 'Could not create/upload the draft release.' }
 
 # Re-download, verify, and expand the exact uploaded bytes; never rebuild here.

@@ -33,7 +33,25 @@ export interface Palette {
   accentRose: string;
   accentDanmaku: string;
   focus: string;
+  sliderThumbShadow: string;
+  previewShadow: string;
 }
+
+// Colors that intentionally do not follow the appearance palette: the Windows
+// caption close affordance, a scannable QR code, danmaku drawn over the fixed
+// video backdrop, and invisible-but-hit-testable fills.
+export const INVARIANT_COLORS = {
+  transparent: "#00000000",
+  hitTestFill: "#FFFFFF01",
+  captionCloseHover: "#C42B1C",
+  captionClosePressed: "#B32017",
+  captionCloseInk: "#FFFFFF",
+  qrBackground: "#FFFFFF",
+  qrModule: "#18181B",
+  danmakuPreviewText: "#FFFFFF",
+  danmakuPreviewOutline: "#101014F2",
+  danmakuPreviewShadow: "#101014D6",
+} as const;
 
 export const FONT_UI = "MiSans VF";
 export const FONT_SERIF = "Noto Serif SC";
@@ -87,6 +105,8 @@ export const PALETTES: Record<Appearance, Palette> = {
     accentRose: "#FB7185",
     accentDanmaku: "#F59E0B",
     focus: "#2DD4BF38",
+    sliderThumbShadow: "#A1A1AA3D",
+    previewShadow: "#00000018",
   },
   dark: {
     canvas: "#111113",
@@ -121,6 +141,8 @@ export const PALETTES: Record<Appearance, Palette> = {
     accentRose: "#FB7185",
     accentDanmaku: "#FBBF24",
     focus: "#2DD4BF2E",
+    sliderThumbShadow: "#00000052",
+    previewShadow: "#00000018",
   },
 };
 

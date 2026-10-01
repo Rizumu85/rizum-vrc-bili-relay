@@ -1,11 +1,11 @@
 use std::io::Read;
-use std::net::IpAddr;
+use std::net::Ipv4Addr;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use url::Url;
+use url::{Host, Url};
 
 use crate::{
     MediaFormat, MediaInput, NextStep, RelayError, ResolvedSource, RouteDecision, RouteKind,
@@ -347,27 +347,51 @@ fn is_publicly_reachable_host(url: &Url) -> bool {
     if url.cannot_be_a_base() || !url.username().is_empty() || url.password().is_some() {
         return false;
     }
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".local") {
-        return false;
-    }
-    let Ok(address) = host.parse::<IpAddr>() else {
-        return true;
-    };
-    match address {
-        IpAddr::V4(address) => {
-            !(address.is_private()
-                || address.is_loopback()
-                || address.is_link_local()
-                || address.is_unspecified())
+    // Other VRChat players must be able to open a direct URL, so anything
+    // that only resolves inside this network is relayed instead.
+    match url.host() {
+        Some(Host::Domain(host)) => {
+            let host = host.trim_end_matches('.').to_ascii_lowercase();
+            host.contains('.')
+                && !PRIVATE_SUFFIXES
+                    .iter()
+                    .any(|suffix| host == suffix[1..] || host.ends_with(suffix))
         }
-        IpAddr::V6(address) => {
-            !(address.is_loopback()
-                || address.is_unspecified()
-                || address.is_unique_local()
-                || address.is_unicast_link_local())
-        }
+        Some(Host::Ipv4(address)) => is_public_ipv4(address),
+        Some(Host::Ipv6(address)) => match address.to_ipv4_mapped() {
+            Some(mapped) => is_public_ipv4(mapped),
+            None => {
+                !(address.is_loopback()
+                    || address.is_unspecified()
+                    || address.is_unique_local()
+                    || address.is_unicast_link_local())
+            }
+        },
+        None => false,
     }
+}
+
+/// Names that only resolve on a local network (RFC 6762, RFC 8375 and
+/// common router defaults). Single-label names are rejected separately.
+const PRIVATE_SUFFIXES: [&str; 8] = [
+    ".localhost",
+    ".local",
+    ".lan",
+    ".home",
+    ".home.arpa",
+    ".internal",
+    ".intranet",
+    ".localdomain",
+];
+
+fn is_public_ipv4(address: Ipv4Addr) -> bool {
+    let [first, second, ..] = address.octets();
+    // 100.64.0.0/10 is carrier-grade NAT shared space (also used by Tailscale).
+    let shared = first == 100 && (64..128).contains(&second);
+    !(address.is_private()
+        || address.is_loopback()
+        || address.is_link_local()
+        || address.is_unspecified()
+        || address.is_broadcast()
+        || shared)
 }

@@ -697,6 +697,7 @@ fn status_for(session_id: &str, session: &MediaSession) -> RelayStatus {
         } else {
             None
         },
+        danmaku_error: None,
     }
 }
 

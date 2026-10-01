@@ -219,7 +219,17 @@ impl SettingsStore {
     }
 
     pub fn save(&self, update: SettingsUpdate) -> Result<ProductSettings, RelayError> {
-        let current = self.load_private()?;
+        let current = match self.load_private() {
+            Ok(current) => current,
+            // Both copies hold data this version can never read. Keep them
+            // aside and let the save start from defaults; otherwise every
+            // save fails and only deleting the file by hand recovers.
+            Err(error) if matches!(error.code, "settings_invalid_data" | "settings_too_large") => {
+                self.set_aside_unreadable()?;
+                StoredSettings::default()
+            }
+            Err(error) => return Err(error),
+        };
         let stream_key = match update.stream_key {
             Some(key) => StreamKeySecret::from_plaintext(key)?,
             None => current.stream_key,
@@ -243,6 +253,20 @@ impl SettingsStore {
 
     pub fn relay_target(&self, start_seconds: f64) -> Result<RelayTarget, RelayError> {
         self.load_private()?.relay_target(start_seconds)
+    }
+
+    fn set_aside_unreadable(&self) -> Result<(), RelayError> {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        for path in [self.path.clone(), backup_path(&self.path)] {
+            if path.exists() {
+                fs::rename(&path, sibling_path(&path, &format!(".unreadable-{stamp}")))
+                    .map_err(settings_write_error)?;
+            }
+        }
+        Ok(())
     }
 
     fn load_private(&self) -> Result<StoredSettings, RelayError> {
@@ -272,7 +296,10 @@ impl SettingsStore {
         })?;
         fs::create_dir_all(parent).map_err(settings_write_error)?;
 
-        let temporary = sibling_path(&self.path, ".tmp");
+        // Per-process name: another running instance (for example the formal
+        // release beside a development build) must not delete or rename a
+        // temporary file this process is still writing.
+        let temporary = sibling_path(&self.path, &format!(".{}.tmp", std::process::id()));
         let backup = backup_path(&self.path);
         let document = SettingsDocument {
             version: SETTINGS_VERSION,
@@ -355,8 +382,10 @@ fn read_settings(path: &Path) -> Result<Option<LoadedSettings>, RelayError> {
         )
     })?;
     if file.version > SETTINGS_VERSION {
+        // Not unreadable data: a newer version owns this file, so it must
+        // never be set aside and replaced by an older build's defaults.
         return Err(RelayError::new(
-            "settings_invalid_data",
+            "settings_newer_version",
             "The local settings file was written by a newer app version",
         ));
     }

@@ -19,6 +19,7 @@ use tungstenite::http::Uri;
 use tungstenite::{ClientRequestBuilder, Error as WebSocketError, Message, client_tls};
 use zeromq::{ReqSocket, Socket, SocketRecv, SocketSend};
 
+use crate::budget::Deadline;
 use crate::danmaku::{DanmakuEvent, DanmakuKind, should_hide};
 use crate::live_danmaku_render::{LiveSlots, event_duration, filter_graph as live_filter_graph, reinit_argument};
 use crate::{DanmakuSettings, RelayError};
@@ -35,6 +36,14 @@ const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(3);
 const SOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 const ZMQ_COMMAND_TIMEOUT: Duration = Duration::from_millis(900);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(25);
+const MIN_RETRY_DELAY: Duration = Duration::from_secs(1);
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(15);
+/// An authenticated connection that lasted this long was healthy; the next
+/// disconnect starts a fresh backoff instead of continuing the old one.
+const HEALTHY_CONNECTION: Duration = Duration::from_secs(60);
+/// Consecutive failed connections before the token is considered stale.
+const FAILURES_BEFORE_REFRESH: u32 = 3;
+const ENDPOINT_REFRESH_BUDGET: Duration = Duration::from_secs(10);
 const MIXIN_KEY_ORDER: [usize; 64] = [
     46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29,
     28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25,
@@ -83,13 +92,26 @@ impl LiveDanmakuService {
         &mut self,
         source: &LiveDanmakuSource,
         settings: &DanmakuSettings,
+        deadline: Deadline,
     ) -> Result<LiveDanmakuOverlay, RelayError> {
-        let identity = self.identity(source.cookie.as_deref())?;
-        let endpoint = self.live_endpoint(source, &identity)?;
-        LiveDanmakuOverlay::new(endpoint, settings.clone())
+        let identity = self.identity(source.cookie.as_deref(), deadline)?;
+        let endpoint = resolve_endpoint(&self.http, source, &identity, &mut self.mixin_key, deadline)?;
+        LiveDanmakuOverlay::new(
+            endpoint,
+            EndpointRefresh {
+                http: self.http.clone(),
+                source: source.clone(),
+                identity,
+            },
+            settings.clone(),
+        )
     }
 
-    fn identity(&mut self, supplied_cookie: Option<&str>) -> Result<GuestIdentity, RelayError> {
+    fn identity(
+        &mut self,
+        supplied_cookie: Option<&str>,
+        deadline: Deadline,
+    ) -> Result<GuestIdentity, RelayError> {
         if let Some(cookie) = supplied_cookie.filter(|value| !value.trim().is_empty())
             && let Some(buvid3) = read_cookie(cookie, "buvid3")
         {
@@ -99,7 +121,7 @@ impl LiveDanmakuService {
                 expires_at: Instant::now() + Duration::from_secs(12 * 60 * 60),
             });
         }
-        let mut identity = self.guest_identity()?;
+        let mut identity = self.guest_identity(deadline)?;
         if let Some(cookie) = supplied_cookie.filter(|value| !value.trim().is_empty()) {
             identity.cookie = format!(
                 "{}; {}",
@@ -110,7 +132,7 @@ impl LiveDanmakuService {
         Ok(identity)
     }
 
-    fn guest_identity(&mut self) -> Result<GuestIdentity, RelayError> {
+    fn guest_identity(&mut self, deadline: Deadline) -> Result<GuestIdentity, RelayError> {
         if let Some(identity) = self
             .identity
             .as_ref()
@@ -121,6 +143,7 @@ impl LiveDanmakuService {
         let root = self
             .http
             .get("https://api.bilibili.com/x/frontend/finger/spi")
+            .timeout(live_timeout(deadline)?)
             .header(ACCEPT, "application/json")
             .header(REFERER, "https://www.bilibili.com/")
             .send()
@@ -151,141 +174,164 @@ impl LiveDanmakuService {
         self.identity = Some(identity.clone());
         Ok(identity)
     }
+}
 
-    fn live_endpoint(
-        &mut self,
-        source: &LiveDanmakuSource,
-        identity: &GuestIdentity,
-    ) -> Result<LiveEndpoint, RelayError> {
-        if let Ok(signed_url) = self.signed_danmaku_url(&source.room_id, &identity.cookie)
-            && let Ok(primary) = self.fetch_endpoint_response(&signed_url, source, identity)
-            && let Some(endpoint) =
-                parse_live_endpoint(&primary, "host_list", &source.room_id, identity)
-        {
-            return Ok(endpoint);
-        }
+/// What the receiver needs to obtain a fresh websocket token on its own
+/// thread after Bilibili stops accepting the one fetched at prepare time.
+struct EndpointRefresh {
+    http: Client,
+    source: LiveDanmakuSource,
+    identity: GuestIdentity,
+}
 
-        let fallback_url = format!(
-            "https://api.live.bilibili.com/room/v1/Danmu/getConf?room_id={}&platform=pc&player=web",
-            source.room_id
-        );
-        let fallback = self.fetch_endpoint_response(&fallback_url, source, identity)?;
-        parse_live_endpoint(&fallback, "host_server_list", &source.room_id, identity).ok_or_else(
-            || live_protocol_error("Bilibili did not return live danmaku connection data"),
-        )
+fn resolve_endpoint(
+    http: &Client,
+    source: &LiveDanmakuSource,
+    identity: &GuestIdentity,
+    mixin_key: &mut Option<(String, Instant)>,
+    deadline: Deadline,
+) -> Result<LiveEndpoint, RelayError> {
+    if let Ok(signed_url) = signed_danmaku_url(http, &source.room_id, &identity.cookie, mixin_key, deadline)
+        && let Ok(primary) = fetch_endpoint_response(http, &signed_url, source, identity, deadline)
+        && let Some(endpoint) = parse_live_endpoint(&primary, "host_list", &source.room_id, identity)
+    {
+        return Ok(endpoint);
     }
 
-    fn fetch_endpoint_response(
-        &self,
-        url: &str,
-        source: &LiveDanmakuSource,
-        identity: &GuestIdentity,
-    ) -> Result<Value, RelayError> {
-        self.http
-            .get(url)
-            .header(ACCEPT, "application/json")
-            .header(REFERER, &source.referer)
-            .header(COOKIE, &identity.cookie)
-            .send()
-            .and_then(reqwest::blocking::Response::error_for_status)
-            .map_err(|error| {
-                live_error("Cannot read Bilibili live danmaku connection data", error)
-            })?
-            .json::<Value>()
-            .map_err(|error| {
-                live_error(
-                    "Bilibili returned invalid live danmaku connection data",
-                    error,
-                )
-            })
-    }
+    let fallback_url = format!(
+        "https://api.live.bilibili.com/room/v1/Danmu/getConf?room_id={}&platform=pc&player=web",
+        source.room_id
+    );
+    let fallback = fetch_endpoint_response(http, &fallback_url, source, identity, deadline)?;
+    parse_live_endpoint(&fallback, "host_server_list", &source.room_id, identity).ok_or_else(
+        || live_protocol_error("Bilibili did not return live danmaku connection data"),
+    )
+}
 
-    fn signed_danmaku_url(&mut self, room_id: &str, cookie: &str) -> Result<String, RelayError> {
-        let mixin_key = self.mixin_key(cookie)?;
-        let mut parameters = BTreeMap::from([
-            ("id".to_string(), room_id.to_string()),
-            ("type".to_string(), "0".to_string()),
-            ("web_location".to_string(), "444.8".to_string()),
-        ]);
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        parameters.insert("wts".to_string(), timestamp.to_string());
-        let query = parameters
-            .iter()
-            .map(|(key, value)| {
-                format!(
-                    "{}={}",
-                    encode_query(key),
-                    encode_query(&sanitize_wbi(value))
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("&");
-        let digest = Md5::digest(format!("{query}{mixin_key}").as_bytes());
-        let digest = digest
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        Ok(format!(
-            "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?{query}&w_rid={digest}"
-        ))
-    }
+fn fetch_endpoint_response(
+    http: &Client,
+    url: &str,
+    source: &LiveDanmakuSource,
+    identity: &GuestIdentity,
+    deadline: Deadline,
+) -> Result<Value, RelayError> {
+    http.get(url)
+        .timeout(live_timeout(deadline)?)
+        .header(ACCEPT, "application/json")
+        .header(REFERER, &source.referer)
+        .header(COOKIE, &identity.cookie)
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|error| live_error("Cannot read Bilibili live danmaku connection data", error))?
+        .json::<Value>()
+        .map_err(|error| {
+            live_error(
+                "Bilibili returned invalid live danmaku connection data",
+                error,
+            )
+        })
+}
 
-    fn mixin_key(&mut self, cookie: &str) -> Result<String, RelayError> {
-        if let Some((key, _)) = self
-            .mixin_key
-            .as_ref()
-            .filter(|(_, expires_at)| *expires_at > Instant::now())
-        {
-            return Ok(key.clone());
-        }
-        let root = self
-            .http
-            .get("https://api.bilibili.com/x/web-interface/nav")
-            .header(ACCEPT, "application/json")
-            .header(REFERER, "https://www.bilibili.com/")
-            .header(COOKIE, cookie)
-            .send()
-            .and_then(reqwest::blocking::Response::error_for_status)
-            .map_err(|error| live_error("Cannot obtain the Bilibili request signature", error))?
-            .json::<Value>()
-            .map_err(|error| live_error("Bilibili returned an invalid request signature", error))?;
-        let data = api_data(&root, "Bilibili did not return request signature data")?;
-        let wbi = data
-            .get("wbi_img")
-            .ok_or_else(|| live_protocol_error("Bilibili did not return Wbi image data"))?;
-        let image_key = wbi
-            .get("img_url")
-            .and_then(Value::as_str)
-            .and_then(url_file_stem)
-            .ok_or_else(|| live_protocol_error("Bilibili returned an invalid Wbi image URL"))?;
-        let sub_key = wbi
-            .get("sub_url")
-            .and_then(Value::as_str)
-            .and_then(url_file_stem)
-            .ok_or_else(|| live_protocol_error("Bilibili returned an invalid Wbi sub-image URL"))?;
-        let source = format!("{image_key}{sub_key}");
-        if source.len() < 64 || !source.is_ascii() {
-            return Err(live_protocol_error("Bilibili returned an invalid Wbi key"));
-        }
-        let bytes = source.as_bytes();
-        let key = MIXIN_KEY_ORDER
-            .iter()
-            .take(32)
-            .map(|index| char::from(bytes[*index]))
-            .collect::<String>();
-        self.mixin_key = Some((
-            key.clone(),
-            Instant::now() + Duration::from_secs(6 * 60 * 60),
-        ));
-        Ok(key)
+fn signed_danmaku_url(
+    http: &Client,
+    room_id: &str,
+    cookie: &str,
+    mixin_key_cache: &mut Option<(String, Instant)>,
+    deadline: Deadline,
+) -> Result<String, RelayError> {
+    let mixin_key = mixin_key(http, cookie, mixin_key_cache, deadline)?;
+    let mut parameters = BTreeMap::from([
+        ("id".to_string(), room_id.to_string()),
+        ("type".to_string(), "0".to_string()),
+        ("web_location".to_string(), "444.8".to_string()),
+    ]);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    parameters.insert("wts".to_string(), timestamp.to_string());
+    let query = parameters
+        .iter()
+        .map(|(key, value)| {
+            format!(
+                "{}={}",
+                encode_query(key),
+                encode_query(&sanitize_wbi(value))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    let digest = Md5::digest(format!("{query}{mixin_key}").as_bytes());
+    let digest = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!(
+        "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?{query}&w_rid={digest}"
+    ))
+}
+
+fn mixin_key(
+    http: &Client,
+    cookie: &str,
+    cache: &mut Option<(String, Instant)>,
+    deadline: Deadline,
+) -> Result<String, RelayError> {
+    if let Some((key, _)) = cache
+        .as_ref()
+        .filter(|(_, expires_at)| *expires_at > Instant::now())
+    {
+        return Ok(key.clone());
     }
+    let root = http
+        .get("https://api.bilibili.com/x/web-interface/nav")
+        .timeout(live_timeout(deadline)?)
+        .header(ACCEPT, "application/json")
+        .header(REFERER, "https://www.bilibili.com/")
+        .header(COOKIE, cookie)
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|error| live_error("Cannot obtain the Bilibili request signature", error))?
+        .json::<Value>()
+        .map_err(|error| live_error("Bilibili returned an invalid request signature", error))?;
+    let data = api_data(&root, "Bilibili did not return request signature data")?;
+    let wbi = data
+        .get("wbi_img")
+        .ok_or_else(|| live_protocol_error("Bilibili did not return Wbi image data"))?;
+    let image_key = wbi
+        .get("img_url")
+        .and_then(Value::as_str)
+        .and_then(url_file_stem)
+        .ok_or_else(|| live_protocol_error("Bilibili returned an invalid Wbi image URL"))?;
+    let sub_key = wbi
+        .get("sub_url")
+        .and_then(Value::as_str)
+        .and_then(url_file_stem)
+        .ok_or_else(|| live_protocol_error("Bilibili returned an invalid Wbi sub-image URL"))?;
+    let source = format!("{image_key}{sub_key}");
+    if source.len() < 64 || !source.is_ascii() {
+        return Err(live_protocol_error("Bilibili returned an invalid Wbi key"));
+    }
+    let bytes = source.as_bytes();
+    let key = MIXIN_KEY_ORDER
+        .iter()
+        .take(32)
+        .map(|index| char::from(bytes[*index]))
+        .collect::<String>();
+    *cache = Some((
+        key.clone(),
+        Instant::now() + Duration::from_secs(6 * 60 * 60),
+    ));
+    Ok(key)
+}
+
+fn live_timeout(deadline: Deadline) -> Result<Duration, RelayError> {
+    deadline.require("live_danmaku_unavailable", "Live danmaku connection data")
 }
 
 pub(crate) struct LiveDanmakuOverlay {
     endpoint: LiveEndpoint,
+    refresh: Option<EndpointRefresh>,
     settings: DanmakuSettings,
     port: u16,
     filter_graph: String,
@@ -297,11 +343,16 @@ pub(crate) struct LiveDanmakuOverlay {
 }
 
 impl LiveDanmakuOverlay {
-    fn new(endpoint: LiveEndpoint, settings: DanmakuSettings) -> Result<Self, RelayError> {
+    fn new(
+        endpoint: LiveEndpoint,
+        refresh: EndpointRefresh,
+        settings: DanmakuSettings,
+    ) -> Result<Self, RelayError> {
         let port = available_loopback_port()?;
         let filter_graph = live_filter_graph(port, &settings);
         Ok(Self {
             endpoint,
+            refresh: Some(refresh),
             settings,
             port,
             filter_graph,
@@ -328,6 +379,7 @@ impl LiveDanmakuOverlay {
         self.cancel.store(false, Ordering::Release);
         let (sender, receiver) = sync_channel(EVENT_QUEUE_CAPACITY);
         let receiver_endpoint = self.endpoint.clone();
+        let receiver_refresh = self.refresh.take();
         let receiver_settings = self.settings.clone();
         let receiver_cancel = Arc::clone(&self.cancel);
         let socket_interrupt = Arc::clone(&self.socket_interrupt);
@@ -336,6 +388,7 @@ impl LiveDanmakuOverlay {
             .spawn(move || {
                 receive_loop(
                     receiver_endpoint,
+                    receiver_refresh,
                     receiver_settings,
                     sender,
                     receiver_cancel,
@@ -392,27 +445,94 @@ impl Drop for LiveDanmakuOverlay {
 }
 
 fn receive_loop(
-    endpoint: LiveEndpoint,
+    mut endpoint: LiveEndpoint,
+    refresh: Option<EndpointRefresh>,
     settings: DanmakuSettings,
     sender: SyncSender<DanmakuEvent>,
     cancel: Arc<AtomicBool>,
     socket_interrupt: Arc<Mutex<Option<TcpStream>>>,
 ) {
-    let mut retry_delay = Duration::from_secs(1);
+    let started_at = Instant::now();
+    let metrics = Mutex::new(crate::stream_diagnostics::Progress::default());
+    let set_metric = |name: &str, value: f64| {
+        if let Ok(mut m) = metrics.lock() {
+            m.values.insert(name.into(), value);
+        }
+    };
+    let record = |event: &'static str| {
+        crate::stream_diagnostics::record(
+            std::process::id(),
+            "Live danmaku",
+            event,
+            started_at.elapsed().as_secs_f64(),
+            &metrics,
+        );
+    };
+    let mut mixin_key = None;
+    let mut retry_delay = MIN_RETRY_DELAY;
+    let mut consecutive_failures = 0_u32;
+    let mut reconnects = 0_u64;
+    let mut refreshes = 0_u64;
     while !cancel.load(Ordering::Acquire) {
+        let connected_at = Instant::now();
         let result = receive_connection(&endpoint, &settings, &sender, &cancel, &socket_interrupt);
         socket_interrupt
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .take();
-        match result {
+        let failure = match result {
             Ok(()) if cancel.load(Ordering::Acquire) => break,
-            Ok(()) | Err(_) => {
-                sleep_cancelled(retry_delay, &cancel);
-                retry_delay = (retry_delay * 2).min(Duration::from_secs(15));
+            Ok(()) => ConnectionFailure { authenticated: false, kind: "receiver_ended" },
+            Err(failure) => failure,
+        };
+        let lasted = connected_at.elapsed();
+        if failure.authenticated && lasted >= HEALTHY_CONNECTION {
+            retry_delay = MIN_RETRY_DELAY;
+            consecutive_failures = 0;
+        } else {
+            consecutive_failures = consecutive_failures.saturating_add(1);
+        }
+        reconnects += 1;
+        set_metric("connection_seconds", lasted.as_secs_f64());
+        set_metric("authenticated", f64::from(u8::from(failure.authenticated)));
+        set_metric("consecutive_failures", f64::from(consecutive_failures));
+        set_metric("reconnects", reconnects as f64);
+        set_metric("retry_delay_seconds", retry_delay.as_secs_f64());
+        record(failure.kind);
+        sleep_cancelled(retry_delay, &cancel);
+        retry_delay = (retry_delay * 2).min(MAX_RETRY_DELAY);
+        // A rejected or repeatedly failing token is replaced by a fresh one
+        // instead of retrying the prepare-time token forever.
+        let stale = failure.kind == "auth_rejected" || consecutive_failures >= FAILURES_BEFORE_REFRESH;
+        if stale
+            && !cancel.load(Ordering::Acquire)
+            && let Some(refresh) = refresh.as_ref()
+        {
+            match resolve_endpoint(
+                &refresh.http,
+                &refresh.source,
+                &refresh.identity,
+                &mut mixin_key,
+                Deadline::after(ENDPOINT_REFRESH_BUDGET),
+            ) {
+                Ok(fresh) => {
+                    endpoint = fresh;
+                    consecutive_failures = 0;
+                    refreshes += 1;
+                    set_metric("endpoint_refreshes", refreshes as f64);
+                    record("endpoint_refreshed");
+                }
+                Err(_) => record("endpoint_refresh_failed"),
             }
         }
     }
+}
+
+/// Why one websocket session ended. `kind` is a fixed diagnostic event name;
+/// error text is deliberately not kept because it can contain host names.
+struct ConnectionFailure {
+    authenticated: bool,
+    kind: &'static str,
 }
 
 fn receive_connection(
@@ -421,8 +541,11 @@ fn receive_connection(
     sender: &SyncSender<DanmakuEvent>,
     cancel: &AtomicBool,
     socket_interrupt: &Mutex<Option<TcpStream>>,
-) -> Result<(), String> {
-    let mut socket = connect_websocket(endpoint, cancel, socket_interrupt)?;
+) -> Result<(), ConnectionFailure> {
+    let mut authenticated = false;
+    let fail = |authenticated: bool, kind: &'static str| ConnectionFailure { authenticated, kind };
+    let mut socket = connect_websocket(endpoint, cancel, socket_interrupt)
+        .map_err(|_| fail(false, "connect_failed"))?;
     let auth = json!({
         // The websocket identity must match the cookie used to obtain its
         // token. Only guest sessions authenticate with uid=0.
@@ -440,15 +563,21 @@ fn receive_connection(
         .send(Message::Binary(
             build_packet(7, 1, auth.to_string().as_bytes()).into(),
         ))
-        .map_err(|error| format!("Cannot authenticate live danmaku websocket: {error}"))?;
+        .map_err(|_| fail(false, "auth_send_failed"))?;
     let mut heartbeat_at = Instant::now() + HEARTBEAT_INTERVAL;
     let mut event_id = 1_u64;
     while !cancel.load(Ordering::Acquire) {
         match socket.read() {
             Ok(Message::Binary(payload)) => {
-                let mut events = Vec::new();
-                parse_packet_sequence(&payload, &mut events, 0)?;
-                for mut event in events {
+                let mut packets = ParsedPackets::default();
+                parse_packet_sequence(&payload, &mut packets, 0)
+                    .map_err(|_| fail(authenticated, "invalid_packet"))?;
+                match packets.auth_code {
+                    Some(0) => authenticated = true,
+                    Some(_) => return Err(fail(false, "auth_rejected")),
+                    None => {}
+                }
+                for mut event in packets.events {
                     event.id = event_id;
                     event_id = event_id.wrapping_add(1).max(1);
                     if should_hide(&event, settings) {
@@ -460,7 +589,7 @@ fn receive_connection(
                     }
                 }
             }
-            Ok(Message::Close(_)) => return Err("Live danmaku websocket closed".to_string()),
+            Ok(Message::Close(_)) => return Err(fail(authenticated, "closed_by_server")),
             Ok(Message::Ping(_)) => {
                 let _ = socket.flush();
             }
@@ -468,21 +597,28 @@ fn receive_connection(
             Err(WebSocketError::Io(error))
                 if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => {}
             Err(WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed) => {
-                return Err("Live danmaku websocket disconnected".to_string());
+                return Err(fail(authenticated, "disconnected"));
             }
-            Err(error) => return Err(format!("Cannot read live danmaku websocket: {error}")),
+            Err(_) => return Err(fail(authenticated, "read_failed")),
         }
         if Instant::now() >= heartbeat_at {
             socket
                 .send(Message::Binary(
                     build_packet(2, 1, b"[object Object]").into(),
                 ))
-                .map_err(|error| format!("Cannot send live danmaku heartbeat: {error}"))?;
+                .map_err(|_| fail(authenticated, "heartbeat_failed"))?;
             heartbeat_at = Instant::now() + HEARTBEAT_INTERVAL;
         }
     }
     let _ = socket.close(None);
     Ok(())
+}
+
+#[derive(Default)]
+struct ParsedPackets {
+    events: Vec<DanmakuEvent>,
+    /// `code` from the operation 8 authentication reply, when one arrived.
+    auth_code: Option<i64>,
 }
 
 fn connect_websocket(
@@ -655,7 +791,7 @@ pub(crate) fn send_zmq_command(
 
 fn parse_packet_sequence(
     payload: &[u8],
-    output: &mut Vec<DanmakuEvent>,
+    output: &mut ParsedPackets,
     depth: usize,
 ) -> Result<(), String> {
     if depth > MAX_PACKET_DEPTH {
@@ -690,10 +826,18 @@ fn parse_packet_sequence(
                 }
                 _ => {
                     if let Some(event) = parse_command(trim_trailing_zero(body)) {
-                        output.push(event);
+                        output.events.push(event);
                     }
                 }
             }
+        } else if operation == 8 {
+            // Auth replies are uncompressed JSON such as {"code":0}. A reply
+            // without a readable code is treated as rejected.
+            let code = serde_json::from_slice::<Value>(trim_trailing_zero(body))
+                .ok()
+                .and_then(|reply| reply.get("code").and_then(Value::as_i64))
+                .unwrap_or(-1);
+            output.auth_code = Some(code);
         }
         offset = packet_end;
     }
@@ -894,6 +1038,7 @@ fn live_protocol_error(message: impl Into<String>) -> RelayError {
     RelayError::new("live_danmaku_unavailable", message)
 }
 
-fn live_error(message: &'static str, error: impl std::fmt::Display) -> RelayError {
-    RelayError::new("live_danmaku_unavailable", format!("{message}: {error}"))
+fn live_error(message: &'static str, error: reqwest::Error) -> RelayError {
+    // reqwest includes the request URL in its message; keep only the cause.
+    RelayError::new("live_danmaku_unavailable", format!("{message}: {}", error.without_url()))
 }

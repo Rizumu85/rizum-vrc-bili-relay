@@ -137,6 +137,7 @@ async function searchSequence(mode: string) {
   function render() {
     const scope = { searchText: text, searchScope, searchOpen: open, level: { kind: "videos", folder: { id: 17 } },
       searchInput: input, searchRequest, searchEpoch, cache: { scoped: (fn: () => unknown) => fn() }, recordUiState: trace, SearchRequestOwner,
+      favoriteItemKey: (item: string) => item,
       searchResourcesRef: { current: fetch }, searchResources: fetch,
       setSearchState: (v: SearchState<string>) => { state = v; publications++; },
       setSearchText: (v: string) => { text = v; }, setSearchScope: (v: string) => { searchScope = v; }, setSearchOpen: (v: boolean) => { open = v; },

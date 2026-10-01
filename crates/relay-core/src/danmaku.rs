@@ -5,11 +5,15 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, COOKIE, REFERER};
 
+use crate::budget::Deadline;
 use crate::danmaku_style::{ass_alpha, font_size, opacity, outline, resolve_font};
 use crate::live_danmaku::{LiveDanmakuOverlay, LiveDanmakuService, LiveDanmakuSource};
 use crate::{DanmakuArea, DanmakuFilter, DanmakuSettings, DanmakuSpeed, DanmakuWeight, RelayError};
@@ -23,6 +27,13 @@ const MAX_EVENTS: usize = 60_000;
 const MAX_TEXT_CHARS: usize = 300;
 const MAX_ASS_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CACHED_VIDEOS: usize = 4;
+const FETCH_CONCURRENCY: usize = 4;
+const PARTIAL_CACHE_REUSE: Duration = Duration::from_secs(30);
+const TRUNCATED_COVERAGE_MARGIN_SECONDS: f64 = 60.0;
+// Files left behind by a killed worker. Longer than any relayable video
+// (MAX_SEGMENTS * SEGMENT_SECONDS = 72 h) so a concurrently running app
+// instance never loses the subtitle file of a live session.
+const ORPHAN_FILE_AGE: Duration = Duration::from_secs(4 * 24 * 60 * 60);
 pub(crate) const OUTPUT_WIDTH: u32 = 1280;
 pub(crate) const OUTPUT_HEIGHT: u32 = 720;
 pub(crate) const OUTPUT_FPS: u32 = 30;
@@ -60,7 +71,7 @@ enum DanmakuOverlayKind {
         // Immutable origin used by render_ass. Resource reuse must preserve it.
         source_origin_seconds: f64,
     },
-    Live(LiveDanmakuOverlay),
+    Live(Box<LiveDanmakuOverlay>),
 }
 
 /// A subtitle resource bound to one producer's source-clock origin.
@@ -139,7 +150,12 @@ pub(crate) struct DanmakuService {
 
 struct CachedVideoDanmaku {
     from_seconds: f64,
+    /// Set when the event cap truncated the list at this source time.
+    until_seconds: Option<f64>,
     segment_count: u64,
+    /// False when some segments failed or ran out of time.
+    complete: bool,
+    fetched_at: Instant,
     events: Vec<DanmakuEvent>,
 }
 
@@ -150,10 +166,12 @@ impl DanmakuService {
             .user_agent(BROWSER_USER_AGENT)
             .build()
             .unwrap_or_else(|_| Client::new());
+        let runtime_root = runtime_root();
+        remove_orphaned_files(&runtime_root);
         Self {
             live: LiveDanmakuService::new(http.clone()),
             http,
-            runtime_root: runtime_root(),
+            runtime_root,
             next_id: 1,
             video_cache: HashMap::new(),
             video_cache_order: VecDeque::new(),
@@ -165,15 +183,18 @@ impl DanmakuService {
         source: &DanmakuSource,
         settings: &DanmakuSettings,
         start_seconds: f64,
+        deadline: Deadline,
     ) -> Result<Option<DanmakuOverlay>, RelayError> {
         if !settings.enabled {
             return Ok(None);
         }
         match source {
-            DanmakuSource::Video(source) => self.prepare_video(source, settings, start_seconds),
-            DanmakuSource::Live(source) => self.live.prepare(source, settings).map(|overlay| {
+            DanmakuSource::Video(source) => {
+                self.prepare_video(source, settings, start_seconds, deadline)
+            }
+            DanmakuSource::Live(source) => self.live.prepare(source, settings, deadline).map(|overlay| {
                 Some(DanmakuOverlay {
-                    kind: DanmakuOverlayKind::Live(overlay),
+                    kind: DanmakuOverlayKind::Live(Box::new(overlay)),
                 })
             }),
         }
@@ -181,9 +202,9 @@ impl DanmakuService {
 
     /// Finish potentially slow VOD network work before a running-clock change
     /// chooses its final source anchor. prepare() then renders from this cache.
-    pub fn preload(&mut self, source: &DanmakuSource, settings: &DanmakuSettings, start_seconds: f64) -> Result<(), RelayError> {
+    pub fn preload(&mut self, source: &DanmakuSource, settings: &DanmakuSettings, start_seconds: f64, deadline: Deadline) -> Result<(), RelayError> {
         if settings.enabled && let DanmakuSource::Video(source) = source {
-            let _ = self.fetch(source, start_seconds)?;
+            let _ = self.fetch(source, start_seconds, deadline)?;
         }
         Ok(())
     }
@@ -193,8 +214,9 @@ impl DanmakuService {
         source: &VideoDanmakuSource,
         settings: &DanmakuSettings,
         start_seconds: f64,
+        deadline: Deadline,
     ) -> Result<Option<DanmakuOverlay>, RelayError> {
-        let events = self.fetch(source, start_seconds)?;
+        let events = self.fetch(source, start_seconds, deadline)?;
         if events.is_empty() {
             return Ok(None);
         }
@@ -260,6 +282,7 @@ impl DanmakuService {
         &mut self,
         source: &VideoDanmakuSource,
         start_seconds: f64,
+        deadline: Deadline,
     ) -> Result<Vec<DanmakuEvent>, RelayError> {
         let start_seconds = start_seconds.max(0.0);
         let segment_count = source
@@ -269,82 +292,53 @@ impl DanmakuService {
             .clamp(1, MAX_SEGMENTS);
         if let Some(cached) = self.video_cache.get(&source.cid)
             && cached.segment_count == segment_count
-            && cached.from_seconds <= start_seconds + 0.001
+            && cached.covers(start_seconds)
         {
             return Ok(cached.events.clone());
         }
         let first_segment = ((start_seconds as u64) / SEGMENT_SECONDS + 1).clamp(1, segment_count);
+        let segments = (first_segment..=segment_count).collect::<Vec<_>>();
+        let fetched = fetch_segments(&self.http, source, &segments, start_seconds, deadline);
+
         let mut events = Vec::new();
-        for segment in first_segment..=segment_count {
-            let endpoint = format!(
-                "https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid={}&segment_index={segment}",
-                source.cid
-            );
-            let mut request = self
-                .http
-                .get(endpoint)
-                .header(ACCEPT, "application/octet-stream")
-                .header(REFERER, &source.referer);
-            if let Some(cookie) = source.cookie.as_deref() {
-                request = request.header(COOKIE, cookie);
+        let mut first_error = None;
+        let mut fetched_any = false;
+        let mut complete = true;
+        for result in fetched.results {
+            match result {
+                Some(Ok(segment_events)) => {
+                    fetched_any = true;
+                    events.extend(segment_events);
+                }
+                Some(Err(error)) => {
+                    complete = false;
+                    first_error.get_or_insert(error);
+                }
+                // Unclaimed because the event cap was reached is truncation,
+                // handled below; unclaimed for any other reason is missing.
+                None => complete &= fetched.capped,
             }
-            let response = request.send().map_err(|error| {
+        }
+        if !fetched_any {
+            return Err(first_error.unwrap_or_else(|| {
                 RelayError::new(
                     "danmaku_fetch_failed",
-                    format!("Danmaku segment {segment} could not be downloaded: {error}"),
+                    "Danmaku could not be downloaded within the time budget",
                 )
-            })?;
-            if !response.status().is_success() {
-                return Err(RelayError::new(
-                    "danmaku_fetch_failed",
-                    format!(
-                        "Danmaku segment {segment} returned HTTP {}",
-                        response.status().as_u16()
-                    ),
-                ));
-            }
-            if response
-                .content_length()
-                .is_some_and(|length| length > MAX_SEGMENT_BYTES)
-            {
-                return Err(RelayError::new(
-                    "danmaku_too_large",
-                    "Bilibili returned an oversized danmaku segment",
-                ));
-            }
-            let mut payload = Vec::new();
-            response
-                .take(MAX_SEGMENT_BYTES + 1)
-                .read_to_end(&mut payload)
-                .map_err(|error| {
-                    RelayError::new(
-                        "danmaku_fetch_failed",
-                        format!("Danmaku segment {segment} could not be read: {error}"),
-                    )
-                })?;
-            if payload.len() as u64 > MAX_SEGMENT_BYTES {
-                return Err(RelayError::new(
-                    "danmaku_too_large",
-                    "Bilibili returned an oversized danmaku segment",
-                ));
-            }
-            for event in parse_segment(&payload)? {
-                if event.offset_seconds + 0.001 >= start_seconds {
-                    events.push(event);
-                    if events.len() >= MAX_EVENTS {
-                        break;
-                    }
-                }
-            }
-            if events.len() >= MAX_EVENTS {
-                break;
-            }
+            }));
         }
         events.sort_by(|left, right| {
             left.offset_seconds
                 .total_cmp(&right.offset_seconds)
                 .then(left.id.cmp(&right.id))
         });
+        // Keep the earliest events. A truncated list only covers positions up
+        // to its last kept event; later seeks must download again.
+        let truncated = fetched.capped || events.len() > MAX_EVENTS;
+        events.truncate(MAX_EVENTS);
+        let until_seconds = truncated
+            .then(|| events.last().map(|event| event.offset_seconds))
+            .flatten();
         if !self.video_cache.contains_key(&source.cid)
             && self.video_cache.len() >= MAX_CACHED_VIDEOS
             && let Some(expired_cid) = self.video_cache_order.pop_front()
@@ -357,12 +351,159 @@ impl DanmakuService {
             source.cid,
             CachedVideoDanmaku {
                 from_seconds: start_seconds,
+                until_seconds,
                 segment_count,
+                complete,
+                fetched_at: Instant::now(),
                 events: events.clone(),
             },
         );
         Ok(events)
     }
+}
+
+impl CachedVideoDanmaku {
+    fn covers(&self, start_seconds: f64) -> bool {
+        self.from_seconds <= start_seconds + 0.001
+            && self
+                .until_seconds
+                .is_none_or(|until| start_seconds + TRUNCATED_COVERAGE_MARGIN_SECONDS <= until)
+            // A partial download is reused only by the same user action
+            // (preload followed by prepare), never as a lasting result.
+            && (self.complete || self.fetched_at.elapsed() < PARTIAL_CACHE_REUSE)
+    }
+}
+
+struct FetchedSegments {
+    /// One entry per requested segment, in order; `None` was never attempted.
+    results: Vec<Option<Result<Vec<DanmakuEvent>, RelayError>>>,
+    /// Remaining segments were skipped because enough events were collected.
+    capped: bool,
+}
+
+/// Download segments with bounded concurrency inside one time budget. Workers
+/// claim segments in ascending order, so once the event cap is reached every
+/// earlier segment has already been claimed and the kept prefix is complete.
+fn fetch_segments(
+    http: &Client,
+    source: &VideoDanmakuSource,
+    segments: &[u64],
+    start_seconds: f64,
+    deadline: Deadline,
+) -> FetchedSegments {
+    let next = AtomicUsize::new(0);
+    let collected = AtomicUsize::new(0);
+    let capped = AtomicBool::new(false);
+    let slots = segments
+        .iter()
+        .map(|_| Mutex::new(None))
+        .collect::<Vec<Mutex<Option<Result<Vec<DanmakuEvent>, RelayError>>>>>();
+    thread::scope(|scope| {
+        for _ in 0..FETCH_CONCURRENCY.min(segments.len()) {
+            // A worker that cannot be spawned leaves its share to the others.
+            let _ = thread::Builder::new()
+                .name("danmaku-segment".to_string())
+                .spawn_scoped(scope, || {
+                    loop {
+                        if collected.load(Ordering::Acquire) >= MAX_EVENTS {
+                            if next.load(Ordering::Acquire) < segments.len() {
+                                capped.store(true, Ordering::Release);
+                            }
+                            return;
+                        }
+                        let Some(timeout) = deadline.request_timeout() else {
+                            return;
+                        };
+                        let index = next.fetch_add(1, Ordering::AcqRel);
+                        let Some(&segment) = segments.get(index) else {
+                            return;
+                        };
+                        let result = fetch_segment(http, source, segment, timeout).map(|events| {
+                            events
+                                .into_iter()
+                                .filter(|event| event.offset_seconds + 0.001 >= start_seconds)
+                                .collect::<Vec<_>>()
+                        });
+                        if let Ok(events) = &result {
+                            collected.fetch_add(events.len(), Ordering::AcqRel);
+                        }
+                        *slots[index].lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
+                    }
+                });
+        }
+    });
+    FetchedSegments {
+        results: slots
+            .into_iter()
+            .map(|slot| slot.into_inner().unwrap_or_else(PoisonError::into_inner))
+            .collect(),
+        capped: capped.load(Ordering::Acquire),
+    }
+}
+
+fn fetch_segment(
+    http: &Client,
+    source: &VideoDanmakuSource,
+    segment: u64,
+    timeout: Duration,
+) -> Result<Vec<DanmakuEvent>, RelayError> {
+    let endpoint = format!(
+        "https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid={}&segment_index={segment}",
+        source.cid
+    );
+    let mut request = http
+        .get(endpoint)
+        .timeout(timeout)
+        .header(ACCEPT, "application/octet-stream")
+        .header(REFERER, &source.referer);
+    if let Some(cookie) = source.cookie.as_deref() {
+        request = request.header(COOKIE, cookie);
+    }
+    // reqwest errors include the request URL; report only the error class.
+    let response = request.send().map_err(|error| {
+        RelayError::new(
+            "danmaku_fetch_failed",
+            format!(
+                "Danmaku segment {segment} could not be downloaded: {}",
+                error.without_url()
+            ),
+        )
+    })?;
+    if !response.status().is_success() {
+        return Err(RelayError::new(
+            "danmaku_fetch_failed",
+            format!(
+                "Danmaku segment {segment} returned HTTP {}",
+                response.status().as_u16()
+            ),
+        ));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_SEGMENT_BYTES)
+    {
+        return Err(RelayError::new(
+            "danmaku_too_large",
+            "Bilibili returned an oversized danmaku segment",
+        ));
+    }
+    let mut payload = Vec::new();
+    response
+        .take(MAX_SEGMENT_BYTES + 1)
+        .read_to_end(&mut payload)
+        .map_err(|error| {
+            RelayError::new(
+                "danmaku_fetch_failed",
+                format!("Danmaku segment {segment} could not be read: {}", error.kind()),
+            )
+        })?;
+    if payload.len() as u64 > MAX_SEGMENT_BYTES {
+        return Err(RelayError::new(
+            "danmaku_too_large",
+            "Bilibili returned an oversized danmaku segment",
+        ));
+    }
+    parse_segment(&payload)
 }
 
 #[derive(Clone, Copy)]
@@ -652,9 +793,18 @@ fn ass_color(rgb: u32) -> String {
 
 fn escape_text(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
+    let mut characters = value.chars().peekable();
+    while let Some(character) = characters.next() {
         match character {
-            '\\' => escaped.push_str(r"\\"),
+            // libass has no `\\` escape: it would print both backslashes.
+            // A lone backslash prints literally except before N, n or h,
+            // where a word joiner (ignored by shaping) breaks the tag.
+            '\\' => {
+                escaped.push('\\');
+                if matches!(characters.peek(), Some('N' | 'n' | 'h')) {
+                    escaped.push('\u{2060}');
+                }
+            }
             '{' => escaped.push('｛'),
             '}' => escaped.push('｝'),
             '\r' => {}
@@ -683,4 +833,27 @@ fn runtime_root() -> PathBuf {
         .join("VRC Bili Relay")
         .join("runtime")
         .join("danmaku")
+}
+
+fn remove_orphaned_files(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.ends_with(".ass") || name.ends_with(".ass.tmp")) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age >= ORPHAN_FILE_AGE);
+        if stale {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
