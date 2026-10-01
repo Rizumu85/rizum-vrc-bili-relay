@@ -2423,6 +2423,10 @@ function resultStatusLabel(
   if (playbackUpdating === "completion") return "· 正在继续播放";
   if (playbackMessage) return `· ${playbackMessage}`;
   if (relayError && !relay) return "· 需要完成设置";
+  // The core starts the relay without danmaku when preparing it failed.
+  if (danmaku === "shown" && relay?.stage === "running" && relay.danmaku_error) {
+    return "· 中继运行中 · 弹幕暂时无法加载";
+  }
   if (
     source?.kind === "video"
     && danmaku === "shown"
@@ -3462,6 +3466,9 @@ function favoriteItemKey(item: FavoriteResourceItem): string {
 function favoriteErrorMessage(error: unknown): string {
   if (error instanceof RelayWorkerError && error.code === "login_required") {
     return "登录已失效，请到设置中重新扫码";
+  }
+  if (error instanceof RelayWorkerError && error.code === "bilibili_timeout") {
+    return "B 站响应太慢，请稍后再试。";
   }
   return "暂时无法读取收藏内容，请稍后再试。";
 }
@@ -6325,6 +6332,10 @@ function relayErrorMessage(error: unknown): string {
       return "媒体链接暂时无法读取，或服务器拒绝了连接。";
     case "login_required":
       return "这个内容需要登录后才能读取。";
+    case "bilibili_access_denied":
+      return "这个内容有地区或权限限制，暂时无法读取。";
+    case "bilibili_timeout":
+      return "B 站响应太慢，请稍后再试。";
     case "bilibili_login_unavailable":
       return "暂时无法连接 B 站登录服务，请稍后重试。";
     case "bilibili_login_failed":
@@ -6339,6 +6350,8 @@ function relayErrorMessage(error: unknown): string {
       return "设置没有保存，请检查磁盘空间后重试。";
     case "settings_invalid_data":
       return "本机设置内容有误，请恢复默认后保存。";
+    case "settings_newer_version":
+      return "本机设置来自更新版本的软件，请使用新版本打开。";
     case "settings_too_large":
       return "设置内容过长，检查后再保存。";
     case "settings_secret_unavailable":
