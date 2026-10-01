@@ -2,11 +2,11 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,7 @@ const RELEASE_ARCHIVE_URL: &str =
     "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
 const RELEASE_CHECKSUM_URL: &str =
     "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256";
+const FILTER_LIST_TIMEOUT: Duration = Duration::from_secs(5);
 const RELEASE_VERSION_URL: &str = "https://www.gyan.dev/ffmpeg/builds/release-version";
 const DOWNLOAD_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
 const COPY_BUFFER_BYTES: usize = 128 * 1024;
@@ -169,11 +170,14 @@ impl FfmpegManager {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x0800_0000);
         }
-        let supported = command.output().is_ok_and(|output| {
-            output.status.success()
-                && filter_list_contains(&output.stdout, "drawtext")
-                && filter_list_contains(&output.stdout, "zmq")
-        });
+        let Some((success, stdout)) = run_bounded(command, FILTER_LIST_TIMEOUT) else {
+            // A hung executable is an unknown result, not proof of missing
+            // filters; do not cache it.
+            return Err(live_danmaku_unsupported());
+        };
+        let supported = success
+            && filter_list_contains(&stdout, "drawtext")
+            && filter_list_contains(&stdout, "zmq");
         self.live_danmaku_capability = Some((toolchain.ffmpeg, supported));
         if supported {
             Ok(())
@@ -262,6 +266,37 @@ impl FfmpegManager {
                 (toolchain.ffmpeg.is_file() && toolchain.ffprobe.is_file()).then_some(toolchain)
             })
     }
+}
+
+/// Run a short query with a hard deadline so a hung executable on PATH cannot
+/// block the synchronous worker. Returns None when it timed out or failed.
+fn run_bounded(mut command: Command, timeout: Duration) -> Option<(bool, Vec<u8>)> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = thread::spawn(move || {
+        let mut output = Vec::new();
+        let _ = stdout.read_to_end(&mut output);
+        output
+    });
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let output = reader.join().ok()?;
+    status.map(|status| (status.success(), output))
 }
 
 fn filter_list_contains(output: &[u8], filter: &str) -> bool {
