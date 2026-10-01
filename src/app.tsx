@@ -5002,9 +5002,11 @@ export function AppSurface({
     if (!bilibiliAuthenticated) return;
     const timer = setTimeout(() => {
       const worker = getRelayWorker();
-      libraryCache.current.prime("folders", () => worker.listFavoriteFolders());
-      libraryCache.current.prime("watch-later", () => worker.listWatchLater());
-      libraryCache.current.prime("history:1", () => worker.listHistory(1));
+      // A view opened meanwhile shares these in-flight fills, so they report
+      // a rejected session the same way as the view's own reads.
+      libraryCache.current.prime("folders", () => observeLibraryAuth(() => worker.listFavoriteFolders()));
+      libraryCache.current.prime("watch-later", () => observeLibraryAuth(() => worker.listWatchLater()));
+      libraryCache.current.prime("history:1", () => observeLibraryAuth(() => worker.listHistory(1)));
     }, 1200);
     return () => clearTimeout(timer);
   }, [bilibiliAuthenticated, libraryEpoch]);
