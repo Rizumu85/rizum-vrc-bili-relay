@@ -74,6 +74,14 @@ import {
 } from "./platform/native-part-popup";
 
 export type Scene = "idle" | "loading" | "error" | "ready-vod" | "settings" | "danmaku" | "favorites";
+type Subview = Extract<Scene, "settings" | "danmaku" | "favorites">;
+
+function isSubviewScene(scene: Scene): scene is Subview {
+  return scene === "settings" || scene === "danmaku" || scene === "favorites";
+}
+
+/** A settings read either yields the stored settings or the user-facing reason it failed. */
+type SettingsRead = { ok: true; settings: ProductSettings } | { ok: false; message: string };
 type DanmakuVisibility = "shown" | "hidden";
 
 export function sceneWindowHeight(
@@ -4217,6 +4225,7 @@ function SettingsView({
   themePreference,
   setThemePreference,
   bilibiliAuth,
+  bilibiliSessionRejected,
   bilibiliAuthError,
   bilibiliAuthBusy,
   bilibiliMode,
@@ -4235,6 +4244,7 @@ function SettingsView({
   themePreference: ThemePreference;
   setThemePreference: (value: ThemePreference) => void;
   bilibiliAuth: BilibiliAuthStatus | null;
+  bilibiliSessionRejected: boolean;
   bilibiliAuthError: string | null;
   bilibiliAuthBusy: boolean;
   bilibiliMode: BilibiliAccessMode;
@@ -4261,7 +4271,11 @@ function SettingsView({
   const [accountPopoverOpen, setAccountPopoverOpen] = useState(false);
   const [logoutTooltipVisible, setLogoutTooltipVisible] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const accountAuthenticated = bilibiliAuth?.stage === "authenticated";
+  const accountSignedIn = bilibiliAuth?.stage === "authenticated";
+  // The core keeps reporting a stored session as authenticated after Bilibili
+  // rejected its cookie (-101). Treat that session as unusable here so
+  // "扫码登录" starts a fresh QR login; logout stays available for it.
+  const accountAuthenticated = accountSignedIn && !bilibiliSessionRejected;
   const accountPending = bilibiliAuth?.stage === "waiting" || bilibiliAuth?.stage === "scanned";
   const loginMode: BilibiliAccessMode = accountAuthenticated || accountPending
     ? bilibiliMode
@@ -4292,12 +4306,12 @@ function SettingsView({
   );
 
   useEffect(() => {
-    if (accountAuthenticated) {
-      setAccountPopoverOpen(false);
-    } else {
-      setLogoutTooltipVisible(false);
-    }
+    if (accountAuthenticated) setAccountPopoverOpen(false);
   }, [accountAuthenticated]);
+
+  useEffect(() => {
+    if (!accountSignedIn) setLogoutTooltipVisible(false);
+  }, [accountSignedIn]);
 
   useEffect(() => {
     draft.current.hydrate(storedSettings);
@@ -4510,7 +4524,9 @@ function SettingsView({
             title="B 站账号"
             subtitle={
               bilibiliAuth?.stage === "authenticated"
-                ? bilibiliAuth.persistence === "session"
+                ? bilibiliSessionRejected
+                  ? "登录已失效，请重新扫码"
+                  : bilibiliAuth.persistence === "session"
                   ? `已登录 · ${bilibiliAuth.display_name ?? "Bilibili 用户"} · 仅本次`
                   : `已登录 · ${bilibiliAuth.display_name ?? "Bilibili 用户"}`
                 : bilibiliAuth?.persistence === "unavailable"
@@ -4518,7 +4534,7 @@ function SettingsView({
                   : "未登录时最高 480P"
             }
             action={
-              accountAuthenticated ? (
+              accountSignedIn ? (
                 <LogoutIconButton
                   palette={palette}
                   disabled={bilibiliAuthBusy}
@@ -4547,7 +4563,7 @@ function SettingsView({
             width={170}
             palette={palette}
           />
-          {logoutTooltipVisible && accountAuthenticated && !bilibiliAuthBusy ? (
+          {logoutTooltipVisible && accountSignedIn && !bilibiliAuthBusy ? (
             <div
               style={{
                 position: "absolute",
@@ -4800,6 +4816,15 @@ export function AppSurface({
   const [libraryEpoch, setLibraryEpoch] = useState(0);
   const authEpoch = useRef(0);
   const authChanging = useRef(false);
+  // Generation whose worker last reported auth; its loss triggers one re-read.
+  const authGeneration = useRef<number | null>(null);
+  const [authRefreshRequest, setAuthRefreshRequest] = useState(0);
+  // Account whose stored cookie Bilibili rejected while the core still
+  // reported it as authenticated. Cleared by a successful login/logout.
+  const [rejectedBilibiliUser, setRejectedBilibiliUser] = useState<number | null>(null);
+  const bilibiliSessionRejected = bilibiliAuth?.stage === "authenticated"
+    && bilibiliAuth.user_id !== undefined
+    && bilibiliAuth.user_id === rejectedBilibiliUser;
   const relayWorker = useRef<RelayWorkerClient | null>(null);
   const windowClosing = useRef(false);
   const playbackFlow = useRef<PlaybackFlow | null>(null);
@@ -4815,6 +4840,12 @@ export function AppSurface({
   const playbackRateRef = useRef<PlaybackRate>(playbackRate);
   const playbackPositionRef = useRef(playbackPosition);
   const pendingPausedPosition = useRef<number | null>(null);
+  // Async continuations (close cancellation) must see the scene the user is on
+  // now, not the one captured when the continuation started.
+  const sceneRef = useRef(scene);
+  sceneRef.current = scene;
+  const sourceResolutionRef = useRef(sourceResolution);
+  sourceResolutionRef.current = sourceResolution;
   const [systemAppearance, setSystemAppearance] = useState<Appearance>(initialAppearance);
   const resolvedAppearance: Appearance =
     themePreference === "system" ? systemAppearance : themePreference;
@@ -4845,7 +4876,10 @@ export function AppSurface({
         windowClosing.current = false;
         setSettingsError("设置尚未保存，已取消退出。请检查保存状态后再次关闭。");
         recordUiState("settings_close_cancelled");
-        setScene("settings");
+        // Enter settings like any other navigation so Back still returns to
+        // the remembered main scene (e.g. a running relay's Result panel).
+        // Skip the settings re-read: it would clear the message above.
+        if (sceneRef.current !== "settings") showSubview("settings", false);
         return;
       }
       playbackFlow.current?.cancel();
@@ -4907,12 +4941,18 @@ export function AppSurface({
   const getRelayWorker = () => {
     if (!relayWorker.current) {
       relayWorker.current = new RelayWorkerClient();
-      relayWorker.current.onGenerationEnded(() => {
+      relayWorker.current.onGenerationEnded((generation) => {
         ++authEpoch.current;
         authChanging.current = false;
         setLibraryEpoch(libraryCache.current.setScope(null, true));
         setBilibiliAuth(null);
         setBilibiliAuthBusy(false);
+        // Only a generation that actually served auth asks for a re-read, so a
+        // worker that keeps failing its handshake cannot cause a restart loop.
+        if (authGeneration.current === generation) {
+          authGeneration.current = null;
+          setAuthRefreshRequest((current) => current + 1);
+        }
       });
     }
     playbackFlow.current ??= new PlaybackFlow(relayWorker.current, (error) => {
@@ -5042,16 +5082,26 @@ export function AppSurface({
     }, playbackPreferenceSignature(visibility, style, end, rate));
   };
 
-  const refreshProductSettings = async (): Promise<ProductSettings> => {
+  const refreshProductSettings = async (): Promise<SettingsRead> => {
     setSettingsError(null);
     try {
-      return await getSettingsPersistence().read();
+      return { ok: true, settings: await getSettingsPersistence().read() };
     } catch (error) {
-      setSettingsReady(true);
-      setSettingsError(relayErrorMessage(error));
-      return productSettings;
+      // Leave settingsReady false: the next conversion or settings visit
+      // retries the read instead of treating defaults as the stored settings.
+      const message = relayErrorMessage(error);
+      setSettingsError(message);
+      return { ok: false, message };
     }
   };
+  const readRuntimeSettings = (): Promise<SettingsRead> | SettingsRead =>
+    settingsReady ? { ok: true, settings: productSettings } : refreshProductSettings();
+  const relaySettingsProblem = (read: SettingsRead): string | null =>
+    !read.ok
+      ? read.message
+      : relaySettingsReady(read.settings)
+        ? null
+        : "先在设置中填写推流密钥和 VRCDN 播放地址。";
 
   const saveProductSettings = async (
     next: SettingsUpdate,
@@ -5070,7 +5120,10 @@ export function AppSurface({
     if (next === previous) return;
     setProductSettings((current) => ({ ...current, bilibiliMode: next }));
     void saveProductSettings({ bilibiliMode: next }).catch(() => {
-      setProductSettings((current) => ({ ...current, bilibiliMode: previous }));
+      // Roll back only this attempt; a newer choice made meanwhile wins.
+      setProductSettings((current) => (
+        current.bilibiliMode === next ? { ...current, bilibiliMode: previous } : current
+      ));
     });
   };
 
@@ -5087,6 +5140,7 @@ export function AppSurface({
 
   const applyBilibiliAuth = (next: BilibiliAuthStatus, generation: number) => {
     if (!getRelayWorker().isGenerationCurrent(generation)) return;
+    authGeneration.current = generation;
     const scope = next.stage === "authenticated" && next.user_id !== undefined
       ? `${generation}:${next.user_id}` : null;
     setLibraryEpoch(libraryCache.current.setScope(scope));
@@ -5128,6 +5182,9 @@ export function AppSurface({
       const next = action === "login" ? await worker.beginBilibiliLogin() : await worker.logoutBilibili();
       if (epoch !== authEpoch.current) return;
       applyBilibiliAuth(next, generation);
+      // Both mutations drop the stored cookie in the core (a new QR login
+      // clears it as soon as the code is issued), so a rejection is resolved.
+      setRejectedBilibiliUser(null);
       if (action === "logout") changeBilibiliAccessMode("guest");
     } catch (error) {
       if (epoch !== authEpoch.current) return;
@@ -5150,6 +5207,26 @@ export function AppSurface({
   const beginBilibiliLogin = () => changeAuthentication("login");
   const logoutBilibili = () => changeAuthentication("logout");
 
+  // Library reads always use the stored cookie. A login_required reply while
+  // the UI believes it is authenticated means Bilibili expired that session:
+  // flag it so Settings offers a new QR login, and re-read the core's status.
+  const observeLibraryAuth = <T,>(request: () => Promise<T>): Promise<T> => {
+    const epoch = authEpoch.current;
+    const userId = bilibiliAuth?.stage === "authenticated" ? bilibiliAuth.user_id : undefined;
+    return request().catch((error: unknown) => {
+      if (
+        error instanceof RelayWorkerError
+        && error.code === "login_required"
+        && userId !== undefined
+        && epoch === authEpoch.current
+      ) {
+        setRejectedBilibiliUser(userId);
+        void refreshBilibiliAuth();
+      }
+      throw error;
+    });
+  };
+
   const installFfmpeg = async () => {
     setMediaError(null);
     try {
@@ -5163,6 +5240,14 @@ export function AppSurface({
   useEffect(() => {
     if (preferencesReady && !windowClosing.current) queuePlaybackPreferences();
   }, [preferencesReady]);
+
+  // A lost worker generation clears auth. Re-read it right away only where it
+  // is visible; entering Settings/Favorites later re-reads it anyway.
+  useEffect(() => {
+    if (authRefreshRequest > 0 && (scene === "settings" || scene === "favorites")) {
+      void refreshBilibiliAuth();
+    }
+  }, [authRefreshRequest]);
 
   useEffect(() => {
     const startup = setTimeout(() => {
@@ -5310,15 +5395,13 @@ export function AppSurface({
         setCollectionItem(String(resolution.collection?.selected_item ?? 1));
         setPlaybackPosition(0);
         setPlaybackPaused(resolution.kind === "video");
-        setScene("ready-vod");
+        settleConversionScene("ready-vod");
         if (resolution.routing.kind !== "unavailable" && resolution.session_id) {
           setPlaybackToggling(true);
-          const runtimeSettings = settingsReady
-            ? productSettings
-            : await refreshProductSettings();
+          const settingsProblem = relaySettingsProblem(await readRuntimeSettings());
           if (!flow.isCurrent(intent)) return;
-          if (!relaySettingsReady(runtimeSettings)) {
-            setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
+          if (settingsProblem) {
+            setRelayError(settingsProblem);
             setPlaybackToggling(false);
             return;
           }
@@ -5352,8 +5435,16 @@ export function AppSurface({
       if (!flow.isCurrent(intent)) return;
       setPlaybackToggling(false);
       setConversionError(relayErrorMessage(error));
-      setScene("error");
+      settleConversionScene("error");
     }
+  };
+
+  // The user may open a subview while a link resolves. Keep that subview
+  // mounted (an unsaved settings draft lives there) and make Back land on the
+  // conversion outcome instead of yanking the user out of it.
+  const settleConversionScene = (next: "ready-vod" | "error") => {
+    setLastMainScene(next);
+    setScene((current) => isSubviewScene(current) ? current : next);
   };
 
   const retargetPlayback = async (
@@ -5399,17 +5490,16 @@ export function AppSurface({
 
     try {
       return await flow.run(intent, async (task) => {
-        const runtimeSettings = settingsReady
-          ? productSettings
-          : await refreshProductSettings();
+        const settingsRead = await readRuntimeSettings();
+        const settingsProblem = relaySettingsProblem(settingsRead);
         if (!flow.isCurrent(intent)) return false;
-        if (!relaySettingsReady(runtimeSettings)) {
+        if (settingsProblem) {
           if (previousWasActive) {
             setPart(previousPart);
             setCollectionItem(previousCollectionItem);
             setPlaybackPosition(previousPosition);
             pendingPausedPosition.current = previousPendingPosition;
-            setPlaybackMessage("需要先完成 VRCDN 设置");
+            setPlaybackMessage(settingsRead.ok ? "需要先完成 VRCDN 设置" : "本机设置暂时无法读取");
             return false;
           }
           const resolution = await task.resolve(
@@ -5422,7 +5512,7 @@ export function AppSurface({
           setPart(String(resolution.selected_part ?? effectivePart));
           setCollectionItem(String(resolution.collection?.selected_item ?? 1));
           setRelayStatus(null);
-          setRelayError("先在设置中填写推流密钥和 VRCDN 播放地址。");
+          setRelayError(settingsProblem);
           return false;
         }
 
@@ -5867,19 +5957,20 @@ export function AppSurface({
     }
   };
 
-  const showSubview = (next: "settings" | "danmaku" | "favorites") => {
+  const showSubview = (next: Subview, refreshSettings = true) => {
     // Opening settings/style is a UI-only transition. Do not invalidate an
     // in-flight conversion: the conversion owns the relay startup and
     // cancelling its epoch here can leave the UI detached from a live
     // publisher while the native worker is still switching inputs.
-    if (scene !== "settings" && scene !== "danmaku" && scene !== "favorites") {
-      setLastMainScene(scene === "loading" ? (sourceResolution ? "ready-vod" : "idle") : scene);
+    const current = sceneRef.current;
+    if (!isSubviewScene(current)) {
+      setLastMainScene(current === "loading" ? (sourceResolutionRef.current ? "ready-vod" : "idle") : current);
     }
     setScene(next);
     if (next === "settings") {
       const active = hasActivePublisher(relayStatus);
       setResumeRelayAfterSettings(Boolean(relayError && sourceResolution?.session_id && !active));
-      if (!settingsReady || settingsError) void refreshProductSettings();
+      if (refreshSettings && (!settingsReady || settingsError)) void refreshProductSettings();
       void refreshMediaState();
       void refreshBilibiliAuth();
     }
@@ -5983,6 +6074,7 @@ export function AppSurface({
             themePreference={themePreference}
             setThemePreference={setThemePreference}
             bilibiliAuth={bilibiliAuth}
+            bilibiliSessionRejected={bilibiliSessionRejected}
             bilibiliAuthError={bilibiliAuthError}
             bilibiliAuthBusy={bilibiliAuthBusy}
             bilibiliMode={productSettings.bilibiliMode}
@@ -6019,12 +6111,12 @@ export function AppSurface({
             source={librarySource}
             onOpenSettings={() => showSubview("settings")}
             onPickVideo={playFavorite}
-            listFolders={() => getRelayWorker().listFavoriteFolders()}
-            listResources={(folderId, page) => getRelayWorker().listFavoriteResources(folderId, page)}
-            searchResources={(folderId, keyword, page) => getRelayWorker().searchFavoriteResources(folderId, keyword, page)}
+            listFolders={() => observeLibraryAuth(() => getRelayWorker().listFavoriteFolders())}
+            listResources={(folderId, page) => observeLibraryAuth(() => getRelayWorker().listFavoriteResources(folderId, page))}
+            searchResources={(folderId, keyword, page) => observeLibraryAuth(() => getRelayWorker().searchFavoriteResources(folderId, keyword, page))}
             fetchCovers={(urls) => getRelayWorker().fetchFavoriteCovers(urls)}
-            listWatchLater={() => getRelayWorker().listWatchLater()}
-            listHistory={(page) => getRelayWorker().listHistory(page)}
+            listWatchLater={() => observeLibraryAuth(() => getRelayWorker().listWatchLater())}
+            listHistory={(page) => observeLibraryAuth(() => getRelayWorker().listHistory(page))}
           />
         </MotionFade>
       ) : (
