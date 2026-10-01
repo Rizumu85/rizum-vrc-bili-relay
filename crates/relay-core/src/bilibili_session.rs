@@ -109,7 +109,10 @@ impl BilibiliSessionStore {
         })?;
         fs::create_dir_all(parent).map_err(session_write_error)?;
 
-        let temporary = sibling_path(&self.path, ".tmp");
+        // Per-process name: another running instance (for example the formal
+        // release beside a development build) must not delete or rename a
+        // temporary file this process is still writing.
+        let temporary = sibling_path(&self.path, &format!(".{}.tmp", std::process::id()));
         let backup = backup_path(&self.path);
         let _ = fs::remove_file(&temporary);
         let mut file = OpenOptions::new()

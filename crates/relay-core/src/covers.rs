@@ -68,7 +68,13 @@ pub fn fetch_covers(urls: Vec<String>) -> Vec<FavoriteCover> {
 fn fetch_one(client: &Client, dir: &Path, url: &str) -> Result<(PathBuf, u64), &'static str> {
     let file_name = file_name_for(url);
     let path = dir.join(&file_name);
-    if path.is_file() { return Ok((path, 0)); }
+    if path.is_file() {
+        // Pruning evicts by modification time; a hit marks the file as
+        // recently used so covers on screen are not the first evicted.
+        let _ = fs::File::options().append(true).open(&path)
+            .and_then(|file| file.set_modified(std::time::SystemTime::now()));
+        return Ok((path, 0));
+    }
     let response = client.get(url).header(REFERER, "https://www.bilibili.com/").send()
         .map_err(|error| if error.is_timeout() { "timeout" } else { "network" })?;
     if !response.status().is_success() { return Err("http_status"); }
@@ -77,11 +83,13 @@ fn fetch_one(client: &Client, dir: &Path, url: &str) -> Result<(PathBuf, u64), &
     response.take(MAX_COVER_BYTES + 1).read_to_end(&mut bytes).map_err(|_| "body_read")?;
     if bytes.len() as u64 > MAX_COVER_BYTES { return Err("too_large"); }
     if bytes.is_empty() { return Err("empty_body"); }
+    // A 200 error page would otherwise be cached under this URL for good.
+    if !is_image(&bytes) { return Err("not_image"); }
     let id = TEMPORARY_ID.fetch_add(1, Ordering::Relaxed);
     let temporary = dir.join(format!("{file_name}.{}.{id}.tmp", std::process::id()));
     let result = (|| {
         fs::write(&temporary, &bytes).map_err(|_| "storage_write")?;
-        if let Err(_) = fs::rename(&temporary, &path) {
+        if fs::rename(&temporary, &path).is_err() {
             // Another app instance may have committed the same cache key.
             if !path.is_file() { return Err("storage_rename"); }
         }
@@ -89,6 +97,14 @@ fn fetch_one(client: &Client, dir: &Path, url: &str) -> Result<(PathBuf, u64), &
     })();
     let _ = fs::remove_file(&temporary);
     result
+}
+
+fn is_image(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0xFF, 0xD8, 0xFF])
+        || bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+        || bytes.starts_with(b"GIF8")
+        || (bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP")
+        || (bytes.len() >= 12 && &bytes[4..8] == b"ftyp" && matches!(&bytes[8..12], b"avif" | b"avis"))
 }
 
 fn sized_cover_url(raw: &str) -> Option<String> {
