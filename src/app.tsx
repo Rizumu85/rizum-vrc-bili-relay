@@ -51,6 +51,8 @@ import { relayFailureMessage } from "./relay/status-message";
 import { PlaybackFlow, PlaybackFailure, PlaybackSuperseded, hasActivePublisher } from "./relay/playback-flow";
 import { recordUiState } from "./relay/worker-diagnostics";
 import { queryElementBounds, queryWindowSize } from "./platform/gpuix-geometry";
+import { readClipboard, writeClipboard } from "./platform/clipboard";
+import { SYSTEM_APPEARANCE_SUPPORTED, readSystemAppearance } from "./platform/system-theme";
 import {
   beginProductWindowDrag,
   closeProductWindow,
@@ -244,6 +246,7 @@ const DEFAULT_DANMAKU_SETTINGS: DanmakuSettings = {
 };
 
 const REDUCED_MOTION = prefersReducedMotion();
+const SYSTEM_APPEARANCE_POLL_MS = 30_000;
 
 function motionTransition(duration: number) {
   return {
@@ -285,36 +288,6 @@ function formatPlaybackTime(seconds: number): string {
   return hours > 0
     ? `${String(hours).padStart(2, "0")}:${minuteText}:${secondText}`
     : `${minuteText}:${secondText}`;
-}
-
-async function readClipboard(): Promise<string> {
-  try {
-    const process = Bun.spawn(
-      ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard -Raw"],
-      { stdout: "pipe", stderr: "ignore", windowsHide: true },
-    );
-    const output = await new Response(process.stdout).text();
-    await process.exited;
-    return output.trim();
-  } catch {
-    return "";
-  }
-}
-
-async function writeClipboard(value: string): Promise<void> {
-  try {
-    const process = Bun.spawn(["clip.exe"], {
-      stdin: "pipe",
-      stdout: "ignore",
-      stderr: "ignore",
-      windowsHide: true,
-    });
-    process.stdin.write(value);
-    process.stdin.end();
-    await process.exited;
-  } catch {
-    // The output remains selectable even if the Windows clipboard command fails.
-  }
 }
 
 function relaySettingsReady(settings: ProductSettings): boolean {
@@ -2111,12 +2084,13 @@ function Result({
   const output = isReference
     ? VIDEO_OUTPUT.replace("{part}", part)
     : relayOutputDescription(sourceResolution, relayStatus, relayError, playbackPaused);
-  const relayRunning = (
-    relayStatus?.stage === "running" || relayStatus?.stage === "draining"
-  ) && Boolean(relayStatus.playback_url);
   const relayActive = hasActivePublisher(relayStatus);
-  const directReady = sourceResolution?.routing.kind === "direct" && Boolean(sourceResolution.playback_url);
-  const canCopy = isReference || relayRunning || playbackPaused || directReady;
+  // Only a real playback URL is copyable; status sentences share the same
+  // output row and must never reach the clipboard.
+  const copyableUrl = isReference
+    ? output
+    : relayPlaybackUrl(sourceResolution, relayStatus, playbackPaused);
+  const canCopy = copyableUrl !== null;
   const parts: PlaybackPart[] = sourceResolution?.kind === "video"
     ? sourceResolution.parts?.length
       ? sourceResolution.parts.map((entry) => ({
@@ -2179,8 +2153,8 @@ function Result({
   );
 
   const copy = async () => {
-    if (!canCopy) return;
-    await writeClipboard(output);
+    if (copyableUrl === null) return;
+    if (!(await writeClipboard(copyableUrl))) return;
     setCopied(true);
     if (copiedTimer.current) clearTimeout(copiedTimer.current);
     copiedTimer.current = setTimeout(() => setCopied(false), 1200);
@@ -2452,17 +2426,27 @@ function resultStatusLabel(
   }
 }
 
+function relayPlaybackUrl(
+  source: SourceResolution,
+  relay: RelayStatus | null,
+  playbackPaused = false,
+): string | null {
+  if (source.routing.kind === "direct" && source.playback_url) return source.playback_url;
+  if (
+    relay?.playback_url
+    && (relay.stage === "running" || relay.stage === "draining" || playbackPaused)
+  ) return relay.playback_url;
+  return null;
+}
+
 function relayOutputDescription(
   source: SourceResolution,
   relay: RelayStatus | null,
   relayError: string | null,
   playbackPaused = false,
 ): string {
-  if (source.routing.kind === "direct" && source.playback_url) return source.playback_url;
-  if (
-    relay?.playback_url
-    && (relay.stage === "running" || relay.stage === "draining" || playbackPaused)
-  ) return relay.playback_url;
+  const playbackUrl = relayPlaybackUrl(source, relay, playbackPaused);
+  if (playbackUrl !== null) return playbackUrl;
   if (relay?.stage === "starting") return "正在准备播放地址";
   if (relay?.stage === "completed") return relay.end_reason === "live_ended" ? "直播已结束" : "视频已播放完成";
   if (relay?.stage === "stopped") return "中继已停止，重新生成地址即可再次启动";
@@ -4832,8 +4816,9 @@ export function AppSurface({
   const playbackRateRef = useRef<PlaybackRate>(playbackRate);
   const playbackPositionRef = useRef(playbackPosition);
   const pendingPausedPosition = useRef<number | null>(null);
+  const [systemAppearance, setSystemAppearance] = useState<Appearance>(initialAppearance);
   const resolvedAppearance: Appearance =
-    themePreference === "system" ? initialAppearance : themePreference;
+    themePreference === "system" ? systemAppearance : themePreference;
   const palette = PALETTES[resolvedAppearance];
   const mediaState = mediaComponentState(mediaStatus, mediaError);
   const settingsExpanded =
@@ -4883,6 +4868,28 @@ export function AppSurface({
     );
     return () => clearTimeout(resize);
   }, [scene, settingsExpanded, playbackSelectionRows, sourceResolution?.kind]);
+
+  // "跟随系统" follows the Windows app theme. GPUIX exposes no window-focus or
+  // system-appearance event, so re-read the registry on a slow interval while
+  // the preference is active, and immediately when the user switches back to
+  // it. The startup value already came from main.tsx; the environment
+  // override (initialThemePreference) keeps captures deterministic.
+  const systemAppearanceObserved = useRef(false);
+  useEffect(() => {
+    if (themePreference !== "system" || initialThemePreference || !SYSTEM_APPEARANCE_SUPPORTED) return;
+    let cancelled = false;
+    const refresh = async () => {
+      const next = await readSystemAppearance();
+      if (!cancelled && next) setSystemAppearance(next);
+    };
+    if (systemAppearanceObserved.current) void refresh();
+    systemAppearanceObserved.current = true;
+    const timer = setInterval(() => void refresh(), SYSTEM_APPEARANCE_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [themePreference]);
 
   // Warm the video-library session cache shortly after login is known so the
   // first library open paints from memory instead of waiting on Bilibili.

@@ -8,11 +8,16 @@ import {
   setProductWindowPointerRenderer,
 } from "./platform/window";
 import { registerBundledFonts } from "./platform/fonts";
+import { readSystemAppearanceSync } from "./platform/system-theme";
 import type { ThemePreference } from "./settings";
 import type { Appearance } from "./theme";
 
+// The environment override wins; otherwise the "system" preference starts from
+// the Windows app theme so the first frame does not flash the wrong palette.
 const initialAppearance: Appearance =
-  process.env.VRC_BILI_RELAY_THEME === "dark" ? "dark" : "light";
+  process.env.VRC_BILI_RELAY_THEME === "dark" || process.env.VRC_BILI_RELAY_THEME === "light"
+    ? process.env.VRC_BILI_RELAY_THEME
+    : readSystemAppearanceSync() ?? "light";
 const initialThemePreference: ThemePreference | undefined =
   process.env.VRC_BILI_RELAY_THEME === "dark" || process.env.VRC_BILI_RELAY_THEME === "light"
     ? process.env.VRC_BILI_RELAY_THEME
