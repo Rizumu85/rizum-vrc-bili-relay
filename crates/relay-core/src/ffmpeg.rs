@@ -1174,7 +1174,7 @@ fn drain_stderr(
     health: Arc<Mutex<crate::stream_diagnostics::Progress>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+        read_lines_lossy(pipe, |line| {
             if let Ok(mut health) = health.lock() {
                 health.warning(&line);
             }
@@ -1191,7 +1191,7 @@ fn drain_stderr(
                 }
                 lines.push_back(sanitized);
             }
-        }
+        });
     })
 }
 
@@ -1202,7 +1202,7 @@ fn drain_progress(
     health: Arc<Mutex<crate::stream_diagnostics::Progress>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+        read_lines_lossy(pipe, |line| {
             if let Ok(mut health) = health.lock() {
                 health.line(&line);
             }
@@ -1216,6 +1216,34 @@ fn drain_progress(
                     has_output.store(true, Ordering::Release);
                 }
             }
-        }
+        });
     })
+}
+
+/// Drain a child pipe line by line until EOF. Bytes that are not UTF-8
+/// (localized metadata, GBK file names) are decoded lossily instead of ending
+/// the reader, which would stop draining the pipe for the rest of the child's
+/// life. Overlong lines are cut so one runaway line cannot grow memory.
+fn read_lines_lossy(pipe: impl std::io::Read, mut each: impl FnMut(String)) {
+    const MAX_LINE_BYTES: u64 = 16 * 1024;
+    let mut reader = BufReader::new(pipe);
+    let mut buffer = Vec::new();
+    loop {
+        buffer.clear();
+        match std::io::Read::take(&mut reader, MAX_LINE_BYTES).read_until(b'\n', &mut buffer) {
+            Ok(0) => return,
+            Ok(_) => {
+                if buffer.last() != Some(&b'\n')
+                    && buffer.len() as u64 >= MAX_LINE_BYTES
+                    && reader.skip_until(b'\n').is_err()
+                {
+                    return;
+                }
+                let line = String::from_utf8_lossy(&buffer);
+                each(line.trim_end_matches(['\r', '\n']).to_owned());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return,
+        }
+    }
 }
