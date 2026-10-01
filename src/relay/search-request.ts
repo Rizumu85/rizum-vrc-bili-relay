@@ -1,4 +1,5 @@
 import type { StateTrace } from "./playback-flow";
+import { appendUnique } from "./list-request";
 
 export interface SearchQuery { readonly keyword: string; readonly folderId: number | null; }
 export interface SearchPage<T> { items: T[]; page: number; hasMore: boolean; }
@@ -19,6 +20,8 @@ let nextSearch = 0;
  * only network dispatch is debounced. Old callbacks cannot re-enable paging.
  * The owner supplies every page's query; the UI never combines text with an
  * unrelated result's page number. Cancellation does not replay a sent request.
+ * Retry repeats exactly the page that failed, so a failed "load more" keeps
+ * the rows already shown instead of restarting from page 1.
  */
 export class SearchRequestOwner<T> {
   private state: SearchState<T> = emptySearchState<T>();
@@ -26,12 +29,14 @@ export class SearchRequestOwner<T> {
   private request = 0;
   private disposed = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private failedPage: { page: number; append: boolean } | null = null;
   private readonly id = ++nextSearch;
 
   constructor(
     private readonly fetch: (query: SearchQuery, page: number) => Promise<SearchPage<T>>,
     private readonly changed: (state: SearchState<T>) => void,
     private readonly trace: StateTrace = () => undefined,
+    private readonly identify?: (item: T) => string,
   ) {}
 
   setQuery(value: SearchQuery | null): void {
@@ -43,6 +48,7 @@ export class SearchRequestOwner<T> {
     this.clearTimer();
     ++this.revision;
     ++this.request;
+    this.failedPage = null;
     this.state = query
       ? { query, items: [], page: 0, hasMore: false, phase: "debouncing", error: null }
       : emptySearchState<T>();
@@ -66,8 +72,9 @@ export class SearchRequestOwner<T> {
   }
 
   retry(): Promise<void> {
-    if (this.disposed || this.state.phase !== "failed") return Promise.resolve();
-    return this.load(1, false);
+    const failed = this.failedPage;
+    if (this.disposed || this.state.phase !== "failed" || !failed) return Promise.resolve();
+    return this.load(failed.page, failed.append);
   }
 
   dispose(): void {
@@ -95,12 +102,16 @@ export class SearchRequestOwner<T> {
     try {
       const result = await this.fetch(query, page);
       if (!current()) { this.record("search_reply_discarded", page, revision); return; }
-      this.state = { query, items: append ? [...items, ...result.items] : result.items,
+      const merged = this.identify
+        ? appendUnique(items, result.items, this.identify)
+        : [...items, ...result.items];
+      this.state = { query, items: merged,
         page: result.page, hasMore: result.hasMore, phase: "ready", error: null };
       this.changed(this.state);
       this.record("search_page_completed", page, revision);
     } catch (error) {
       if (!current()) { this.record("search_reply_discarded", page, revision); return; }
+      this.failedPage = { page, append };
       this.state = { ...this.state, phase: "failed", error };
       this.changed(this.state);
       this.record("search_page_failed", page, revision);

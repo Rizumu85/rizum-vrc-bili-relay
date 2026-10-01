@@ -45,7 +45,7 @@ import { LibraryCache } from "./relay/library-cache";
 import { CoverLoader } from "./relay/cover-loader";
 import { SearchRequestOwner, emptySearchState } from "./relay/search-request";
 import { PlaybackObserver } from "./relay/playback-observer";
-import { ListRequestOwner, listLoadPending, type ListLoadPhase } from "./relay/list-request";
+import { ListRequestOwner, appendUnique, listLoadPending, type ListLoadPhase } from "./relay/list-request";
 import { SettingsPersistence, flushSettingsBeforeClose } from "./relay/settings-persistence";
 import { SettingsDraftState } from "./relay/settings-draft";
 import { relayFailureMessage } from "./relay/status-message";
@@ -3455,6 +3455,10 @@ function formatFavoriteDuration(totalSeconds: number): string {
   return hours > 0 ? `${hours}:${tail}` : tail;
 }
 
+function favoriteItemKey(item: FavoriteResourceItem): string {
+  return item.bvid;
+}
+
 function favoriteErrorMessage(error: unknown): string {
   if (error instanceof RelayWorkerError && error.code === "login_required") {
     return "登录已失效，请到设置中重新扫码";
@@ -3601,7 +3605,9 @@ function FavoritesView({
   const [videosHasMore, setVideosHasMore] = useState(false);
   const [videosPhase, setVideosPhase] = useState<ListLoadPhase>("idle");
   const videosLoading = listLoadPending(videosPhase);
-  const [videosError, setVideosError] = useState<string | null>(null);
+  // The failed request, so retry repeats that page; an appended page keeps
+  // the rows already shown.
+  const [videosError, setVideosError] = useState<{ message: string; page: number; append: boolean } | null>(null);
   const [searchOpen, setSearchOpen] = useState(() =>
     Boolean(process.env.VRC_BILI_RELAY_FAVORITES_SEARCH),
   );
@@ -3614,6 +3620,7 @@ function FavoritesView({
   const searchHasMore = searchState.hasMore;
   const searchLoading = searchState.phase === "debouncing" || searchState.phase === "loading";
   const searchError = searchState.error ? favoriteErrorMessage(searchState.error) : null;
+  const searchFailedEmpty = Boolean(searchError) && (searchState.items?.length ?? 0) === 0;
   const searchRequest = useRef<SearchRequestOwner<FavoriteResourceItem> | null>(null);
   const searchInput = useRef({ text: searchText, scope: searchScope, open: searchOpen });
   const searchResourcesRef = useRef(searchResources);
@@ -3643,6 +3650,7 @@ function FavoritesView({
       (query, page) => cache.scoped(() => searchResourcesRef.current(query.folderId, query.keyword, page)),
       setSearchState,
       recordUiState,
+      favoriteItemKey,
     );
     searchRequest.current = owner;
     return () => { owner.dispose(); searchRequest.current = null; };
@@ -3703,11 +3711,11 @@ function FavoritesView({
         ? cache.fill(cacheKey, () => listResources(folder.id, page))
         : cache.scoped(() => listResources(folder.id, page)),
       (result) => {
-        setVideos((current) => (append ? [...current, ...result.items] : result.items));
+        setVideos((current) => appendUnique(append ? current : [], result.items, favoriteItemKey));
         setVideosPage(result.page);
         setVideosHasMore(result.hasMore);
       },
-      (error) => setVideosError(favoriteErrorMessage(error)),
+      (error) => setVideosError({ message: favoriteErrorMessage(error), page, append }),
     );
   };
 
@@ -3735,11 +3743,11 @@ function FavoritesView({
       !append && cacheable ? cache.read<FavoriteResourcePage>(cacheKey) : null,
       () => cacheable ? cache.fill(cacheKey, fetchPage) : cache.scoped(fetchPage),
       (result) => {
-        setVideos((current) => (append ? [...current, ...result.items] : result.items));
+        setVideos((current) => appendUnique(append ? current : [], result.items, favoriteItemKey));
         setVideosPage(result.page);
         setVideosHasMore(result.hasMore);
       },
-      (error) => setVideosError(favoriteErrorMessage(error)),
+      (error) => setVideosError({ message: favoriteErrorMessage(error), page, append }),
     );
   };
 
@@ -3922,6 +3930,34 @@ function FavoritesView({
     </div>
   );
 
+  // A failed "load more" keeps the rows already shown and offers a retry of
+  // that page at the bottom of the list.
+  const pageErrorRow = (message: string, onRetry: () => void) => (
+    <div
+      key="favorites-more-error"
+      testId="favorites-more-error"
+      style={{
+        minHeight: 40,
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 8,
+        paddingLeft: 12,
+        paddingRight: 12,
+      }}
+    >
+      <text style={{ minWidth: 0, color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 11.5, lineClamp: 1 }}>
+        {message}
+      </text>
+      <Button label="重试" palette={palette} quiet onClick={onRetry} />
+    </div>
+  );
+  const listVideoError = videosError && videosError.append && videos.length > 0 ? null : videosError;
+  const retryVideos = (load: (page: number, append: boolean) => Promise<void>) => () => {
+    if (videosError) void load(videosError.page, videosError.append);
+  };
+
   let body: React.ReactNode;
   if (level.kind === "folders") {
     let content: React.ReactNode;
@@ -4017,7 +4053,7 @@ function FavoritesView({
             {searchField}
           </MotionFade>
         ) : null}
-        {searching && !searchError ? (
+        {searching && !searchFailedEmpty ? (
           <div style={{ marginBottom: 8 }}>
             <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 11 }}>
               {searchLoading && (searchItems?.length ?? 0) === 0
@@ -4029,7 +4065,7 @@ function FavoritesView({
         {searching
           ? listBox(
               <>
-                {searchError ? (
+                {searchFailedEmpty ? (
                   centerState(
                     <>
                       <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{searchError}</text>
@@ -4046,7 +4082,11 @@ function FavoritesView({
                     {searchLoading && (searchItems?.length ?? 0) === 0
                       ? centerState(<Loading palette={palette} label="正在搜索" />)
                       : null}
-                    {searchHasMore ? moreRow(searchLoading, () => void searchRequest.current?.more()) : null}
+                    {searchError
+                      ? pageErrorRow(searchError, () => void searchRequest.current?.retry())
+                      : searchHasMore
+                        ? moreRow(searchLoading, () => void searchRequest.current?.more())
+                        : null}
                   </>
                 )}
               </>,
@@ -4119,7 +4159,7 @@ function FavoritesView({
             />
           </MotionFade>
         ) : null}
-        {searching && !searchError ? (
+        {searching && !searchFailedEmpty ? (
           <div style={{ marginBottom: 8 }}>
             <text style={{ color: palette.caption, fontFamily: FONT_UI, fontSize: 11 }}>
               {searchLoading && (searchItems?.length ?? 0) === 0
@@ -4131,7 +4171,7 @@ function FavoritesView({
         {searching
           ? listBox(
               <>
-                {searchError ? (
+                {searchFailedEmpty ? (
                   centerState(
                     <>
                       <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{searchError}</text>
@@ -4148,7 +4188,11 @@ function FavoritesView({
                     {searchLoading && (searchItems?.length ?? 0) === 0
                       ? centerState(<Loading palette={palette} label="正在搜索" />)
                       : null}
-                    {searchHasMore ? moreRow(searchLoading, () => void searchRequest.current?.more()) : null}
+                    {searchError
+                      ? pageErrorRow(searchError, () => void searchRequest.current?.retry())
+                      : searchHasMore
+                        ? moreRow(searchLoading, () => void searchRequest.current?.more())
+                        : null}
                   </>
                 )}
               </>,
@@ -4157,11 +4201,16 @@ function FavoritesView({
               <>
                 {videosLoading && videos.length === 0 ? (
                   centerState(<Loading palette={palette} label="正在读取视频" />)
-                ) : videosError ? (
+                ) : listVideoError ? (
                   centerState(
                     <>
-                      <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{videosError}</text>
-                      <Button label="重试" palette={palette} quiet onClick={() => void loadVideos(folder, 1, false)} />
+                      <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{listVideoError.message}</text>
+                      <Button
+                        label="重试"
+                        palette={palette}
+                        quiet
+                        onClick={retryVideos((page, append) => loadVideos(folder, page, append))}
+                      />
                     </>,
                   )
                 ) : videos.length === 0 ? (
@@ -4171,9 +4220,11 @@ function FavoritesView({
                 ) : (
                   <>
                     {videos.map((item) => videoRow(item, false))}
-                    {videosHasMore
-                      ? moreRow(videosLoading, () => void loadVideos(folder, videosPage + 1, true))
-                      : null}
+                    {videosError
+                      ? pageErrorRow(videosError.message, retryVideos((page, append) => loadVideos(folder, page, append)))
+                      : videosHasMore
+                        ? moreRow(videosLoading, () => void loadVideos(folder, videosPage + 1, true))
+                        : null}
                   </>
                 )}
               </>,
@@ -4193,11 +4244,11 @@ function FavoritesView({
           <>
             {videosLoading && videos.length === 0 ? (
               centerState(<Loading palette={palette} label="正在读取视频" />)
-            ) : videosError ? (
+            ) : listVideoError ? (
               centerState(
                 <>
-                  <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{videosError}</text>
-                  <Button label="重试" palette={palette} quiet onClick={() => void loadFlat(1, false)} />
+                  <text style={{ color: palette.inkMuted, fontFamily: FONT_UI, fontSize: 12 }}>{listVideoError.message}</text>
+                  <Button label="重试" palette={palette} quiet onClick={retryVideos(loadFlat)} />
                 </>,
               )
             ) : videos.length === 0 ? (
@@ -4209,7 +4260,11 @@ function FavoritesView({
             ) : (
               <>
                 {videos.map((item) => videoRow(item, false))}
-                {videosHasMore ? moreRow(videosLoading, () => void loadFlat(videosPage + 1, true)) : null}
+                {videosError
+                  ? pageErrorRow(videosError.message, retryVideos(loadFlat))
+                  : videosHasMore
+                    ? moreRow(videosLoading, () => void loadFlat(videosPage + 1, true))
+                    : null}
               </>
             )}
           </>,

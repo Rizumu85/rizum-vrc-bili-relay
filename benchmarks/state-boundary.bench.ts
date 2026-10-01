@@ -10,7 +10,7 @@ import ts from "typescript";
 import type { PlaybackBackend } from "../src/relay/playback-flow";
 import type { PlaybackOptions, RelayStatus, SourceResolution } from "../src/relay/protocol";
 import { DEFAULT_SETTINGS } from "../src/settings";
-import { ListRequestOwner, listLoadPending, type ListLoadPhase } from "../src/relay/list-request";
+import { ListRequestOwner, appendUnique, listLoadPending, type ListLoadPhase } from "../src/relay/list-request";
 import { recordUiState, flushWorkerDiagnostics } from "../src/relay/worker-diagnostics";
 
 const root = resolve(process.env.VRC_BILI_RELAY_BOUNDARY_SOURCE || join(import.meta.dir, ".."));
@@ -170,7 +170,9 @@ async function listSequence(mode: "fresh" | "cold" | "refresh" | "refresh_failed
     videosEpoch: { current: 0 }, foldersEpoch: { current: 0 }, searchEpoch: { current: 0 },
     searchInput: { current: { text: "", scope: "folder", open: false } }, searchRequest: { current: null },
     setVideosLoading: (value: boolean) => { state.loading = value; }, setFoldersLoading: (value: boolean) => { state.loading = value; },
-    setVideosError: (value: string | null) => { state.error = value; }, setFoldersError: () => {},
+    // Handlers record the failed page as { message, page, append }; older sources pass the bare message.
+    setVideosError: (value: string | { message: string } | null) => { state.error = typeof value === "object" && value ? value.message : value; }, setFoldersError: () => {},
+    appendUnique, favoriteItemKey: (item: string) => item,
     setVideos: (value: any) => { state.items = typeof value === "function" ? value(state.items) : value; }, setFolders: (value: any) => { state.items = value.items ?? value; },
     setVideosPage: (n: number) => { state.page = n; }, setVideosHasMore: (v: boolean) => { state.hasMore = v; },
     listResources: (id: number, n: number) => n > 1 ? Promise.resolve(page("B-next", n)) : id === 1 ? first.promise : second.promise,
